@@ -9,14 +9,20 @@ const rawBase = 'https://raw.githubusercontent.com'
 const runGit = promisify(execFile)
 const maxTreeBytes = 12 * 1024 * 1024
 export const maxBlobBytes = 96 * 1024
-const maxExcerptCharacters = 3_000
+const maxExcerptCharacters = 2_500
 const maxExcerptLines = 120
 const requestTimeout = 30_000
-const batchSize = 3
+const batchSize = 5
 
 const objectId = /^[0-9a-f]{40}$/i
 const manifestNames = /^(?:package\.json|Cargo\.toml|pyproject\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|mix\.exs|Gemfile|composer\.json|deno\.jsonc?|pubspec\.yaml|Package\.swift|.+\.slnx?)$/i
 const localBuildFiles = /^(?:justfile|Makefile|Taskfile\.ya?ml|CMakeLists\.txt|BUILD\.bazel|MODULE\.bazel|WORKSPACE(?:\.bazel)?|pnpm-workspace\.yaml|rust-toolchain(?:\.toml)?|\.tool-versions|\.nvmrc|\.bazelrc|\.bazelversion|Dockerfile|flake\.nix)$/i
+const readmeName = /^readme(?:\.(?:md|mdx|rst|adoc|txt))?$/i
+const architectureName = /^(?:architecture|design|overview|project-structure|repository-layout)\.(?:md|mdx|rst|adoc)$/i
+const sourceFile = /\.(?:[cm]?[jt]sx?|cts|mts|rs|go|py|rb|java|kts?|scala|swift|c|cc|cpp|cxx|cs|exs?|php|sh)$/i
+const lowPriorityFolder = /^(?:\.|_?tests?$|__tests__$|fixtures?$|examples?$|samples?$|benchmarks?$|vendor$|third[_-]?party$|dist$|target$|node_modules$|generated$|docs?$)/i
+const sourceFolder = /^(?:src|lib|bin|cmd)$/i
+const entryPoint = /^(?:main|index|lib|mod|app|server|cli|runtime|engine|__init__)\.[^.]+$/i
 
 function sourceError(code, message) {
   return Object.assign(new Error(message), { code })
@@ -91,41 +97,97 @@ function compareFiles(a, b) {
   return a.priority - b.priority || a.path.localeCompare(b.path, 'en')
 }
 
-function fileGroup(path) {
-  if (/^readme(?:\.[^.\/]+)?$/i.test(path)) return { group: 'docs', priority: 0 }
-  if (/^(?:\.github\/)?contributing(?:\.[^.\/]+)?$/i.test(path)) return { group: 'docs', priority: 1 }
-  if (/^\.github\/workflows\/readme\.md$/i.test(path)) return { group: 'docs', priority: 2 }
-  if (/^docs\/(?:contributing|development|developer-guide)(?:\/index)?\.md$/i.test(path)) return { group: 'docs', priority: 3 }
+function modulePriority(module) {
+  const parts = module.split('/')
+  const name = parts.at(-1)
+  // Prefer product components over their nested helpers or auxiliary tool UIs.
+  if (parts.length > 2) return 5
+  if (/^(?:core|engine|runtime|kernel|orchestrator)$/i.test(name)) return 0
+  if (/^(?:cli|tui|app-server|application|server|frontend|backend|ui|api)$/i.test(name)) return 1
+  if (/^sdk\//i.test(module) || /^[^/]+-cli$/i.test(module)) return 2
+  if (module === '.' || /^(?:agent|client|exec|runner|config|plugins?|storage|web|sdk)$/i.test(name)) return 3
+  return 4
+}
 
-  const components = path.split('/')
+function moduleFile(components) {
   const basename = components.at(-1)
+  const parent = components.slice(0, -1)
+  if (parent.some(part => lowPriorityFolder.test(part))) return
+  const anchor = parent.findIndex(part => sourceFolder.test(part))
+  const folder = anchor < 0 ? parent : parent.slice(0, anchor)
+  if (anchor === 0 && parent.length > 1) folder.push(...parent.slice(0, 2))
+  const module = folder.join('/') || '.'
+  if (folder.length > 3 || parent.length > 5) return
+  if (manifestNames.test(basename) && parent.length) return { module: parent.join('/'), priority: 4 }
+  if (!sourceFile.test(basename) || /(?:\.d\.ts$|^test_|[._-](?:test|spec)\.)/i.test(basename)) return
+  const atSourceRoot = parent.length - folder.length <= 1
+  if (atSourceRoot && (entryPoint.test(basename) || folder.length === 1 && parent.at(-1) === 'bin')) {
+    // Library entry points often name internal components, while CLI mains expose dispatch.
+    const prefersMain = /(?:^|[/\-])cli$/i.test(module)
+    const preferred = prefersMain ? /^main\./i : /^(?:lib|index)\./i
+    return { module, priority: preferred.test(basename) ? 0 : 1 }
+  }
+  return { module, priority: atSourceRoot ? 3 : 5 }
+}
+
+function fileGroup(path, components) {
+  const basename = components.at(-1)
+  if (components.length === 1 && readmeName.test(basename)) return { group: 'docs', priority: 0 }
+  if (/^(?:docs\/|\.github\/)?contributing(?:\.[^.\/]+)?$/i.test(path)) return { group: 'docs', priority: 1 }
+  if (/^docs\/(?:development|developer-guide)(?:\/index)?\.md$/i.test(path)) return { group: 'docs', priority: 2 }
+  if (/^\.github\/workflows\/readme\.md$/i.test(path)) return { group: 'docs', priority: 3 }
+  if (architectureName.test(basename) && (components.length === 1 || /^docs\//i.test(path))) {
+    return { group: 'architecture', priority: components.length - 1 }
+  }
+  const parent = components.slice(0, -1)
+  if (readmeName.test(basename) && parent.length && parent.length <= 3 && !parent.some(part => lowPriorityFolder.test(part))) {
+    const priority = modulePriority(parent.join('/'))
+    if (priority <= 2) return { group: 'architecture', priority: 10 + priority }
+  }
   if (components.length === 3 && path.startsWith('.github/workflows/') && /\.ya?ml$/i.test(basename)) {
     if (/^(?:blocking-ci|ci|test|tests|build|repo-checks)\.ya?ml$/i.test(basename)) return { group: 'workflows', priority: 0 }
     if (/(?:^|[-_])(?:ci|tests?|build)(?:[-_]|\.)/i.test(basename)) return { group: 'workflows', priority: 1 }
     return { group: 'workflows', priority: 2 }
   }
-  if (components.length <= 2 && manifestNames.test(basename)) return { group: 'manifests', priority: components.length - 1 }
+  if (components.length <= 2 && manifestNames.test(basename)) {
+    const priority = components.length === 1 ? 0 : /^(?:Cargo\.toml|go\.mod)$/i.test(basename) ? 1 : 2
+    return { group: 'manifests', priority }
+  }
   if (components.length === 1 && localBuildFiles.test(path)) {
     return { group: 'build', priority: /^(?:justfile|Makefile|Taskfile\.ya?ml|CMakeLists\.txt|pnpm-workspace\.yaml|BUILD\.bazel)$/i.test(path) ? 0 : 1 }
   }
 }
 
 export function selectFiles(tree) {
-  const groups = { docs: [], manifests: [], build: [], workflows: [] }
+  const groups = { docs: [], architecture: [], manifests: [], build: [], workflows: [] }
+  const modules = new Map()
   for (const entry of tree) {
     const { path, type, mode, size, sha } = entry
     if (type !== 'blob' || !['100644', '100755'].includes(mode) || size === 0) continue
     if (typeof path !== 'string' || path.length > 300 || /[\u0000-\u001f\u007f]/.test(path)) continue
-    if (path.split('/').some(part => !part || part === '.' || part === '..')) continue
-    const entryGroup = fileGroup(path)
-    if (entryGroup) groups[entryGroup.group].push({ path, sha, priority: entryGroup.priority })
+    const components = path.split('/')
+    if (components.some(part => !part || part === '.' || part === '..')) continue
+    const entryGroup = fileGroup(path, components)
+    if (entryGroup) groups[entryGroup.group].push({ path, sha, ...entryGroup })
+    const component = moduleFile(components)
+    if (!component) continue
+    const candidate = { path, sha, group: 'modules', ...component }
+    const previous = modules.get(component.module)
+    if (!previous || compareFiles(candidate, previous) < 0) modules.set(component.module, candidate)
   }
-  return [
+  const overview = [
     ...groups.docs.sort(compareFiles).slice(0, 2),
-    ...groups.manifests.sort(compareFiles).slice(0, 3),
+    ...groups.architecture.sort(compareFiles).slice(0, 2),
+    ...groups.manifests.sort(compareFiles).slice(0, 2),
+  ]
+  const development = [
     ...groups.build.sort(compareFiles).slice(0, 2),
     ...groups.workflows.sort(compareFiles).slice(0, 3),
   ]
+  const alreadySelected = new Set([...overview, ...development].map(({ path }) => path))
+  const componentSources = [...modules.values()].filter(({ path }) => !alreadySelected.has(path))
+    .sort((a, b) => modulePriority(a.module) - modulePriority(b.module) || compareFiles(a, b))
+  return [...overview, ...componentSources.slice(0, 8), ...development]
 }
 
 export function excerpt(buffer) {
@@ -242,15 +304,15 @@ export async function collectGithubSource(repositoryUrl, { signal } = {}) {
   const ref = `${rawBase}/${owner}/${repo}/${commit}`
   const files = []
   for (let index = 0; index < candidates.length; index += batchSize) {
-    const batch = await Promise.all(candidates.slice(index, index + batchSize).map(async ({ path }) => {
+    const batch = await Promise.all(candidates.slice(index, index + batchSize).map(async ({ path, group, module }) => {
       const encodedPath = path.split('/').map(encodeURIComponent).join('/')
       const bytes = await readGitHub(`${ref}/${encodedPath}`, requestSignal, { raw: true, bytes: maxBlobBytes })
-      return { path, text: bytes ? excerpt(bytes) : '' }
+      return { path, text: bytes ? excerpt(bytes) : '', group, ...(module && { module }) }
     }))
     files.push(...batch.filter(file => file.text))
   }
   if (!files.length) {
-    throw sourceError('repository-no-evidence', '该提交中没有找到可读取的项目文档、构建配置或 GitHub Actions 工作流。')
+    throw sourceError('repository-no-evidence', '该提交中没有找到可读取的源码、项目文档或开发配置。')
   }
   return { owner, repo, commit, files }
 }

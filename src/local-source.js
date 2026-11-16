@@ -9,7 +9,7 @@ import { excerpt, maxBlobBytes, selectFiles } from './github-source.js'
 const runGit = promisify(execFile)
 const maxTreeBytes = 12 * 1024 * 1024
 const readTimeout = 30_000
-const batchSize = 3
+const batchSize = 5
 const gitObjectId = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 
 function sourceError(code, message) {
@@ -102,7 +102,7 @@ function parseTree(output) {
   return tree
 }
 
-async function readFile(root, git, { path, sha }) {
+async function readFile(root, git, { path, sha, group, module }) {
   let size
   try {
     size = Number(await git(root, ['cat-file', '-s', sha]))
@@ -111,11 +111,19 @@ async function readFile(root, git, { path, sha }) {
     if (error.code === 128) return null
     throw error
   }
-  if (!Number.isSafeInteger(size) || size < 1 || size > maxBlobBytes) return null
-  const content = await git(root, ['cat-file', 'blob', sha], { encoding: 'buffer', maxBuffer: maxBlobBytes })
-  if (content.length !== size) throw readFailed()
+  if (!Number.isSafeInteger(size) || size < 1) return null
+  let content
+  try {
+    content = await git(root, ['cat-file', 'blob', sha], { encoding: 'buffer', maxBuffer: maxBlobBytes })
+    if (content.length !== size) throw readFailed()
+  } catch (error) {
+    // execFile terminates a larger Git read at the byte cap and returns its prefix.
+    if (size <= maxBlobBytes || error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      || !Buffer.isBuffer(error.stdout) || error.stdout.length !== maxBlobBytes) throw error
+    content = error.stdout.subarray(0, error.stdout.lastIndexOf(10) + 1)
+  }
   const text = excerpt(content)
-  return text ? { path, text } : null
+  return text ? { path, text, group, ...(module && { module }) } : null
 }
 
 export async function collectLocalSource(repositoryPath, { signal } = {}) {
@@ -136,6 +144,6 @@ export async function collectLocalSource(repositoryPath, { signal } = {}) {
   } catch {
     throw readFailed()
   }
-  if (!files.length) throw noEvidence('当前提交没有可读取的开发文档、构建配置或工作流。')
+  if (!files.length) throw noEvidence('当前提交没有可读取的源码、项目文档或开发配置。')
   return { repositoryPath: root, repo: basename(root), commit, files }
 }

@@ -3,7 +3,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
-    const { createElement: h, useEffect, useId, useSyncExternalStore } = React
+    const { createElement: h, useEffect, useId, useRef, useSyncExternalStore } = React
     const { Button, IconCodeOutlineRegular, Input, MarkdownText } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const panelId = 'dsh-code-wiki'
@@ -16,6 +16,30 @@ window.__ModuleLoader__.load({
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
     }
+    const layoutStyles = `
+      .dsh-code-wiki-columns {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 24px;
+      }
+      .dsh-code-wiki-sidebar {
+        min-width: 0;
+      }
+      @container dsh-code-wiki (min-width: 640px) {
+        .dsh-code-wiki-columns {
+          grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+          gap: clamp(22px, 4vw, 44px);
+          align-items: start;
+        }
+        .dsh-code-wiki-sidebar {
+          position: sticky;
+          inset-block-start: 12px;
+          max-block-size: 72vh;
+          overflow-y: auto;
+          padding-inline-end: 6px;
+        }
+      }
+    `
 
     function resolveLocalReferences(markdown) {
       const reference = /\]\(https:\/\/dsh-code-wiki\.invalid\/source(\?key=[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}&file=\d+&start=\d+&end=\d+)\)/gi
@@ -47,12 +71,39 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    function splitChapters(markdown) {
+      const lines = markdown.split(/\r?\n/)
+      const headings = []
+      let fence = null
+      for (const [index, line] of lines.entries()) {
+        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+        if (fence) {
+          if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null
+          continue
+        }
+        if (marker) {
+          fence = marker[1]
+          continue
+        }
+        const title = /^ {0,3}##[ \t]+(.+)$/.exec(line)?.[1].replace(/[ \t]+#+[ \t]*$/, '').trim()
+        if (title) headings.push({ title, index })
+      }
+      if (!headings.length) return [{ title: '正文', markdown }]
+
+      const preamble = lines.slice(0, headings[0].index).join('\n').trimEnd()
+      return headings.map(({ title, index }, i) => {
+        const chapter = lines.slice(index, headings[i + 1]?.index).join('\n')
+        return { title, markdown: preamble ? preamble + '\n\n' + chapter : chapter }
+      })
+    }
+
     function readDocument(data) {
       const metadata = documentMetadata(data)
       if (!metadata || typeof data.markdown !== 'string' || !data.markdown.trim()) return null
+      const markdown = metadata.source === 'local' ? resolveLocalReferences(data.markdown) : data.markdown
       return {
         ...metadata,
-        markdown: metadata.source === 'local' ? resolveLocalReferences(data.markdown) : data.markdown,
+        chapters: splitChapters(markdown),
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
       }
@@ -89,6 +140,7 @@ window.__ModuleLoader__.load({
         repositoryUrl: '',
         repositoryPath: '',
         result: null,
+        chapterIndex: 0,
         error: '',
         loading: false,
         picking: false,
@@ -175,7 +227,7 @@ window.__ModuleLoader__.load({
           const data = await response.json()
           const result = response.ok && readDocument(data)
           if (!result || result.id !== id) throw new Error(documentLoadError)
-          if (revision === readerRevision && !controller.signal.aborted) update({ result })
+          if (revision === readerRevision && !controller.signal.aborted) update({ result, chapterIndex: 0 })
         } catch {
           if (revision === readerRevision && !controller.signal.aborted) update({ historyError: documentLoadError })
         } finally {
@@ -219,7 +271,7 @@ window.__ModuleLoader__.load({
           }
           update({
             documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
-            ...(revision === readerRevision && { result }),
+            ...(revision === readerRevision && { result, chapterIndex: 0 }),
           })
         } catch {
           if (!controller.signal.aborted) update({ error: generationError })
@@ -246,6 +298,9 @@ window.__ModuleLoader__.load({
         loadHistory,
         openDocument,
         generate,
+        selectChapter(chapterIndex) {
+          if (snapshot.result?.chapters[chapterIndex] && chapterIndex !== snapshot.chapterIndex) update({ chapterIndex })
+        },
         dispose() {
           disposed = true
           activeRequest?.abort()
@@ -256,14 +311,33 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function ChapterDirectory({ chapters, chapterIndex, selectChapter }) {
+      const titleId = useId()
+      return h('nav', { 'aria-labelledby': titleId, style: { marginBlockEnd: 24 } },
+        h('h2', { id: titleId, style: { marginBlock: '0 8px', fontSize: '1rem' } }, '章节目录'),
+        h('ul', { style: { display: 'grid', gap: 2, margin: 0, padding: 0, listStyle: 'none' } },
+          ...chapters.map(({ title }, index) => h('li', { key: index },
+            h(Button, {
+              type: 'button',
+              'aria-current': index === chapterIndex ? 'true' : undefined,
+              onClick: () => selectChapter(index),
+              style: {
+                width: '100%', height: 'auto', minHeight: 36, padding: '6px 10px', justifyContent: 'start',
+                textAlign: 'start', overflowWrap: 'anywhere',
+                ...(index === chapterIndex && {
+                  background: 'var(--dsw-alias-interactive-bg-active)', fontWeight: 600,
+                }),
+              },
+            }, title),
+          )),
+        ),
+      )
+    }
+
     function DocumentHistory({ wiki, documents, historyStatus, historyError, openingId, activeId }) {
       const titleId = useId()
       const groups = groupDocuments(documents)
-      return h('aside', {
-        'aria-labelledby': titleId,
-        style: { flex: '1 1 225px', minWidth: 0, overflowWrap: 'anywhere' },
-      },
-      h('h2', { id: titleId, style: { marginBlock: '0 10px', fontSize: '1rem' } }, '已保存文档'),
+      const content = h('div', { style: { overflowWrap: 'anywhere' } },
       (historyStatus === 'idle' || historyStatus === 'loading') && !documents.length
         ? h('p', { role: 'status' }, '正在读取历史…') : null,
       historyStatus === 'ready' && !documents.length && h('p', null, '暂无已保存文档。'),
@@ -292,33 +366,51 @@ window.__ModuleLoader__.load({
           )),
         )),
       ))
+      if (activeId) {
+        return h('details', null,
+          h('summary', { style: { cursor: 'pointer', fontWeight: 600, marginBlock: '0 10px' } }, '已保存文档'),
+          content,
+        )
+      }
+      return h('section', { 'aria-labelledby': titleId },
+        h('h2', { id: titleId, style: { marginBlock: '0 10px', fontSize: '1rem' } }, '已保存文档'),
+        content,
+      )
     }
 
     function CodeWikiPage({ wiki }) {
-      const { source, repositoryUrl, repositoryPath, result, error, loading, picking, browserOpen,
+      const { source, repositoryUrl, repositoryPath, result, chapterIndex, error, loading, picking, browserOpen,
         documents, historyStatus, historyError, openingId } =
         useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
       const sourceId = useId()
+      const reader = useRef(null)
       const local = source === 'local'
       const ready = local ? Boolean(repositoryPath) : Boolean(repositoryUrl.trim())
       useEffect(() => { void wiki.loadHistory() }, [wiki])
+      const documentId = result?.id
+      useEffect(() => {
+        if (documentId) reader.current?.scrollIntoView({ block: 'start', inline: 'nearest' })
+      }, [documentId, chapterIndex])
 
       return h('section', {
         'aria-label': panelTitle,
         style: { flex: 1, minHeight: 0, minWidth: 0, overflow: 'auto' },
-      }, h('div', {
+      }, h('style', null, layoutStyles), h('div', {
         style: {
           boxSizing: 'border-box',
           marginInline: 'auto',
-          maxWidth: 1120,
-          padding: 'clamp(20px, 5vw, 56px)',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '20px clamp(18px, 4vw, 40px)',
+          maxWidth: 1200,
+          padding: 'clamp(20px, 4vw, 48px)',
+          containerType: 'inline-size',
+          containerName: 'dsh-code-wiki',
         },
       },
-      h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: result?.id }),
-      h('article', { style: { flex: '3 1 420px', minWidth: 0 } },
+      h('div', { className: 'dsh-code-wiki-columns' },
+      h('aside', { className: 'dsh-code-wiki-sidebar' },
+        result && h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter }),
+        h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId }),
+      ),
+      h('div', { style: { minWidth: 0 } },
       h('form', {
         onSubmit: event => {
           event.preventDefault()
@@ -378,26 +470,33 @@ window.__ModuleLoader__.load({
         onPick: wiki.selectFolder,
         onClose: wiki.closeBrowser,
       }),
-      (loading || picking || result) && h('div', { role: 'status', style: { marginBlock: '12px 24px' } },
-        loading && '正在读取仓库并生成文档…',
-        picking && '正在打开文件夹选择器…',
-        result?.source === 'local' && h('span', { title: result.repositoryPath },
+      (loading || picking) && h('p', { role: 'status', style: { marginBlock: '12px' } },
+        picking ? '正在打开文件夹选择器…' : '正在读取仓库并生成文档…'),
+      error && h('p', {
+        role: 'alert',
+        style: { color: 'var(--dsw-alias-label-error)', marginBlockEnd: 16 },
+      }, error),
+      result && h('article', {
+        ref: reader,
+        'aria-label': '文档正文',
+        style: { marginBlockStart: 24, scrollMarginBlockStart: 12 },
+      },
+      h('div', {
+        style: { fontSize: '0.875rem', color: 'var(--dsw-alias-label-secondary)', marginBlockEnd: 16, overflowWrap: 'anywhere' },
+      },
+        result.source === 'local' && h('span', { title: result.repositoryPath },
           repositoryLabel(result),
           ' · 固定提交 ', h('code', { title: result.commit }, result.commit.slice(0, 12))),
-        result?.source === 'github' && h('a', {
+        result.source === 'github' && h('a', {
           href: `${result.repoUrl}/commit/${result.commit}`,
           target: '_blank',
           rel: 'noreferrer',
           title: result.commit,
         }, repositoryLabel(result), ' · 固定提交 ', h('code', null, result.commit.slice(0, 12))),
-        !loading && typeof result?.model === 'string' && ' · ' + result.model,
-        !loading && typeof result?.note === 'string' && h('p', { style: { marginBlock: '8px 0' } }, result.note),
+        result.model && ' · ' + result.model,
+        result.note && h('p', { style: { marginBlock: '8px 0' } }, result.note),
       ),
-      error && h('p', {
-        role: 'alert',
-        style: { color: 'var(--dsw-alias-label-error)', marginBlockEnd: 16 },
-      }, error),
-      result && h(MarkdownText, { text: result.markdown, labels, omitHtml: true }))))
+      h(MarkdownText, { text: result.chapters[chapterIndex].markdown, labels, omitHtml: true }))))))
     }
 
     return {
