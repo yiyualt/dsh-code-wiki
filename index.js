@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { readConfiguredModel } from './src/configured-model.js'
 import { collectGithubSource } from './src/github-source.js'
 import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
 import { collectLocalSource } from './src/local-source.js'
+import { createWikiStorage } from './src/wiki-storage.js'
 
 export const name = 'dsh-code-wiki'
-export const inject = ['connection', 'llm', 'agentDefaultModel']
+export const inject = ['connection', 'llm', 'agentDefaultModel', 'profileContext']
 
 const generateRoute = '/api/dsh-code-wiki/generate'
 const sourceRoute = '/api/dsh-code-wiki/source'
+const documentsRoute = '/api/dsh-code-wiki/documents'
 const sourceErrors = new Map([
   ['invalid-repository-url', 400],
   ['repository-unavailable', 404],
@@ -20,27 +23,34 @@ const sourceErrors = new Map([
   ['local-read-failed', 422],
 ])
 
-function localSourceResponse(request, documents) {
-  const query = new URL(request.url).searchParams
-  const document = documents.get(query.get('key'))
-  const [file, start, end] = ['file', 'start', 'end'].map(name => Number(query.get(name)))
-  const evidence = document?.files[file - 1]
-  const lines = evidence?.text.replace(/\r?\n$/, '').split('\n')
-  if (!evidence || ![file, start, end].every(Number.isInteger) || start < 1 || end < start
-    || end - start > 24 || end > lines.length) {
-    return new Response('这条源码引用不可用。请在代码百科重新生成。', {
-      status: 404,
-      headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
-    })
-  }
-  const excerpt = lines.slice(start - 1, end).map((line, i) => `${start + i} | ${line}`).join('\n')
-  return new Response(`${evidence.path}\nCommit ${document.commit}\n\n${excerpt}\n`, {
+function plainText(body, status = 200) {
+  return new Response(body, {
+    status,
     headers: {
       'content-type': 'text/plain; charset=utf-8',
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
     },
   })
+}
+
+async function localSourceResponse(request, storage) {
+  const query = new URL(request.url).searchParams
+  const [file, start, end] = ['file', 'start', 'end'].map(name => Number(query.get(name)))
+  const missing = '找不到这条源码引用。'
+  if (![file, start, end].every(Number.isInteger) || file < 1 || start < 1 || end < start || end - start > 24) {
+    return plainText(missing, 404)
+  }
+  try {
+    const document = await storage.get(query.get('key'))
+    const evidence = document?.files?.[file - 1]
+    const lines = evidence?.text.replace(/\r?\n$/, '').split('\n')
+    if (!lines || end > lines.length) return plainText(missing, 404)
+    const excerpt = lines.slice(start - 1, end).map((line, i) => `${start + i} | ${line}`).join('\n')
+    return plainText(`${evidence.path}\nCommit ${document.commit}\n\n${excerpt}\n`)
+  } catch {
+    return plainText('无法读取本地源码引用。', 500)
+  }
 }
 
 function modelNote(error) {
@@ -65,17 +75,38 @@ function json(data, status = 200) {
   return Response.json(data, { status, headers: { 'cache-control': 'no-store' } })
 }
 
+function withoutEvidence({ files, ...document }) {
+  return document
+}
+
+async function documentsResponse(request, storage) {
+  const id = new URL(request.url).searchParams.get('id')
+  try {
+    if (id === null) return json({ documents: await storage.list() })
+    const document = await storage.get(id)
+    return document ? json(withoutEvidence(document)) : json({ error: '找不到这篇文档。' }, 404)
+  } catch {
+    return json({ error: '无法读取已保存的文档。请重试。' }, 500)
+  }
+}
+
 export function apply(ctx, config) {
   const lifetime = new AbortController()
-  const localDocuments = new Map()
+  const storage = createWikiStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'documents'))
   let active = false
 
   ctx.effect(() => () => lifetime.abort())
   ctx.connection.fetch.register({
+    path: documentsRoute,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: request => documentsResponse(request, storage),
+  })
+  ctx.connection.fetch.register({
     path: sourceRoute,
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: async request => localSourceResponse(request, localDocuments),
+    fetch: request => localSourceResponse(request, storage),
   })
   ctx.connection.fetch.register({
     path: generateRoute,
@@ -101,8 +132,8 @@ export function apply(ctx, config) {
         const source = github
           ? await collectGithubSource(body.repositoryUrl, { signal })
           : await collectLocalSource(body.repositoryPath, { signal })
-        const sourceKey = local ? randomUUID() : undefined
-        if (sourceKey) source.sourceKey = sourceKey
+        const id = randomUUID()
+        if (local) source.sourceKey = id
         let markdown
         let note
         let model
@@ -115,18 +146,23 @@ export function apply(ctx, config) {
           markdown = renderSourceWiki(source)
           note = modelNote(error)
         }
-        if (sourceKey) {
-          localDocuments.set(sourceKey, source)
-          if (localDocuments.size > 8) localDocuments.delete(localDocuments.keys().next().value)
-        }
-        return json({
+        signal.throwIfAborted()
+        const document = {
+          id,
+          createdAt: new Date().toISOString(),
+          source: github ? 'github' : 'local',
           ...(github ? { repoUrl: `https://github.com/${source.owner}/${source.repo}` }
-            : { repositoryPath: source.repositoryPath, repoName: source.repo }),
+            : { repositoryPath: source.repositoryPath, repoName: source.repo, files: source.files }),
           commit: source.commit,
           markdown,
           model,
           note,
-        })
+        }
+        try {
+          return json(withoutEvidence(await storage.save(document)))
+        } catch {
+          return json({ error: '文档已生成，但保存失败。请检查 DSH 数据目录是否可写。' }, 500)
+        }
       } catch (error) {
         if (timeout.aborted) return json({ error: '生成超时，请重试。' }, 504)
         if (signal.aborted) return json({ error: '生成已取消。' }, 503)
