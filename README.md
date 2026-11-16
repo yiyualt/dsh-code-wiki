@@ -8,7 +8,7 @@ DeepSeek Harness Web 插件。在侧栏打开「代码百科」，选择公开 G
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.3.0.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.3.1.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
@@ -16,10 +16,11 @@ dsh plugin --profile web add ./dsh-code-wiki-0.3.0.tgz
 ## 试用
 
 1. 确认 DSH 的默认模型或插件单独配置的模型可用。
-2. 选择「GitHub」，输入 `https://github.com/openai/codex`。也可以选「本地 Git 仓库」，输入你已克隆的仓库绝对路径。
+2. 选择「GitHub 地址」并输入公开仓库地址，或在「本地仓库」中点击「选择文件夹」，选中已克隆的仓库。
 3. 点击文中各条源码引用，查看该 commit 对应的文件和行号。
 
 本地模式读取当前 `HEAD` 中已提交的文件。它会把选取的文件片段发给所选模型，本地引用由当前 DSH 实例显示。
+在同一个 DSH 标签页内切换面板时，生成任务会继续运行，输入和结果会保留。
 
 ## 选择本地模型配置
 
@@ -32,7 +33,3 @@ dsh plugin --profile web add ./dsh-code-wiki-0.3.0.tgz
 ```
 
 插件从该文件的 `judge` 项读取 Chat Completions 端点、模型和凭据。
-
-## 修改示例
-
-编辑 [src/example.md](src/example.md)，然后运行 `npm pack`。打包时会把 Markdown 编入浏览器入口，由 DSH 的 Markdown 组件渲染。

@@ -1,12 +1,13 @@
 window.__ModuleLoader__.load({
   id: 'dsh-code-wiki',
   factory(require) {
-    const { createElement: h, useEffect, useId, useRef, useState } = require('react')
-    const { Button, IconCodeOutlineRegular, Input, MarkdownText } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const React = require('react')
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { createElement: h, useId, useSyncExternalStore } = React
+    const { Button, IconCodeOutlineRegular, Input, MarkdownText } = primitives
+    const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
-    const example = '__EXAMPLE_MARKDOWN__'
-    const exampleRepository = 'https://github.com/openai/codex'
     const generationError = '生成失败，请稍后重试。'
     const labels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
@@ -26,42 +27,60 @@ window.__ModuleLoader__.load({
       return h(IconCodeOutlineRegular, { size })
     }
 
-    function CodeWikiPage() {
-      const [source, setSource] = useState('github')
-      const [repositoryUrl, setRepositoryUrl] = useState(exampleRepository)
-      const [repositoryPath, setRepositoryPath] = useState('')
-      const [result, setResult] = useState(null)
-      const [error, setError] = useState('')
-      const [loading, setLoading] = useState(false)
-      const activeRequest = useRef(null)
-      const sourceId = useId()
-      const localNoteId = useId()
-      const local = source === 'local'
-      const input = local ? repositoryPath : repositoryUrl
+    function createWikiStore(workspace, pickDirectory) {
+      let snapshot = {
+        source: 'github',
+        repositoryUrl: '',
+        repositoryPath: '',
+        result: null,
+        error: '',
+        loading: false,
+        picking: false,
+        browserOpen: false,
+      }
+      let activeRequest
+      let disposed = false
+      const listeners = new Set()
 
-      function changeSource(event) {
-        setSource(event.target.value)
-        setResult(null)
-        setError('')
+      function update(patch) {
+        if (disposed) return
+        snapshot = { ...snapshot, ...patch }
+        for (const listener of listeners) listener()
       }
 
-      useEffect(() => () => {
-        activeRequest.current?.abort()
-        activeRequest.current = null
-      }, [])
+      function selectFolder(path) {
+        const changed = path !== snapshot.repositoryPath
+        update({ repositoryPath: path, browserOpen: false, error: '', ...(changed && { result: null }) })
+      }
 
-      async function generate(event) {
-        event.preventDefault()
-        const location = input.trim()
-        if (!location || activeRequest.current) return
+      async function chooseFolder() {
+        if (disposed || snapshot.loading || snapshot.picking || snapshot.browserOpen) return
+        update({ picking: true, error: '' })
+        try {
+          const result = await pickDirectory()
+          if (result.ok) {
+            if (result.value) selectFolder(result.value)
+          } else if (result.error.code === 'directory-picker/unavailable') {
+            update({ browserOpen: true })
+          } else {
+            update({ error: '无法打开文件夹选择器，请重试。' })
+          }
+        } catch {
+          update({ error: '无法打开文件夹选择器，请重试。' })
+        } finally {
+          update({ picking: false })
+        }
+      }
+
+      async function generate() {
+        if (disposed || activeRequest || snapshot.picking || snapshot.browserOpen) return
+        const local = snapshot.source === 'local'
+        const location = local ? snapshot.repositoryPath : snapshot.repositoryUrl.trim()
+        if (!location) return
         const request = local ? { repositoryPath: location } : { repositoryUrl: location }
-
         const controller = new AbortController()
-        activeRequest.current = controller
-        setResult(null)
-        setError('')
-        setLoading(true)
-
+        activeRequest = controller
+        update({ result: null, error: '', loading: true })
         try {
           const response = await fetch(new URL('api/dsh-code-wiki/generate', document.baseURI), {
             method: 'POST',
@@ -74,7 +93,7 @@ window.__ModuleLoader__.load({
           if (controller.signal.aborted) return
 
           if (!response.ok) {
-            setError(typeof data?.error === 'string' && data.error ? data.error : generationError)
+            update({ error: typeof data?.error === 'string' && data.error ? data.error : generationError })
             return
           }
           const validSource = local
@@ -82,19 +101,47 @@ window.__ModuleLoader__.load({
             : typeof data?.repoUrl === 'string' && /^https:\/\/github\.com\/[a-z\d-]+\/[\w.-]+$/i.test(data.repoUrl)
           if (!validSource || typeof data.markdown !== 'string' || !data.markdown.trim()
             || typeof data.commit !== 'string' || !/^(?:[\da-f]{40}|[\da-f]{64})$/i.test(data.commit)) {
-            setError(generationError)
+            update({ error: generationError })
             return
           }
-          setResult({ ...data, markdown: local ? resolveLocalReferences(data.markdown) : data.markdown })
+          update({ result: { ...data, markdown: local ? resolveLocalReferences(data.markdown) : data.markdown } })
         } catch {
-          if (!controller.signal.aborted) setError(generationError)
+          if (!controller.signal.aborted) update({ error: generationError })
         } finally {
-          if (activeRequest.current === controller) {
-            activeRequest.current = null
-            setLoading(false)
-          }
+          activeRequest = undefined
+          update({ loading: false })
         }
       }
+
+      return {
+        getSnapshot: () => snapshot,
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        changeSource(source) {
+          if (!snapshot.loading && !snapshot.picking && !snapshot.browserOpen) update({ source, result: null, error: '' })
+        },
+        setRepositoryUrl: repositoryUrl => update({ repositoryUrl }),
+        chooseFolder,
+        selectFolder,
+        closeBrowser: () => update({ browserOpen: false }),
+        listDirectory: (path, signal) => workspace.listDirectory(path, signal),
+        generate,
+        dispose() {
+          disposed = true
+          activeRequest?.abort()
+          listeners.clear()
+        },
+      }
+    }
+
+    function CodeWikiPage({ wiki }) {
+      const { source, repositoryUrl, repositoryPath, result, error, loading, picking, browserOpen } =
+        useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
+      const sourceId = useId()
+      const local = source === 'local'
+      const ready = local ? Boolean(repositoryPath) : Boolean(repositoryUrl.trim())
 
       return h('section', {
         'aria-label': panelTitle,
@@ -108,45 +155,67 @@ window.__ModuleLoader__.load({
         },
       },
       h('form', {
-        onSubmit: generate,
+        onSubmit: event => {
+          event.preventDefault()
+          void wiki.generate()
+        },
         style: { display: 'flex', alignItems: 'end', flexWrap: 'wrap', gap: 8 },
       },
       h('fieldset', {
-        disabled: loading,
+        disabled: loading || picking || browserOpen,
         style: { border: 0, padding: 0, margin: '0 0 4px', flexBasis: '100%' },
       },
       h('legend', null, '仓库来源'),
       h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBlockStart: 4 } },
         ...[['github', 'GitHub 地址'], ['local', '本地仓库']].map(([value, label]) =>
           h('label', { key: value, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
-            h('input', { type: 'radio', name: sourceId, value, checked: source === value, onChange: changeSource }),
+            h('input', {
+              type: 'radio', name: sourceId, value, checked: source === value,
+              onChange: () => wiki.changeSource(value),
+            }),
             label,
           ),
         ),
       )),
-      h('label', {
+      local ? h('div', {
         style: { display: 'grid', gap: 6, flex: '1 1 240px', minWidth: 0 },
       },
-      local ? '本地 Git 仓库绝对路径' : '公开 GitHub 仓库地址',
+      '本地 Git 仓库',
+      h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 } },
+        h(Button, {
+          type: 'button', disabled: loading || picking || browserOpen,
+          onClick: () => void wiki.chooseFolder(),
+        }, repositoryPath ? '更换文件夹' : '选择文件夹'),
+        repositoryPath && h('span', { title: repositoryPath, style: { overflowWrap: 'anywhere' } }, repositoryPath),
+      )) : h('label', {
+        style: { display: 'grid', gap: 6, flex: '1 1 240px', minWidth: 0 },
+      },
+      '公开 GitHub 仓库地址',
       h(Input, {
-        type: local ? 'text' : 'url',
-        name: local ? 'repositoryPath' : 'repositoryUrl',
-        value: input,
-        onChange: event => (local ? setRepositoryPath : setRepositoryUrl)(event.target.value),
-        placeholder: local ? '/Users/yourname/projects/my-repo' : undefined,
-        'aria-describedby': local ? localNoteId : undefined,
+        type: 'url',
+        name: 'repositoryUrl',
+        value: repositoryUrl,
+        onChange: event => wiki.setRepositoryUrl(event.target.value),
         required: true,
         disabled: loading,
         autoComplete: 'off',
         spellCheck: false,
       })),
-      h(Button, { type: 'submit', variant: 'primary', disabled: loading }, '生成文档'),
+      h(Button, {
+        type: 'submit', variant: 'primary',
+        disabled: !ready || loading || picking || browserOpen,
+      }, '生成文档'),
       local && h('p', {
-        id: localNoteId,
         style: { flexBasis: '100%', margin: 0, color: 'var(--dsw-alias-label-secondary)' },
       }, '只读取当前 HEAD 提交中的 Git 跟踪文件。选中的源码片段会发送给已配置的模型。')),
-      h('div', { role: 'status', style: { marginBlock: '12px 24px' } },
+      local && browserOpen && h(FolderBrowser, {
+        listDirectory: wiki.listDirectory,
+        onPick: wiki.selectFolder,
+        onClose: wiki.closeBrowser,
+      }),
+      (loading || picking || result) && h('div', { role: 'status', style: { marginBlock: '12px 24px' } },
         loading && '正在读取仓库并生成文档…',
+        picking && '正在打开文件夹选择器…',
         result && local && h('span', null,
           typeof result.repoName === 'string' && result.repoName ? result.repoName : result.repositoryPath,
           ' · 固定提交 ', h('code', { title: result.commit }, result.commit.slice(0, 12))),
@@ -163,16 +232,19 @@ window.__ModuleLoader__.load({
         role: 'alert',
         style: { color: 'var(--dsw-alias-label-error)', marginBlockEnd: 16 },
       }, error),
-      !loading && !error && h(MarkdownText, { text: result?.markdown ?? example, labels, omitHtml: true })))
+      result && h(MarkdownText, { text: result.markdown, labels, omitHtml: true })))
     }
 
     return {
       name: panelId,
-      inject: ['slots'],
+      inject: ['slots', 'uiWorkspace', 'remote', 'remote.directoryPicker'],
       apply(ctx) {
+        const wiki = createWikiStore(ctx.uiWorkspace, () => ctx.remote.directoryPicker.pick())
+        ctx.effect(() => () => wiki.dispose())
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: panelId,
+          inject: () => ({ wiki }),
         }, CodeWikiPage))
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist',
