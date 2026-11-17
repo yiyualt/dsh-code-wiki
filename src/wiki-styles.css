@@ -36,6 +36,31 @@
   margin-block-end: 24px;
 }
 
+.dsh-code-wiki-page[data-reading] {
+  scroll-padding-block-start: 88px;
+}
+
+.dsh-code-wiki-page[data-reading] .dsh-code-wiki-bar {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--wiki-canvas);
+}
+
+.dsh-code-wiki-bar .dsh-code-wiki-back {
+  flex: none;
+  gap: 5px;
+  padding-inline: 7px 10px;
+  border-radius: 8px;
+  color: var(--wiki-accent-ink);
+  font-weight: 625;
+  white-space: nowrap;
+}
+
+.dsh-code-wiki-bar .dsh-code-wiki-back:hover {
+  background: var(--wiki-accent-fill);
+}
+
 .dsh-code-wiki-brand {
   display: inline-flex;
   align-items: center;
@@ -595,6 +620,10 @@ a.dsh-code-wiki-revision:hover {
     max-block-size: calc(100vh - 126px);
     overflow-y: auto;
     padding: 15px 10px;
+  }
+
+  .dsh-code-wiki-page[data-reading] .dsh-code-wiki-sidebar {
+    inset-block-start: 94px;
   }
 
   .dsh-code-wiki-chapter-list {

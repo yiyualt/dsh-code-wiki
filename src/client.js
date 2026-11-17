@@ -4,7 +4,10 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const { createElement: h, useEffect, useId, useRef, useSyncExternalStore } = React
-    const { Button, IconBranchOutlineRegular, IconCodeOutlineRegular, IconPlusOutlineRegular, Input, MarkdownText } = primitives
+    const {
+      Button, IconBranchOutlineRegular, IconChevronLeftOutlineRegular, IconCodeOutlineRegular,
+      IconPlusOutlineRegular, Input, MarkdownText,
+    } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
@@ -126,6 +129,7 @@ window.__ModuleLoader__.load({
         repositoryPath: '',
         formOpen: false,
         result: null,
+        returnDocumentId: null,
         chapterIndex: 0,
         error: '',
         loading: false,
@@ -224,6 +228,21 @@ window.__ModuleLoader__.load({
         }
       }
 
+      function returnToHistory() {
+        if (disposed || !snapshot.result) return
+        readerRevision++
+        openRequest?.abort()
+        openRequest = undefined
+        update({
+          result: null,
+          returnDocumentId: snapshot.result.id,
+          chapterIndex: 0,
+          formOpen: false,
+          historyError: '',
+          openingId: null,
+        })
+      }
+
       async function generate() {
         if (disposed || activeRequest || snapshot.picking || snapshot.browserOpen) return
         const local = snapshot.source === 'local'
@@ -287,6 +306,7 @@ window.__ModuleLoader__.load({
         listDirectory: (path, signal) => workspace.listDirectory(path, signal),
         loadHistory,
         openDocument,
+        returnToHistory,
         generate,
         selectChapter(chapterIndex) {
           if (snapshot.result?.chapters[chapterIndex] && chapterIndex !== snapshot.chapterIndex) update({ chapterIndex })
@@ -318,9 +338,16 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function DocumentHistory({ wiki, documents, historyStatus, historyError, openingId, activeId }) {
+    function DocumentHistory({ wiki, documents, historyStatus, historyError, openingId, activeId, returnDocumentId }) {
       const titleId = useId()
+      const returnedItem = useRef(null)
       const groups = groupDocuments(documents)
+      const selectedId = activeId ?? returnDocumentId
+      const selectedGroup = groups.find(group => group.entries.some(item => item.id === selectedId)) ?? groups[0]
+      useEffect(() => {
+        returnedItem.current?.focus()
+      }, [activeId, returnDocumentId])
+
       const content = h('div', null,
         (historyStatus === 'idle' || historyStatus === 'loading') && !documents.length
           ? h('p', { role: 'status' }, '正在读取历史…') : null,
@@ -328,14 +355,15 @@ window.__ModuleLoader__.load({
         historyStatus === 'error' && h('div', { role: 'alert' },
           h('p', null, historyLoadError),
           h(Button, { type: 'button', size: 'sm', onClick: () => void wiki.loadHistory() }, '重试')),
-        groups.map(({ key, label, path, entries }, index) => h('details', {
-          key, open: index === 0 || undefined, className: 'dsh-code-wiki-history-group',
+        groups.map(({ key, label, path, entries }) => h('details', {
+          key, open: key === selectedGroup?.key || undefined, className: 'dsh-code-wiki-history-group',
         },
         h('summary', { title: path }, label),
         path && path !== label && h('p', { className: 'dsh-code-wiki-history-path' }, path),
         h('ul', { className: 'dsh-code-wiki-history-list' },
           entries.map(item => h('li', { key: item.id },
             h('button', {
+              ref: !activeId && returnDocumentId === item.id ? returnedItem : undefined,
               type: 'button',
               className: 'dsh-code-wiki-history-item',
               disabled: openingId === item.id,
@@ -472,7 +500,7 @@ window.__ModuleLoader__.load({
     function CodeWikiPage({ wiki }) {
       const snapshot = useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
       const { result, chapterIndex, formOpen, loading, picking, browserOpen,
-        documents, historyStatus, historyError, openingId } = snapshot
+        documents, historyStatus, historyError, openingId, returnDocumentId } = snapshot
       const formId = useId()
       const page = useRef(null)
       const documentId = result?.id
@@ -483,11 +511,18 @@ window.__ModuleLoader__.load({
         if (documentId && page.current) page.current.scrollTop = 0
       }, [documentId, chapterIndex])
 
-      return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', ref: page },
+      return h('section', {
+        'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': result ? '' : undefined, ref: page,
+      },
         h('style', null, codeWikiStyles),
         h('div', { className: 'dsh-code-wiki-shell' },
           h('header', { className: 'dsh-code-wiki-bar' },
-            h('div', { className: 'dsh-code-wiki-brand' },
+            result ? h(Button, {
+              className: 'dsh-code-wiki-back',
+              type: 'button',
+              icon: h(IconChevronLeftOutlineRegular, { size: 16 }),
+              onClick: wiki.returnToHistory,
+            }, '返回文档列表') : h('div', { className: 'dsh-code-wiki-brand' },
               h('span', { className: 'dsh-code-wiki-brand-icon', 'aria-hidden': true }, h(CodeWikiIcon, { size: 18 })),
               h('span', null, panelTitle),
             ),
@@ -505,7 +540,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsh-code-wiki-columns' },
             h('aside', { className: 'dsh-code-wiki-sidebar' },
               result && h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter }),
-              h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId }),
+              h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId, returnDocumentId }),
             ),
             h('div', { className: 'dsh-code-wiki-main' },
               showForm && h(GenerationForm, { wiki, formId, ...snapshot }),
