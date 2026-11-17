@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { readConfiguredModel } from './src/configured-model.js'
 import { collectGithubSource } from './src/github-source.js'
 import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
@@ -10,6 +10,7 @@ export const name = 'dsh-code-wiki'
 export const inject = ['connection', 'llm', 'agentDefaultModel', 'profileContext']
 
 const generateRoute = '/api/dsh-code-wiki/generate'
+const generationRoute = '/api/dsh-code-wiki/generation'
 const sourceRoute = '/api/dsh-code-wiki/source'
 const documentsRoute = '/api/dsh-code-wiki/documents'
 const sourceErrors = new Map([
@@ -93,9 +94,83 @@ async function documentsResponse(request, storage) {
 export function apply(ctx, config) {
   const lifetime = new AbortController()
   const storage = createWikiStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'documents'))
-  let active = false
+  const jobs = new Map()
+  let active
+
+  function progress(job) {
+    if (!job) return null
+    const { startedAt, finishedAt, ...status } = job
+    return { ...status, elapsedMs: Math.max(0, (finishedAt ?? Date.now()) - startedAt) }
+  }
+
+  async function runGeneration(job, body, github, requestSignal) {
+    const timeout = AbortSignal.timeout(15 * 60_000)
+    const signal = AbortSignal.any([lifetime.signal, timeout, ...(requestSignal ? [requestSignal] : [])])
+    function fail(error, status) {
+      Object.assign(job, { phase: 'failed', finishedAt: Date.now(), error })
+      return json({ error }, status)
+    }
+    try {
+      const source = github
+        ? await collectGithubSource(body.repositoryUrl, { signal })
+        : await collectLocalSource(body.repositoryPath, { signal })
+      job.repository = github ? `${source.owner}/${source.repo}` : source.repo
+      job.phase = 'writing'
+      if (!github) source.sourceKey = job.id
+      let markdown
+      let note
+      let model
+      try {
+        const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal)
+        markdown = await generateWiki(llm, selection, source, signal)
+        model = selection.model
+      } catch (error) {
+        if (signal.aborted || !['model-unavailable', 'model-output-invalid'].includes(error?.code)) throw error
+        markdown = renderSourceWiki(source)
+        note = modelNote(error)
+      }
+      signal.throwIfAborted()
+      job.phase = 'saving'
+      const document = {
+        id: job.id,
+        createdAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - job.startedAt),
+        source: github ? 'github' : 'local',
+        ...(github ? { repoUrl: `https://github.com/${source.owner}/${source.repo}` }
+          : { repositoryPath: source.repositoryPath, repoName: source.repo, files: source.files }),
+        commit: source.commit,
+        markdown,
+        model,
+        note,
+      }
+      try {
+        const result = withoutEvidence(await storage.save(document))
+        Object.assign(job, { phase: 'completed', finishedAt: Date.now(), result })
+        return json(result)
+      } catch {
+        return fail('文档已生成，但保存失败。请检查 DSH 数据目录是否可写。', 500)
+      }
+    } catch (error) {
+      if (timeout.aborted) return fail('生成已达到 15 分钟上限，请重试。', 504)
+      if (signal.aborted) return fail('生成已取消。', 503)
+      const status = sourceErrors.get(error?.code)
+      if (status !== undefined) return fail(error.message, status)
+      return fail('生成失败，请重试。', 500)
+    } finally {
+      active = undefined
+    }
+  }
 
   ctx.effect(() => () => lifetime.abort())
+  ctx.connection.fetch.register({
+    path: generationRoute,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch(request) {
+      const id = new URL(request.url).searchParams.get('id')
+      return json({ job: progress(id === null ? active : jobs.get(id)) })
+    },
+  })
   ctx.connection.fetch.register({
     path: documentsRoute,
     methods: ['GET'],
@@ -124,54 +199,18 @@ export function apply(ctx, config) {
         return json({ error: '请提供一个 GitHub 仓库地址或本地 Git 仓库路径。' }, 400)
       }
 
-      if (active) return json({ error: '已有文档正在生成，请稍后再试。' }, 409)
-      active = true
-      const timeout = AbortSignal.timeout(150_000)
-      const signal = AbortSignal.any([request.signal, lifetime.signal, timeout])
-      try {
-        const source = github
-          ? await collectGithubSource(body.repositoryUrl, { signal })
-          : await collectLocalSource(body.repositoryPath, { signal })
-        const id = randomUUID()
-        if (local) source.sourceKey = id
-        let markdown
-        let note
-        let model
-        try {
-          const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal)
-          markdown = await generateWiki(llm, selection, source, signal)
-          model = selection.model
-        } catch (error) {
-          if (signal.aborted || !['model-unavailable', 'model-output-invalid'].includes(error?.code)) throw error
-          markdown = renderSourceWiki(source)
-          note = modelNote(error)
-        }
-        signal.throwIfAborted()
-        const document = {
-          id,
-          createdAt: new Date().toISOString(),
-          source: github ? 'github' : 'local',
-          ...(github ? { repoUrl: `https://github.com/${source.owner}/${source.repo}` }
-            : { repositoryPath: source.repositoryPath, repoName: source.repo, files: source.files }),
-          commit: source.commit,
-          markdown,
-          model,
-          note,
-        }
-        try {
-          return json(withoutEvidence(await storage.save(document)))
-        } catch {
-          return json({ error: '文档已生成，但保存失败。请检查 DSH 数据目录是否可写。' }, 500)
-        }
-      } catch (error) {
-        if (timeout.aborted) return json({ error: '生成超时，请重试。' }, 504)
-        if (signal.aborted) return json({ error: '生成已取消。' }, 503)
-        const sourceStatus = sourceErrors.get(error?.code)
-        if (sourceStatus !== undefined) return json({ error: error.message }, sourceStatus)
-        return json({ error: '生成失败，请重试。' }, 500)
-      } finally {
-        active = false
+      if (active) return json({ error: '已有文档正在生成。', job: progress(active) }, 409)
+      const githubName = github && /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/i.exec(body.repositoryUrl.trim())?.[1]
+      const repository = github ? (githubName || 'GitHub 仓库') : (basename(body.repositoryPath) || '本地仓库')
+      const job = { id: randomUUID(), phase: 'reading', startedAt: Date.now(), repository }
+      jobs.set(job.id, job)
+      if (jobs.size > 8) jobs.delete(jobs.keys().next().value)
+      active = job
+      if (request.headers.get('prefer') === 'respond-async') {
+        void runGeneration(job, body, github)
+        return json({ job: progress(job) }, 202)
       }
+      return runGeneration(job, body, github, request.signal)
     },
   })
 }

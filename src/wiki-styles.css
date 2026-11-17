@@ -438,7 +438,183 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
-.dsh-code-wiki-form-card + .dsh-code-wiki-article {
+.dsh-code-wiki-generation {
+  position: relative;
+  padding: clamp(18px, 4cqi, 34px);
+  border: 1px solid var(--wiki-accent-line);
+  border-radius: 18px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--wiki-accent) 8%, var(--wiki-paper)), var(--wiki-paper) 65%);
+  box-shadow: 0 2px 5px rgb(16 25 56 / 4%);
+}
+
+.dsh-code-wiki-generation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.dsh-code-wiki-generation-header > div:first-child {
+  min-width: 0;
+}
+
+.dsh-code-wiki-generation-repo {
+  margin: 0 0 6px;
+  color: var(--wiki-accent-ink);
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-generation-header h2 {
+  margin: 0;
+  color: var(--wiki-ink);
+  font-size: clamp(20px, 4.3cqi, 30px);
+  font-weight: 680;
+  line-height: 1.25;
+}
+
+.dsh-code-wiki-clock {
+  display: grid;
+  flex: none;
+  gap: 2px;
+  min-inline-size: 84px;
+  padding: 8px 12px;
+  border: 1px solid var(--wiki-accent-line);
+  border-radius: 12px;
+  background: var(--wiki-paper);
+  color: var(--wiki-muted);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.dsh-code-wiki-clock time {
+  color: var(--wiki-accent-ink);
+  font-family: var(--ds-font-family-code);
+  font-size: clamp(20px, 4.4cqi, 26px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.dsh-code-wiki-generation-stages {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(8px, 2cqi, 18px);
+  margin: 25px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dsh-code-wiki-generation-stages li {
+  display: grid;
+  gap: 8px;
+  color: var(--wiki-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dsh-code-wiki-generation-stages li > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dsh-code-wiki-stage-track {
+  position: relative;
+  display: block;
+  block-size: 5px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--wiki-muted) 13%, var(--wiki-paper));
+}
+
+.dsh-code-wiki-generation-stages li[data-state='done'] .dsh-code-wiki-stage-track {
+  background: var(--wiki-accent);
+}
+
+.dsh-code-wiki-generation-stages li[data-state='active'] {
+  color: var(--wiki-accent-ink);
+  font-weight: 700;
+}
+
+.dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-track {
+  background: var(--wiki-accent-fill);
+}
+
+.dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-track::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inline-size: 44%;
+  border-radius: inherit;
+  background: var(--wiki-accent);
+  animation: dsh-code-wiki-progress 2.3s ease-in-out infinite alternate;
+}
+
+@keyframes dsh-code-wiki-progress {
+  from { transform: translateX(0); }
+  to { transform: translateX(127%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-track::before {
+    inline-size: 100%;
+    animation: none;
+    opacity: 0.65;
+  }
+}
+
+.dsh-code-wiki-generation-detail,
+.dsh-code-wiki-generation-background {
+  margin: 19px 0 0;
+  color: var(--wiki-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dsh-code-wiki-generation-background {
+  margin-block-start: 4px;
+  font-size: 12px;
+}
+
+.dsh-code-wiki-generation-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--wiki-accent-line);
+  border-radius: 12px;
+  background: var(--wiki-accent-fill);
+}
+
+.dsh-code-wiki-generation-done p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  min-width: 0;
+  margin: 0;
+  color: var(--wiki-accent-ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.dsh-code-wiki-generation-done p span {
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-generation-done button {
+  flex: none;
+}
+
+.dsh-code-wiki-main > :is(.dsh-code-wiki-generation, .dsh-code-wiki-generation-done, .dsh-code-wiki-form-card) + * {
   margin-block-start: 16px;
 }
 

@@ -3,9 +3,9 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
-    const { createElement: h, useEffect, useId, useRef, useSyncExternalStore } = React
+    const { createElement: h, useEffect, useId, useRef, useState, useSyncExternalStore } = React
     const {
-      Button, IconBranchOutlineRegular, IconChevronLeftOutlineRegular, IconCodeOutlineRegular,
+      Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronLeftOutlineRegular, IconCodeOutlineRegular,
       IconPlusOutlineRegular, Input, MarkdownText,
     } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
@@ -14,6 +14,13 @@ window.__ModuleLoader__.load({
     const generationError = '生成失败，请稍后重试。'
     const historyLoadError = '无法读取文档历史，请重试。'
     const documentLoadError = '无法打开这篇文档，请重试。'
+    const generationStages = [
+      { phase: 'reading', label: '读取仓库', status: '正在读取仓库', detail: '正在定位当前提交并读取生成文档所需的源码。' },
+      { phase: 'writing', label: '生成文档', status: '正在生成文档', detail: '正在根据源码组织章节和引用。这一步通常耗时最长。' },
+      { phase: 'saving', label: '保存文档', status: '正在保存文档', detail: '正在把文档写入已保存文档列表。' },
+    ]
+    const terminalPhases = new Set(['completed', 'failed'])
+    const generationPhases = new Set([...generationStages.map(stage => stage.phase), ...terminalPhases])
     const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
     const historyDateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
     const labels = {
@@ -94,6 +101,7 @@ window.__ModuleLoader__.load({
         ...splitChapters(markdown),
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
+        durationMs: Number.isSafeInteger(data.durationMs) && data.durationMs >= 0 ? data.durationMs : undefined,
       }
     }
 
@@ -122,6 +130,23 @@ window.__ModuleLoader__.load({
       return [...groups.values()]
     }
 
+    function validGeneration(job) {
+      return typeof job?.id === 'string' && generationPhases.has(job.phase)
+        && typeof job.repository === 'string' && Number.isSafeInteger(job.elapsedMs) && job.elapsedMs >= 0
+    }
+
+    async function readGeneration(signal, id) {
+      const url = new URL('api/dsh-code-wiki/generation', document.baseURI)
+      if (id) url.searchParams.set('id', id)
+      const response = await fetch(url, {
+        credentials: 'same-origin', signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
+      })
+      if (!response.ok) throw new Error(generationError)
+      const { job } = await response.json()
+      if (job === null || (validGeneration(job) && (!id || job.id === id))) return job
+      throw new Error(generationError)
+    }
+
     function createWikiStore(workspace, pickDirectory) {
       let snapshot = {
         source: 'github',
@@ -133,6 +158,8 @@ window.__ModuleLoader__.load({
         chapterIndex: 0,
         error: '',
         loading: false,
+        generation: null,
+        progressOffline: false,
         picking: false,
         browserOpen: false,
         documents: [],
@@ -217,7 +244,10 @@ window.__ModuleLoader__.load({
           const data = await response.json()
           const result = response.ok && readDocument(data)
           if (!result || result.id !== id) throw new Error(documentLoadError)
-          if (revision === readerRevision && !controller.signal.aborted) update({ result, chapterIndex: 0 })
+          if (revision === readerRevision && !controller.signal.aborted) update({
+            result, chapterIndex: 0,
+            ...(snapshot.generation?.id === id && snapshot.generation.phase === 'completed' && { generation: null }),
+          })
         } catch {
           if (revision === readerRevision && !controller.signal.aborted) update({ historyError: documentLoadError })
         } finally {
@@ -243,48 +273,106 @@ window.__ModuleLoader__.load({
         })
       }
 
-      async function generate() {
-        if (disposed || activeRequest || snapshot.picking || snapshot.browserOpen) return
+      function saveGenerationResult(data, revision, finished = null) {
+        const result = readDocument(data)
+        if (!result || (finished && result.id !== finished.id)) throw new Error(generationError)
+        const showResult = revision === readerRevision
+        update({
+          documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
+          generation: showResult ? null : finished,
+          formOpen: false,
+          ...(showResult && { result, chapterIndex: 0 }),
+        })
+      }
+
+      async function followGeneration(job, signal, revision) {
+        while (job && !signal.aborted) {
+          const { result, ...status } = job
+          if (job.phase === 'completed') {
+            saveGenerationResult(result, revision, status)
+            return
+          }
+          if (job.phase === 'failed') throw new Error(job.error || generationError)
+          update({ loading: true, generation: { ...status, receivedAt: performance.now() }, progressOffline: false })
+
+          while (!signal.aborted) {
+            await new Promise(resolve => setTimeout(resolve, 1600))
+            if (signal.aborted) return
+            try {
+              job = await readGeneration(signal, job.id)
+              break
+            } catch {
+              if (!signal.aborted && !snapshot.progressOffline) update({ progressOffline: true })
+            }
+          }
+        }
+        if (!signal.aborted) {
+          void loadHistory()
+          throw new Error('生成任务已结束或 DSH 已重启，请查看已保存文档。')
+        }
+      }
+
+      async function submitGeneration(request, signal) {
+        let response
+        let data
+        try {
+          response = await fetch(new URL('api/dsh-code-wiki/generate', document.baseURI), {
+            method: 'POST', credentials: 'same-origin', signal,
+            headers: { 'Content-Type': 'application/json', Prefer: 'respond-async' },
+            body: JSON.stringify(request),
+          })
+          data = await response.json()
+        } catch {
+          const job = !signal.aborted && await readGeneration(signal).catch(() => null)
+          if (job) return { job }
+          throw new Error(generationError)
+        }
+        if ((response.status === 202 || response.status === 409) && validGeneration(data?.job)) return { job: data.job }
+        if (response.ok) return { result: data }
+        throw new Error(typeof data?.error === 'string' && data.error ? data.error : generationError)
+      }
+
+      async function trackGeneration(request, repository) {
+        if (disposed || snapshot.loading || (!request && activeRequest)) return
+        activeRequest?.abort()
+        const controller = new AbortController()
+        activeRequest = controller
+        const revision = request ? ++readerRevision : readerRevision
+        if (request) {
+          openRequest?.abort()
+          update({
+            error: '', historyError: '', loading: true, progressOffline: false,
+            generation: { phase: 'starting', elapsedMs: 0, receivedAt: performance.now(), repository },
+          })
+        }
+        try {
+          const { job, result } = request
+            ? await submitGeneration(request, controller.signal)
+            : { job: await readGeneration(controller.signal).catch(() => null) }
+          if (controller.signal.aborted) return
+          if (job) await followGeneration(job, controller.signal, revision)
+          else if (request) saveGenerationResult(result, revision)
+        } catch (error) {
+          if (!controller.signal.aborted) update({
+            generation: null, error: error.message || generationError, formOpen: Boolean(snapshot.result),
+          })
+        } finally {
+          if (activeRequest === controller) {
+            activeRequest = undefined
+            if (snapshot.loading) update({ loading: false, progressOffline: false })
+          }
+        }
+      }
+
+      function generate() {
+        if (snapshot.picking || snapshot.browserOpen) return
         const local = snapshot.source === 'local'
         const location = local ? snapshot.repositoryPath : snapshot.repositoryUrl.trim()
         if (!location) return
         const request = local ? { repositoryPath: location } : { repositoryUrl: location }
-        const controller = new AbortController()
-        activeRequest = controller
-        const revision = ++readerRevision
-        openRequest?.abort()
-        update({ error: '', historyError: '', loading: true })
-        try {
-          const response = await fetch(new URL('api/dsh-code-wiki/generate', document.baseURI), {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(request),
-            signal: controller.signal,
-          })
-          const data = await response.json().catch(() => null)
-          if (controller.signal.aborted) return
-
-          if (!response.ok) {
-            update({ error: typeof data?.error === 'string' && data.error ? data.error : generationError })
-            return
-          }
-          const result = readDocument(data)
-          if (!result || result.source !== (local ? 'local' : 'github')) {
-            update({ error: generationError })
-            return
-          }
-          update({
-            documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
-            formOpen: false,
-            ...(revision === readerRevision && { result, chapterIndex: 0 }),
-          })
-        } catch {
-          if (!controller.signal.aborted) update({ error: generationError })
-        } finally {
-          activeRequest = undefined
-          update({ loading: false })
-        }
+        const repository = local ? location.split(/[\\/]/).filter(Boolean).at(-1) || '本地仓库'
+          : location.replace(/^https:\/\/github\.com\//i, '').replace(/\/$/, '')
+        return trackGeneration(request, repository)
       }
 
       return {
@@ -308,6 +396,7 @@ window.__ModuleLoader__.load({
         openDocument,
         returnToHistory,
         generate,
+        resumeGeneration: () => trackGeneration(),
         selectChapter(chapterIndex) {
           if (snapshot.result?.chapters[chapterIndex] && chapterIndex !== snapshot.chapterIndex) update({ chapterIndex })
         },
@@ -455,9 +544,64 @@ window.__ModuleLoader__.load({
         onPick: wiki.selectFolder,
         onClose: wiki.closeBrowser,
       }),
-      (loading || picking) && h('p', { role: 'status', className: 'dsh-code-wiki-feedback' },
-        picking ? '正在打开文件夹选择器…' : '正在读取仓库并生成文档…'),
+      picking && h('p', { role: 'status', className: 'dsh-code-wiki-feedback' }, '正在打开文件夹选择器…'),
       error && h('p', { role: 'alert', className: 'dsh-code-wiki-feedback', 'data-error': 'true' }, error))
+    }
+
+    function durationLabel(milliseconds) {
+      const seconds = Math.floor(milliseconds / 1000)
+      const minutes = Math.floor(seconds / 60)
+      return (minutes ? `${minutes} 分 ` : '') + `${seconds % 60} 秒`
+    }
+
+    function GenerationClock({ elapsedMs, receivedAt }) {
+      const [now, setNow] = useState(() => performance.now())
+      useEffect(() => {
+        const timer = setInterval(() => setNow(performance.now()), 250)
+        return () => clearInterval(timer)
+      }, [])
+      const seconds = Math.floor((elapsedMs + Math.max(0, now - receivedAt)) / 1000)
+      const minutes = String(Math.floor(seconds / 60)).padStart(2, '0')
+      return h('div', { className: 'dsh-code-wiki-clock' },
+        h('span', null, '已耗时'),
+        h('time', { role: 'timer', 'aria-label': '生成耗时', dateTime: `PT${seconds}S` },
+          minutes + ':' + String(seconds % 60).padStart(2, '0')),
+      )
+    }
+
+    function GenerationProgress({ generation, progressOffline, openDocument }) {
+      const titleId = useId()
+      const index = generationStages.findIndex(stage => stage.phase === generation.phase)
+      const stage = generationStages[index]
+      if (generation.phase === 'completed') {
+        return h('div', { className: 'dsh-code-wiki-generation-done' },
+          h('p', { role: 'status' }, h(IconCheckOutlineRegular, { size: 16, 'aria-hidden': true }),
+            'Wiki 已保存', h('span', null, generation.repository + ' · 用时 ' + durationLabel(generation.elapsedMs))),
+          h(Button, { size: 'sm', variant: 'outline', onClick: () => void openDocument(generation.id) }, '打开文档'),
+        )
+      }
+
+      return h('section', { className: 'dsh-code-wiki-generation', 'aria-labelledby': titleId },
+        h('div', { className: 'dsh-code-wiki-generation-header' },
+          h('div', null,
+            h('p', { className: 'dsh-code-wiki-generation-repo' }, generation.repository),
+            h('h2', { id: titleId, role: 'status' }, stage?.status ?? '正在提交任务'),
+          ),
+          h(GenerationClock, { elapsedMs: generation.elapsedMs, receivedAt: generation.receivedAt }),
+        ),
+        h('ol', { className: 'dsh-code-wiki-generation-stages', 'aria-label': '生成阶段' },
+          generationStages.map(({ phase, label }, i) => h('li', {
+            key: phase, 'data-state': i < index ? 'done' : i === index ? 'active' : 'waiting',
+            'aria-current': i === index ? 'step' : undefined,
+          },
+          h('span', { className: 'dsh-code-wiki-stage-track', 'aria-hidden': true }),
+          h('span', null, i < index && h(IconCheckOutlineRegular, { size: 13, 'aria-hidden': true }), label),
+          )),
+        ),
+        h('p', { className: 'dsh-code-wiki-generation-detail' },
+          progressOffline ? '正在重新连接，稍后会同步进度。' : stage?.detail ?? '任务开始后会显示当前阶段。'),
+        h('p', { className: 'dsh-code-wiki-generation-background' }, '可切换面板或关闭页面，生成会继续。'),
+      )
     }
 
     function WikiArticle({ result, chapterIndex }) {
@@ -489,6 +633,7 @@ window.__ModuleLoader__.load({
             }, revision),
             h('time', { dateTime: result.createdAt, title: '生成时间' }, dateFormat.format(new Date(result.createdAt))),
             result.model && h('span', { title: '生成模型' }, result.model),
+            result.durationMs !== undefined && h('span', null, '生成用时 ' + durationLabel(result.durationMs)),
           ),
           result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
         ),
@@ -500,13 +645,16 @@ window.__ModuleLoader__.load({
     function CodeWikiPage({ wiki }) {
       const snapshot = useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
       const { result, chapterIndex, formOpen, loading, picking, browserOpen,
-        documents, historyStatus, historyError, openingId, returnDocumentId } = snapshot
+        documents, historyStatus, historyError, openingId, returnDocumentId, generation, progressOffline } = snapshot
       const formId = useId()
       const page = useRef(null)
       const documentId = result?.id
-      const showForm = !result || formOpen || loading || picking || browserOpen
+      const showForm = picking || browserOpen || (!loading && (!result || formOpen))
 
-      useEffect(() => { void wiki.loadHistory() }, [wiki])
+      useEffect(() => {
+        void wiki.loadHistory()
+        void wiki.resumeGeneration()
+      }, [wiki])
       useEffect(() => {
         if (documentId && page.current) page.current.scrollTop = 0
       }, [documentId, chapterIndex])
@@ -526,7 +674,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dsh-code-wiki-brand-icon', 'aria-hidden': true }, h(CodeWikiIcon, { size: 18 })),
               h('span', null, panelTitle),
             ),
-            result && h('div', { className: 'dsh-code-wiki-actions' },
+            result && !loading && h('div', { className: 'dsh-code-wiki-actions' },
               h(Button, {
                 type: 'button', variant: 'outline', size: 'sm',
                 icon: showForm ? undefined : h(IconPlusOutlineRegular, { size: 16 }),
@@ -543,6 +691,7 @@ window.__ModuleLoader__.load({
               h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId, returnDocumentId }),
             ),
             h('div', { className: 'dsh-code-wiki-main' },
+              generation && h(GenerationProgress, { generation, progressOffline, openDocument: wiki.openDocument }),
               showForm && h(GenerationForm, { wiki, formId, ...snapshot }),
               result && h(WikiArticle, { result, chapterIndex }),
             ),

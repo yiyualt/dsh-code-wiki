@@ -13,7 +13,7 @@ const nonempty = value => typeof value === 'string' && Boolean(value.trim())
 
 function documentRecord(document, id) {
   if (document?.id !== id || !uuid.test(id)) return
-  const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files } = document
+  const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs } = document
   if ((typeof createdAt !== 'string' && typeof createdAt !== 'number')
     || !Number.isFinite(timestamp(createdAt))
     || typeof commit !== 'string' || !commitHash.test(commit)
@@ -23,7 +23,10 @@ function documentRecord(document, id) {
   if (repoName !== undefined && !nonempty(repoName)) return
 
   const metadata = { id, createdAt, source, commit, ...(repoName !== undefined && { repoName }) }
-  const content = { markdown, ...(model !== undefined && { model }), ...(note !== undefined && { note }) }
+  const content = {
+    markdown, ...(model !== undefined && { model }), ...(note !== undefined && { note }),
+    ...(Number.isSafeInteger(durationMs) && durationMs >= 0 && { durationMs }),
+  }
   if (source === 'github' && typeof repoUrl === 'string' && githubRepo.test(repoUrl)) {
     return { ...metadata, repoUrl, ...content }
   }

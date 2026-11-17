@@ -8,7 +8,7 @@ DeepSeek Harness Web 插件。在侧栏打开「代码百科」，选择公开 G
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.5.2.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.6.0.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
@@ -20,7 +20,7 @@ dsh plugin --profile web add ./dsh-code-wiki-0.5.2.tgz
 3. 在左侧目录选择章节，在右侧阅读正文。点击文中的源码引用可打开该 commit 对应的文件和行号。点击左上角「返回文档列表」可切回已保存文档。
 
 本地模式读取当前 `HEAD` 中已提交的文件。它会把选取的文件片段发给所选模型，本地引用由当前 DSH 实例显示。
-在同一个 DSH 标签页内切换面板时，生成任务会继续运行，输入和结果会保留。
+生成时会显示当前阶段和已耗时。切换面板、刷新或关闭浏览器页面后，任务继续在运行中的 DSH 服务上执行。重新打开「代码百科」可以查看进行中的任务。单次生成上限为 15 分钟。
 
 每次生成完成后，文档会保存到当前 DSH profile 的 `dsh-code-wiki/documents/` 目录。本地仓库的引用片段随文档保存。重新打开代码百科后，可从「已保存文档」按仓库查看此前保存的版本。
 
