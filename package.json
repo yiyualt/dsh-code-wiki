@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-wiki",
-  "version": "0.7.4",
+  "version": "0.9.9",
   "description": "A repository wiki panel for DeepSeek Harness.",
   "type": "module",
   "exports": {
@@ -18,7 +18,11 @@
     "src/generate-wiki.js",
     "src/github-source.js",
     "src/local-source.js",
-    "src/wiki-storage.js"
+    "src/wiki-storage.js",
+    "src/video-api.js",
+    "src/video-plan.js",
+    "src/video-speech.js",
+    "src/video-storage.js"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",

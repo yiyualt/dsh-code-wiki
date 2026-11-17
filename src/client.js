@@ -5,10 +5,12 @@ window.__ModuleLoader__.load({
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const { createElement: h, useEffect, useId, useRef, useState, useSyncExternalStore } = React
     const {
-      Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronLeftOutlineRegular, IconCodeOutlineRegular,
+      Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronDownOutlineRegular,
+      IconChevronRightOutlineRegular, IconCodeOutlineRegular, IconFolderOpenOutlineRegular,
       IconPlusOutlineRegular, IconTrashOutlineRegular, Input, MarkdownText, Modal,
     } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
+    const VideoPanel = createCodeWikiVideo(React, primitives)
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
     const generationError = '生成失败，请稍后重试。'
@@ -57,9 +59,9 @@ window.__ModuleLoader__.load({
         })
       }
       const ids = new Set()
-      const layers = graph.layers.slice(0, 4).flatMap(layer => {
+      const layers = graph.layers.slice(0, 5).flatMap(layer => {
         if (typeof layer?.title !== 'string' || !Array.isArray(layer.nodes)) return []
-        const nodes = layer.nodes.slice(0, 3).flatMap(node => {
+        const nodes = layer.nodes.flatMap(node => {
           if (typeof node?.id !== 'string' || ids.has(node.id) || typeof node.title !== 'string' || typeof node.summary !== 'string') return []
           const refs = citations(node.refs)
           if (!refs.length) return []
@@ -68,7 +70,7 @@ window.__ModuleLoader__.load({
         })
         return nodes.length ? [{ title: layer.title, nodes }] : []
       })
-      const edges = graph.edges.slice(0, 16).flatMap(edge => {
+      const edges = graph.edges.slice(0, 24).flatMap(edge => {
         if (!ids.has(edge?.from) || !ids.has(edge?.to) || typeof edge.label !== 'string') return []
         const refs = citations(edge.refs)
         return refs.length ? [{ ...edge, refs }] : []
@@ -153,21 +155,6 @@ window.__ModuleLoader__.load({
 
     function repositoryLabel(item) {
       return item.source === 'local' ? item.repoName : item.repoUrl.slice('https://github.com/'.length)
-    }
-
-    function groupDocuments(documents) {
-      const groups = new Map()
-      for (const item of documents) {
-        const key = item.source === 'local' ? 'local:' + item.repositoryPath : 'github:' + item.repoUrl.toLowerCase()
-        if (!groups.has(key)) groups.set(key, {
-          key,
-          label: repositoryLabel(item),
-          path: item.repositoryPath,
-          entries: [],
-        })
-        groups.get(key).entries.push(item)
-      }
-      return [...groups.values()]
     }
 
     function validGeneration(job) {
@@ -288,7 +275,7 @@ window.__ModuleLoader__.load({
           const result = response.ok && readDocument(data)
           if (!result || result.id !== id) throw new Error(documentLoadError)
           if (revision === readerRevision && !controller.signal.aborted) update({
-            result, chapterIndex: 0,
+            result, chapterIndex: 0, formOpen: false,
             ...(snapshot.generation?.id === id && snapshot.generation.phase === 'completed' && { generation: null }),
           })
         } catch {
@@ -447,7 +434,7 @@ window.__ModuleLoader__.load({
           if (job) await followGeneration(job, controller.signal, revision)
         } catch (error) {
           if (!controller.signal.aborted) update({
-            generation: null, error: error.message || generationError, formOpen: Boolean(snapshot.result),
+            generation: null, error: error.message || generationError,
           })
         } finally {
           if (activeRequest === controller) {
@@ -478,8 +465,8 @@ window.__ModuleLoader__.load({
           if (!snapshot.loading && !snapshot.picking && !snapshot.browserOpen) update({ source, error: '' })
         },
         setRepositoryUrl: repositoryUrl => update({ repositoryUrl }),
-        toggleForm() {
-          update({ formOpen: !snapshot.formOpen })
+        setFormOpen(formOpen) {
+          update({ formOpen, error: '' })
         },
         chooseFolder,
         selectFolder,
@@ -512,79 +499,74 @@ window.__ModuleLoader__.load({
     }
 
     function ChapterDirectory({ chapters, chapterIndex, selectChapter }) {
-      const titleId = useId()
-      return h('nav', { 'aria-labelledby': titleId, className: 'dsh-code-wiki-rail-section' },
-        h('h2', { id: titleId, className: 'dsh-code-wiki-rail-label' }, '章节目录'),
+      const selectId = useId()
+      return h('nav', { 'aria-label': '章节目录' },
+        h('h2', { className: 'dsh-code-wiki-rail-label' }, '章节目录'),
         h('ul', { className: 'dsh-code-wiki-chapter-list' },
           chapters.map(({ title }, index) => h('li', { key: index },
             h('button', {
               type: 'button',
               className: 'dsh-code-wiki-chapter-button',
-              'aria-current': index === chapterIndex ? 'true' : undefined,
+              'aria-current': index === chapterIndex ? 'page' : undefined,
               onClick: () => selectChapter(index),
             }, title),
           )),
         ),
+        h('div', { className: 'dsh-code-wiki-chapter-picker' },
+          h('label', { htmlFor: selectId }, '章节'),
+          h('div', null,
+            h('select', { id: selectId, value: chapterIndex, onChange: event => selectChapter(Number(event.target.value)) },
+              chapters.map(({ title }, index) => h('option', { key: index, value: index }, title))),
+            h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))),
       )
     }
 
-    function DocumentHistory({ wiki, documents, historyStatus, historyError, openingId, activeId, returnDocumentId }) {
+    function DocumentHistory({ wiki, documents, historyStatus, historyError, openingId, returnDocumentId }) {
       const titleId = useId()
       const returnedItem = useRef(null)
-      const groups = groupDocuments(documents)
-      const selectedId = activeId ?? returnDocumentId
-      const selectedGroup = groups.find(group => group.entries.some(item => item.id === selectedId)) ?? groups[0]
       useEffect(() => {
         returnedItem.current?.focus()
-      }, [activeId, returnDocumentId])
+      }, [returnDocumentId])
 
-      const content = h('div', null,
-        (historyStatus === 'idle' || historyStatus === 'loading') && !documents.length
-          ? h('p', { role: 'status' }, '正在读取历史…') : null,
-        historyStatus === 'ready' && !documents.length && h('p', null, '暂无已保存文档。'),
-        historyStatus === 'error' && h('div', { role: 'alert' },
+      return h('section', { 'aria-labelledby': titleId, className: 'dsh-code-wiki-history' },
+        h('h2', { id: titleId }, '已保存文档'),
+        (historyStatus === 'idle' || historyStatus === 'loading') && !documents.length &&
+          h('p', { role: 'status', className: 'dsh-code-wiki-library-status' }, '正在读取文档…'),
+        historyStatus === 'error' && h('div', { role: 'alert', className: 'dsh-code-wiki-library-status' },
           h('p', null, historyLoadError),
           h(Button, { type: 'button', size: 'sm', onClick: () => void wiki.loadHistory() }, '重试')),
-        groups.map(({ key, label, path, entries }) => h('details', {
-          key, open: key === selectedGroup?.key || undefined, className: 'dsh-code-wiki-history-group',
-        },
-        h('summary', { title: path }, label),
-        path && path !== label && h('p', { className: 'dsh-code-wiki-history-path' }, path),
-        h('ul', { className: 'dsh-code-wiki-history-list' },
-          entries.map(item => h('li', { key: item.id, className: 'dsh-code-wiki-history-row' },
+        historyError && h('p', { role: 'alert', className: 'dsh-code-wiki-library-status' }, historyError),
+        historyStatus === 'ready' && !documents.length && h('div', { className: 'dsh-code-wiki-library-empty' },
+          h(IconCodeOutlineRegular, { size: 25, 'aria-hidden': true }),
+          h('p', null, '还没有已保存的 Wiki')),
+        documents.length > 0 && h('ul', { className: 'dsh-code-wiki-history-list' },
+          documents.map(item => h('li', { key: item.id, className: 'dsh-code-wiki-history-row' },
             h('button', {
-              ref: !activeId && returnDocumentId === item.id ? returnedItem : undefined,
+              ref: returnDocumentId === item.id ? returnedItem : undefined,
               type: 'button',
               className: 'dsh-code-wiki-history-item',
-              disabled: openingId === item.id,
-              'aria-current': activeId === item.id ? 'true' : undefined,
+              'aria-busy': openingId === item.id || undefined,
+              'aria-disabled': openingId === item.id || undefined,
               onClick: () => void wiki.openDocument(item.id),
             },
-            h('time', { dateTime: item.createdAt, title: dateFormat.format(new Date(item.createdAt)) },
-              historyDateFormat.format(new Date(item.createdAt))),
-            h('code', { title: item.commit }, item.commit.slice(0, 8))),
-            h(Button, {
-              type: 'button', size: 'sm', className: 'dsh-code-wiki-delete',
-              'aria-label': '删除文档 ' + dateFormat.format(new Date(item.createdAt)) + ' ' + item.commit.slice(0, 8),
+            h('span', { className: 'dsh-code-wiki-history-icon', 'aria-hidden': true },
+              h(item.source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
+            h('span', { className: 'dsh-code-wiki-history-copy' },
+              h('strong', { title: item.repositoryPath || item.repoUrl }, repositoryLabel(item)),
+              h('span', { className: 'dsh-code-wiki-history-meta' },
+                h('span', null, item.source === 'local' ? '本地仓库' : 'GitHub'),
+                h('code', { title: item.commit }, item.commit.slice(0, 8)),
+                h('time', { dateTime: item.createdAt, title: dateFormat.format(new Date(item.createdAt)) },
+                  historyDateFormat.format(new Date(item.createdAt))))),
+            openingId === item.id ? h('span', { className: 'dsh-code-wiki-history-opening', role: 'status' }, '正在打开…')
+              : h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true })),
+            h('button', {
+              type: 'button', className: 'dsh-code-wiki-delete',
+              'aria-label': '删除文档 ' + repositoryLabel(item) + ' ' + item.commit.slice(0, 8),
               title: '删除文档',
-              icon: h(IconTrashOutlineRegular, { size: 15 }),
               onClick: () => wiki.requestDelete(item),
-            }),
-          )),
-        ))),
-      )
-      const status = historyError ? h('p', { role: 'alert' }, historyError)
-        : openingId && h('p', { role: 'status' }, '正在打开文档…')
-      if (activeId) {
-        return h('div', { className: 'dsh-code-wiki-history dsh-code-wiki-rail-divider' },
-          h('details', null, h('summary', null, '已保存文档'), content),
-          status,
-        )
-      }
-      return h('section', { 'aria-labelledby': titleId, className: 'dsh-code-wiki-history' },
-        h('h2', { id: titleId, className: 'dsh-code-wiki-rail-label' }, '已保存文档'),
-        content,
-        status,
+            }, h(IconTrashOutlineRegular, { size: 16, 'aria-hidden': true })),
+          ))),
       )
     }
 
@@ -615,14 +597,16 @@ window.__ModuleLoader__.load({
     function GenerationForm({ wiki, formId, source, repositoryUrl, repositoryPath, loading, picking, browserOpen, error }) {
       const sourceId = useId()
       const titleId = useId()
+      const heading = useRef(null)
       const local = source === 'local'
       const busy = loading || picking || browserOpen
       const ready = local ? Boolean(repositoryPath) : Boolean(repositoryUrl.trim())
+      useEffect(() => { heading.current?.focus() }, [])
 
       return h('section', {
         id: formId, className: 'dsh-code-wiki-form-card', 'aria-labelledby': titleId,
       },
-      h('h2', { id: titleId, className: 'dsh-code-wiki-form-title' }, '生成仓库 Wiki'),
+      h('h2', { id: titleId, ref: heading, tabIndex: -1, className: 'dsh-code-wiki-form-title' }, '新建 Wiki'),
       h('form', {
         className: 'dsh-code-wiki-form',
         onSubmit: event => {
@@ -701,7 +685,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function GenerationProgress({ generation, progressOffline, openDocument, showingResult }) {
+    function GenerationProgress({ generation, progressOffline, openDocument }) {
       const titleId = useId()
       const index = generationStages.findIndex(stage => stage.phase === generation.phase)
       const stage = generationStages[index]
@@ -709,7 +693,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'dsh-code-wiki-generation-done' },
           h('p', { role: 'status' }, h(IconCheckOutlineRegular, { size: 16, 'aria-hidden': true }),
             'Wiki 已保存', h('span', null, generation.repository + ' · 用时 ' + durationLabel(generation.elapsedMs))),
-          !showingResult && h(Button, { size: 'sm', variant: 'outline', onClick: () => void openDocument(generation.id) }, '打开文档'),
+          h(Button, { size: 'sm', variant: 'outline', onClick: () => void openDocument(generation.id) }, '打开文档'),
         )
       }
 
@@ -743,81 +727,276 @@ window.__ModuleLoader__.load({
     function ArchitectureGraph({ graph }) {
       const titleId = useId()
       const markerId = useId()
+      const activeMarkerId = useId()
+      const hintId = useId()
+      const detailsId = useId()
+      const viewportRef = useRef(null)
+      const detailsHeadingRef = useRef(null)
+      const detailsTrigger = useRef(null)
+      const drag = useRef(null)
+      const [selectedId, setSelectedId] = useState(null)
+      const [showDetails, setShowDetails] = useState(false)
+      const [wheelZoom, setWheelZoom] = useState(false)
+      const [dragging, setDragging] = useState(false)
+      const [size, setSize] = useState({ width: 0, height: 0 })
+      const [view, setView] = useState(null)
       const { layers, edges } = graph
-      const nodeHeight = 92
-      const laneWidth = 250
-      const width = laneWidth * layers.length
-      const height = 57 + 120 * Math.max(...layers.map(layer => layer.nodes.length))
+      const nodeHeight = 76
+      const nodeWidth = 154
+      const columnWidth = 180
+      const rowHeight = 141
+      const columns = Math.min(4, Math.max(...layers.map(layer => layer.nodes.length)))
+      const width = columns * columnWidth + 38
+      let height = 0
+      const groups = layers.map(layer => {
+        const group = { ...layer, top: height, height: Math.ceil(layer.nodes.length / 4) * rowHeight }
+        height += group.height
+        return group
+      })
       const nodes = new Map()
-      for (const [column, layer] of layers.entries()) {
-        const offset = (height - 57 - 120 * layer.nodes.length) / 2
-        for (const [row, node] of layer.nodes.entries()) {
-          nodes.set(node.id, { ...node, column, x: column * laneWidth + 21, y: 53 + offset + row * 120 })
+      for (const layer of groups) {
+        for (const [index, node] of layer.nodes.entries()) {
+          const row = Math.floor(index / 4)
+          const count = Math.min(4, layer.nodes.length - row * 4)
+          const offset = (width - count * columnWidth) / 2
+          nodes.set(node.id, { ...node, row: layer.top / rowHeight + row,
+            x: offset + (index % 4) * columnWidth + (columnWidth - nodeWidth) / 2, y: layer.top + row * rowHeight + 31 })
         }
       }
-      const nodeWidth = laneWidth - 56
-      const percent = value => (100 * value / width) + '%'
+      const selected = nodes.get(selectedId)
+      const relations = selected ? edges.filter(edge => edge.from === selected.id || edge.to === selected.id) : edges
+      const relatedIds = new Set(relations.flatMap(edge => [edge.from, edge.to]))
+      const fitScale = size.width && size.height
+        ? Math.max(0.05, Math.min(1, (size.width - 24) / width, (size.height - 24) / height))
+        : 1
+      const fitted = { scale: fitScale, x: (size.width - width * fitScale) / 2, y: (size.height - height * fitScale) / 2 }
+      const camera = view ?? fitted
+      const minScale = Math.min(fitScale, 0.24)
+      const maxScale = 2
       const sourceLink = (ref, props, ...children) => h('a', {
         href: ref.href, target: '_blank', rel: 'noopener noreferrer', ...props,
       }, ...children)
 
-      function edgePath(edge) {
-        const from = nodes.get(edge.from)
-        const to = nodes.get(edge.to)
-        const fromY = from.y + nodeHeight / 2
-        const toY = to.y + nodeHeight / 2
-        if (from.column === to.column) {
-          const x = from.x + nodeWidth
-          return `M${x},${fromY} C${x + 38},${fromY} ${x + 38},${toY} ${x + 2},${toY}`
-        }
-        const forward = from.column < to.column
-        const x = forward ? from.x + nodeWidth : from.x
-        const end = forward ? to.x - 2 : to.x + nodeWidth + 2
-        const middle = x + (end - x) / 2
-        return `M${x},${fromY} C${middle},${fromY} ${middle},${toY} ${end},${toY}`
+      useEffect(() => {
+        const viewport = viewportRef.current
+        const observer = new ResizeObserver(([entry]) => {
+          setSize({ width: entry.contentRect.width, height: entry.contentRect.height })
+        })
+        observer.observe(viewport)
+        return () => observer.disconnect()
+      }, [])
+
+      function zoom(factor, x = size.width / 2, y = size.height / 2) {
+        setView(previous => {
+          const current = previous ?? fitted
+          const scale = Math.min(maxScale, Math.max(minScale, current.scale * factor))
+          const relative = scale / current.scale
+          return { scale, x: x - (x - current.x) * relative, y: y - (y - current.y) * relative }
+        })
       }
 
-      return h('section', { className: 'dsh-code-wiki-architecture', 'aria-labelledby': titleId },
-        h('h2', { id: titleId }, '架构图'),
-        h('div', { className: 'dsh-code-wiki-diagram-scroll', tabIndex: 0, role: 'region', 'aria-label': '可横向滚动的架构图' },
-          h('div', { className: 'dsh-code-wiki-diagram', style: { height, minWidth: layers.length * 190 } },
-            layers.map((layer, index) => h('div', {
+      useEffect(() => {
+        if (!wheelZoom) return
+        const viewport = viewportRef.current
+        function onWheel(event) {
+          if (!event.cancelable || !event.deltaY) return
+          event.preventDefault()
+          const bounds = viewport.getBoundingClientRect()
+          const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1
+          zoom(Math.exp(-event.deltaY * unit / 420), event.clientX - bounds.left, event.clientY - bounds.top)
+        }
+        viewport.addEventListener('wheel', onWheel, { passive: false })
+        return () => viewport.removeEventListener('wheel', onWheel)
+      }, [wheelZoom, size.width, size.height, width, height])
+
+      function beginDrag(event) {
+        if (event.button !== 0 || drag.current || event.target.closest('button, a')) return
+        drag.current = { id: event.pointerId, clientX: event.clientX, clientY: event.clientY, ...camera }
+        event.currentTarget.setPointerCapture(event.pointerId)
+        setDragging(true)
+      }
+
+      function moveDrag(event) {
+        const start = drag.current
+        if (start?.id !== event.pointerId) return
+        setView({ scale: start.scale, x: start.x + event.clientX - start.clientX, y: start.y + event.clientY - start.clientY })
+      }
+
+      function endDrag(event) {
+        if (drag.current?.id !== event.pointerId) return
+        drag.current = null
+        setDragging(false)
+      }
+
+      function onViewportKey(event) {
+        if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return
+        const offset = { ArrowLeft: [48, 0], ArrowRight: [-48, 0], ArrowUp: [0, 48], ArrowDown: [0, -48] }[event.key]
+        if (!offset && !['+', '=', '-', 'Home'].includes(event.key)) return
+        event.preventDefault()
+        if (offset) {
+          setView(previous => {
+            const current = previous ?? fitted
+            return { ...current, x: current.x + offset[0], y: current.y + offset[1] }
+          })
+        } else if (event.key === 'Home') setView(null)
+        else zoom(event.key === '-' ? 0.8 : 1.25)
+      }
+
+      function showNodeInViewport(event, node) {
+        if (!event.currentTarget.matches(':focus-visible')) return
+        const { x, y, scale } = camera
+        const left = x + node.x * scale
+        const top = y + node.y * scale
+        const right = left + nodeWidth * scale
+        const bottom = top + nodeHeight * scale
+        const dx = Math.max(16 - left, 0) + Math.min(size.width - 16 - right, 0)
+        const dy = Math.max(16 - top, 0) + Math.min(size.height - 16 - bottom, 0)
+        if (dx || dy) setView({ x: x + dx, y: y + dy, scale })
+      }
+
+      function closeDetails(restoreFocus = false) {
+        setSelectedId(null)
+        setShowDetails(false)
+        if (restoreFocus) detailsTrigger.current?.focus()
+        detailsTrigger.current = null
+      }
+
+      function toggleDetails(event) {
+        if (showDetails) { closeDetails(); return }
+        detailsTrigger.current = event.currentTarget
+        setShowDetails(true)
+      }
+
+      function selectNode(nodeId, trigger) {
+        if (nodeId === selectedId) { closeDetails(); return }
+        if (trigger) detailsTrigger.current = trigger
+        setSelectedId(nodeId)
+        setShowDetails(true)
+      }
+
+      function edgePath(edge, index) {
+        const from = nodes.get(edge.from)
+        const to = nodes.get(edge.to)
+        const fromX = from.x + nodeWidth / 2
+        const toX = to.x + nodeWidth / 2
+        if (from.row === to.row) {
+          const y = from.y + nodeHeight
+          return `M${fromX},${y} C${fromX},${y + 32} ${toX},${y + 32} ${toX},${y + 2}`
+        }
+        const forward = from.row < to.row
+        const y = forward ? from.y + nodeHeight : from.y
+        const end = forward ? to.y - 2 : to.y + nodeHeight + 2
+        if (Math.abs(from.row - to.row) > 1) {
+          const outside = width - 8 - (index % 4) * 4
+          const departure = y + (forward ? 24 : -18)
+          const arrival = end + (forward ? -18 : 24)
+          return `M${fromX},${y} L${fromX},${departure} L${outside},${departure} L${outside},${arrival} L${toX},${arrival} L${toX},${end}`
+        }
+        const middle = y + (end - y) / 2
+        return `M${fromX},${y} C${fromX},${middle} ${toX},${middle} ${toX},${end}`
+      }
+
+      return h('section', { className: 'dsh-code-wiki-architecture', 'aria-labelledby': titleId, onKeyDown: event => {
+        if (event.key === 'Escape' && showDetails) { event.stopPropagation(); closeDetails(true) }
+      } },
+        h('div', { className: 'dsh-code-wiki-diagram-frame' },
+        h('div', { className: 'dsh-code-wiki-diagram-heading' },
+          h('h2', { id: titleId }, '架构图'),
+          h('p', { id: hintId }, '拖动空白处平移，点击组件查看源码。')),
+        h('div', { className: 'dsh-code-wiki-diagram-tools', role: 'group', 'aria-label': '架构图控制' },
+          h('div', { className: 'dsh-code-wiki-diagram-view-tools' },
+            h('div', { className: 'dsh-code-wiki-diagram-zoom', role: 'group', 'aria-label': '缩放' },
+              h('button', { type: 'button', onClick: () => zoom(0.8), disabled: camera.scale <= minScale,
+                'aria-label': '缩小', title: '缩小' }, '−'),
+              h('span', { className: 'dsh-code-wiki-diagram-scale' }, Math.round(camera.scale * 100) + '%'),
+              h('button', { type: 'button', onClick: () => zoom(1.25), disabled: camera.scale >= maxScale,
+                'aria-label': '放大', title: '放大' }, '+'),
+            ),
+            h('button', { type: 'button', onClick: () => setView(null) }, '查看全图'),
+          ),
+          h('button', { type: 'button', className: 'dsh-code-wiki-diagram-wheel', 'aria-pressed': wheelZoom,
+            onClick: () => setWheelZoom(!wheelZoom) },
+          h('span', { className: 'dsh-code-wiki-diagram-switch', 'aria-hidden': true }), '滚轮缩放'),
+          h('button', { type: 'button', className: 'dsh-code-wiki-diagram-details-toggle',
+            'aria-expanded': showDetails, 'aria-controls': detailsId, onClick: toggleDetails }, '组件与关系'),
+        ),
+        h('div', { className: 'dsh-code-wiki-diagram-workspace', 'data-inspecting': showDetails || undefined },
+        h('div', { ref: viewportRef, className: 'dsh-code-wiki-diagram-viewport', tabIndex: 0,
+          role: 'region', 'aria-label': '交互式架构图', 'aria-describedby': hintId,
+          'data-dragging': dragging ? '' : undefined,
+          onPointerDown: beginDrag, onPointerMove: moveDrag, onLostPointerCapture: endDrag, onKeyDown: onViewportKey,
+        },
+          h('div', { className: 'dsh-code-wiki-diagram', style: {
+            width, height, visibility: size.width && size.height ? undefined : 'hidden',
+            transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`,
+          } },
+            groups.map((layer, index) => h('div', {
               className: 'dsh-code-wiki-diagram-lane', key: index,
-              style: { left: percent(index * laneWidth + 8), width: percent(laneWidth - 16) },
+              style: { top: layer.top + 2, height: layer.height - 7 },
             }, h('span', null, layer.title))),
-            h('svg', { className: 'dsh-code-wiki-diagram-edges', viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: 'none',
+            h('svg', { className: 'dsh-code-wiki-diagram-edges', viewBox: `0 0 ${width} ${height}`,
               'aria-label': '模块连接' },
-              h('defs', null, h('marker', {
-                id: markerId, viewBox: '0 0 10 10', markerWidth: 7, markerHeight: 7, refX: 9, refY: 5, orient: 'auto-start-reverse',
-              }, h('path', { d: 'M0,0 L10,5 L0,10 Z', fill: 'currentColor' }))),
+              h('defs', null, [[markerId, 'var(--wiki-diagram-wire)'], [activeMarkerId, 'var(--wiki-accent-ink)']].map(([id, fill]) => h('marker', {
+                key: id, id, viewBox: '0 0 10 10', markerWidth: 6, markerHeight: 6, refX: 9, refY: 5, orient: 'auto',
+              }, h('path', { d: 'M0,0 L10,5 L0,10 Z', fill })))),
               edges.map((edge, index) => {
-                const d = edgePath(edge)
-                return sourceLink(edge.refs[0], { key: index, tabIndex: -1, className: 'dsh-code-wiki-diagram-edge' },
-                  h('title', null, edge.label + ' · ' + edge.refs[0].label),
-                  h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 14 }),
-                  h('path', { d, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, markerEnd: `url(#${markerId})` }),
+                const d = edgePath(edge, index)
+                const active = selected && (edge.from === selected.id || edge.to === selected.id)
+                return sourceLink(edge.refs[0], { key: index, tabIndex: -1, className: 'dsh-code-wiki-diagram-edge',
+                  'data-active': active ? '' : undefined, 'data-muted': selected && !active ? '' : undefined },
+                  h('title', null, nodes.get(edge.from).title + ' → ' + nodes.get(edge.to).title + ' · ' + edge.label),
+                  h('path', { className: 'dsh-code-wiki-diagram-edge-target', d, strokeWidth: 14 }),
+                  h('path', { d, fill: 'none', stroke: 'currentColor', strokeWidth: active ? 2 : 1.35,
+                    markerEnd: `url(#${active ? activeMarkerId : markerId})` }),
                 )
               }),
             ),
-            [...nodes.values()].map(node => sourceLink(node.refs[0], {
-              key: node.id, className: 'dsh-code-wiki-diagram-node',
-              style: { left: percent(node.x), width: percent(nodeWidth), top: node.y, height: nodeHeight },
-              title: node.title + ' · ' + node.refs[0].label,
-            }, h('strong', null, node.title), h('span', null, node.summary))),
+            [...nodes.values()].map(node => h('button', {
+              type: 'button', key: node.id, className: 'dsh-code-wiki-diagram-node',
+              'aria-pressed': selectedId === node.id,
+              'aria-controls': detailsId,
+              'aria-label': node.title,
+              'data-muted': selected && node.id !== selected.id && !relatedIds.has(node.id) ? '' : undefined,
+              style: { left: node.x, width: nodeWidth, top: node.y, height: nodeHeight },
+              onFocus: event => showNodeInViewport(event, node),
+              onClick: event => selectNode(node.id, event.currentTarget),
+            }, h('strong', null, node.title),
+            typeof node.technology === 'string' && node.technology && h('small', null, node.technology))),
           ),
         ),
-        h('details', { className: 'dsh-code-wiki-diagram-relations' },
-          h('summary', null, '模块关系与源码'),
-          h('ul', null, edges.map((edge, index) => h('li', { key: index },
+        h('section', { id: detailsId, className: 'dsh-code-wiki-diagram-relations', hidden: !showDetails,
+          'aria-label': '组件与关系详情' },
+          h('div', { className: 'dsh-code-wiki-diagram-selection' },
+            h('div', null,
+              selected && h('button', { type: 'button', className: 'dsh-code-wiki-diagram-show-components',
+                onClick: () => { setSelectedId(null); detailsHeadingRef.current?.focus() } }, '全部组件'),
+              h('h3', { ref: detailsHeadingRef, tabIndex: -1 }, selected ? selected.title : '组件与关系')),
+            h('button', { type: 'button', className: 'dsh-code-wiki-diagram-close-details', 'aria-label': '关闭组件详情',
+              title: '关闭组件详情', onClick: () => closeDetails(true) }, '×')),
+          selected && h('div', { className: 'dsh-code-wiki-diagram-description', 'aria-live': 'polite' },
+            h('p', null, selected.summary),
+            typeof selected.technology === 'string' && selected.technology && h('p', null, '实现技术 · ' + selected.technology),
+            typeof selected.boundary === 'string' && selected.boundary && h('p', null, '运行边界 · ' + selected.boundary),
+            h('h4', null, '源码'),
+            selected.refs.map((ref, i) => sourceLink(ref, { key: i }, ref.label))),
+          !selected && groups.map(layer => h('div', { key: layer.top, className: 'dsh-code-wiki-diagram-components' },
+            h('h4', null, layer.title),
+            layer.nodes.map(node => h('button', { key: node.id, type: 'button', onClick: () => {
+              selectNode(node.id)
+              detailsHeadingRef.current?.focus()
+            } }, node.title)))),
+          Boolean(relations.length) && h('h4', null, '模块关系'),
+          h('ul', null, relations.map((edge, index) => h('li', { key: index },
             h('strong', null, nodes.get(edge.from).title + ' → ' + nodes.get(edge.to).title),
             h('span', null, edge.label),
             edge.refs.map((ref, i) => sourceLink(ref, { key: i }, ref.label)),
           ))),
+          selected && !relations.length && h('p', null, '当前文档未记录该组件的已验证连接。'),
         ),
-      )
+        )))
     }
 
-    function WikiArticle({ result, chapterIndex }) {
+    function WikiArticle({ result, chapterIndex, headingRef }) {
       const chapter = result.chapters[chapterIndex]
       const repository = repositoryLabel(result)
       const title = result.documentTitle
@@ -831,10 +1010,8 @@ window.__ModuleLoader__.load({
 
       return h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
         h('header', { className: 'dsh-code-wiki-article-header' },
-          h('p', { className: 'dsh-code-wiki-eyebrow', title: result.repositoryPath },
-            result.source === 'github' ? h('a', { href: result.repoUrl, target: '_blank', rel: 'noreferrer' }, repository) : repository,
-            isDocumentTitle && ' · ' + title),
-          h('h1', { className: 'dsh-code-wiki-article-title' }, chapter.title),
+          isDocumentTitle && h('p', { className: 'dsh-code-wiki-eyebrow' }, title),
+          h('h1', { ref: headingRef, tabIndex: -1, className: 'dsh-code-wiki-article-title' }, chapter.title),
           h('div', { className: 'dsh-code-wiki-meta' },
             result.source === 'github' ? h('a', {
               className: 'dsh-code-wiki-revision',
@@ -851,7 +1028,7 @@ window.__ModuleLoader__.load({
           ),
           result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
         ),
-        chapterIndex === 0 && result.architecture && h(ArchitectureGraph, { graph: result.architecture }),
+        chapterIndex === 0 && result.architecture && h(ArchitectureGraph, { key: result.id, graph: result.architecture }),
         chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
           h(MarkdownText, { text: chapter.markdown, labels, omitHtml: true })),
       )
@@ -860,19 +1037,28 @@ window.__ModuleLoader__.load({
     function CodeWikiPage({ wiki }) {
       const snapshot = useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
       const { result, chapterIndex, formOpen, loading, picking, browserOpen,
-        documents, historyStatus, historyError, openingId, returnDocumentId, generation, progressOffline, deletion } = snapshot
+        documents, historyStatus, historyError, openingId, returnDocumentId, generation, progressOffline, deletion, error } = snapshot
       const formId = useId()
       const page = useRef(null)
+      const articleHeading = useRef(null)
       const documentId = result?.id
-      const showForm = picking || browserOpen || (!loading && (!result || formOpen))
+      const repository = result && repositoryLabel(result)
+      const showForm = formOpen && !loading
 
       useEffect(() => {
         void wiki.loadHistory()
         void wiki.resumeGeneration()
       }, [wiki])
       useEffect(() => {
+        if (documentId) articleHeading.current?.focus({ preventScroll: true })
+      }, [documentId])
+      useEffect(() => {
         if (documentId && page.current) page.current.scrollTop = 0
       }, [documentId, chapterIndex])
+
+      const progress = generation && !(generation.phase === 'completed' && documentId === generation.id) && h(GenerationProgress, {
+        generation, progressOffline, openDocument: wiki.openDocument,
+      })
 
       return h('section', {
         'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': result ? '' : undefined, ref: page,
@@ -881,39 +1067,37 @@ window.__ModuleLoader__.load({
         deletion && h(DeleteDocumentDialog, { deletion, wiki }),
         h('div', { className: 'dsh-code-wiki-shell' },
           h('header', { className: 'dsh-code-wiki-bar' },
-            result ? h(Button, {
-              className: 'dsh-code-wiki-back',
-              type: 'button',
-              icon: h(IconChevronLeftOutlineRegular, { size: 16 }),
-              onClick: wiki.returnToHistory,
-            }, '返回文档列表') : h('div', { className: 'dsh-code-wiki-brand' },
-              h('span', { className: 'dsh-code-wiki-brand-icon', 'aria-hidden': true }, h(CodeWikiIcon, { size: 18 })),
-              h('span', null, panelTitle),
-            ),
-            result && !loading && h('div', { className: 'dsh-code-wiki-actions' },
-              h(Button, {
-                type: 'button', variant: 'outline', size: 'sm',
-                icon: showForm ? undefined : h(IconPlusOutlineRegular, { size: 16 }),
-                disabled: loading || picking || browserOpen,
-                'aria-expanded': showForm,
-                'aria-controls': showForm ? formId : undefined,
-                onClick: wiki.toggleForm,
-              }, showForm ? '收起生成表单' : '新建 Wiki'),
-            ),
+            result ? h('nav', { className: 'dsh-code-wiki-breadcrumb', 'aria-label': '当前位置' },
+              h('button', { className: 'dsh-code-wiki-library-link', type: 'button', onClick: wiki.returnToHistory }, '文档库'),
+              h(IconChevronRightOutlineRegular, { size: 13, 'aria-hidden': true }),
+              result.source === 'github'
+                ? h('a', { href: result.repoUrl, target: '_blank', rel: 'noreferrer', title: '在 GitHub 打开 ' + repository }, repository)
+                : h('span', { title: result.repositoryPath }, repository),
+            ) : h('h1', { className: 'dsh-code-wiki-brand' },
+              h('span', { className: 'dsh-code-wiki-brand-icon', 'aria-hidden': true }, h(CodeWikiIcon, { size: 20 })),
+              '文档库'),
+            h('div', { className: 'dsh-code-wiki-actions' },
+              result ? h(VideoPanel, { key: result.id, documentId: result.id, hasArchitecture: Boolean(result.architecture), repository })
+                : h(Button, {
+                  type: 'button', variant: showForm ? 'outline' : 'primary', size: 'sm',
+                  icon: showForm ? undefined : h(IconPlusOutlineRegular, { size: 16 }),
+                  disabled: loading || picking || browserOpen,
+                  'aria-expanded': showForm,
+                  'aria-controls': showForm ? formId : undefined,
+                  onClick: () => wiki.setFormOpen(!showForm),
+                }, showForm ? '取消新建' : '新建 Wiki')),
           ),
-          h('div', { className: 'dsh-code-wiki-columns' },
+          result ? h('div', { className: 'dsh-code-wiki-columns' },
             h('aside', { className: 'dsh-code-wiki-sidebar' },
-              result && h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter }),
-              h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId, returnDocumentId }),
-            ),
+              h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter })),
             h('div', { className: 'dsh-code-wiki-main' },
-              generation && h(GenerationProgress, {
-                generation, progressOffline, openDocument: wiki.openDocument, showingResult: documentId === generation.id,
-              }),
-              showForm && h(GenerationForm, { wiki, formId, ...snapshot }),
-              result && h(WikiArticle, { result, chapterIndex }),
-            ),
-          ),
+              progress,
+              h(WikiArticle, { result, chapterIndex, headingRef: articleHeading })),
+          ) : h('div', { className: 'dsh-code-wiki-library' },
+            progress,
+            showForm && h(GenerationForm, { wiki, formId, ...snapshot }),
+            error && !showForm && h('p', { role: 'alert', className: 'dsh-code-wiki-feedback', 'data-error': 'true' }, error),
+            h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, returnDocumentId })),
         ),
       )
     }

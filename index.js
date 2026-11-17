@@ -6,6 +6,7 @@ import { collectGithubSource, openGithubRepository } from './src/github-source.j
 import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
 import { collectLocalSource, openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
+import { registerVideoApi } from './src/video-api.js'
 
 export const name = 'dsh-code-wiki'
 export const inject = ['connection', 'agents', 'llm', 'agentDefaultModel', 'profileContext']
@@ -97,6 +98,7 @@ async function documentsResponse(request, storage) {
 export function apply(ctx, config) {
   const lifetime = new AbortController()
   const storage = createWikiStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'documents'))
+  const videos = registerVideoApi(ctx, config, storage, selectModel, lifetime)
   const jobs = new Map()
   let active
 
@@ -232,8 +234,10 @@ export function apply(ctx, config) {
       }
       const { id } = await request.json().catch(() => null) ?? {}
       if (active && active.id === id) return json({ error: '文档正在生成，请等保存完成后再删除。' }, 409)
+      if (videos.busy(id)) return json({ error: '讲解视频正在生成，请先取消视频任务。' }, 409)
       try {
         if (!await storage.remove(id)) return json({ error: '文档编号无效。' }, 400)
+        await videos.remove(id)
         jobs.delete(id)
         return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
       } catch {

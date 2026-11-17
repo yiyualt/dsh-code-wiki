@@ -14,7 +14,7 @@ import { createWikiStorage } from '../src/wiki-storage.js'
 const git = promisify(execFile)
 const apiRoot = '/api/dsh-code-wiki/'
 
-async function fixture(t, services = {}) {
+async function fixture(t, services = {}, config) {
   const profileDirectory = await mkdtemp(join(tmpdir(), 'dsh-wiki-api-test-'))
   const routes = new Map()
   const cleanup = []
@@ -27,7 +27,7 @@ async function fixture(t, services = {}) {
     connection: { fetch: { register(route) { routes.set(route.path, route) } } },
     effect(install) { cleanup.push(install()) },
     ...services,
-  })
+  }, config)
   async function request(path, options) {
     const req = new Request('http://localhost' + apiRoot + path, options)
     const route = routes.get(new URL(req.url).pathname)
@@ -95,53 +95,57 @@ async function initRepository(directory) {
   ])
 }
 
+async function publishingAgent({ setup, signal }, release, restrictions = []) {
+  const tools = new Map()
+  setup({ tools: {
+    restrict: restriction => restrictions.push(restriction),
+    register: tool => tools.set(tool.name, tool),
+  } })
+  let run
+  const agent = {
+    followup() {
+      run = (async () => {
+        await release?.promise
+        signal.throwIfAborted()
+        const batch = await tools.get('wiki_read_batch').execute({ ranges: [
+          { path: 'main.js', start: 2 }, { path: 'core.js' }, { path: 'README.md' },
+        ] }, { signal })
+        const { results: [entry, core, readme] } = JSON.parse(batch.data)
+        const cite = span => [{ evidence: span.evidence, start: span.start, end: span.end }]
+        const point = (text, span) => ({ text, refs: cite(span) })
+        const node = (id, span) => ({ id, title: id, summary: id,
+          ...(id === 'entry' && { technology: 'JavaScript', boundary: '进程内模块' }), refs: cite(span) })
+        const chapter = (title, points) => ({ title, sections: [{ title, points }] })
+        const published = await tools.get('wiki_publish').execute({
+          chapters: [
+            chapter('Entry', [point('Uses committed source', entry), point('Reject this obsolete claim', readme)]),
+            chapter('Core', [point('Returns a value', core)]),
+          ],
+          graph: {
+            layers: [{ title: 'Entry', nodes: [node('entry', entry)] },
+              { title: 'Core', nodes: [node('core', core), node('output', entry), node('third', core),
+                node('fourth', core), node('fifth', core)] }],
+            edges: [{ from: 'entry', to: 'core', label: 'Calls', refs: cite(entry) },
+              { from: 'core', to: 'fifth', label: 'Returns', refs: cite(core) },
+              { from: 'output', to: 'entry', label: 'Obsolete relation', refs: cite(readme) }],
+          },
+        })
+        assert.match(published.status, /已通过校验/)
+      })()
+    },
+    whenIdle: () => run,
+    cancel: () => release?.resolve(),
+  }
+  return { agent, dispose: () => run }
+}
+
 test('running generation rejects deletion, then deleting its archive also removes completed-job data', async t => {
   const release = Promise.withResolvers()
   const restrictions = []
   const { post, request, profileDirectory } = await fixture(t, {
     agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture-model' }) },
     agents: {
-      async create({ setup, signal }) {
-        const tools = new Map()
-        setup({ tools: {
-          restrict: restriction => restrictions.push(restriction),
-          register: tool => tools.set(tool.name, tool),
-        } })
-        let run
-        const agent = {
-          followup() {
-            run = (async () => {
-              await release.promise
-              signal.throwIfAborted()
-              const batch = await tools.get('wiki_read_batch').execute({ ranges: [
-                { path: 'main.js', start: 2 }, { path: 'core.js' }, { path: 'README.md' },
-              ] }, { signal })
-              const { results: [entry, core, readme] } = JSON.parse(batch.data)
-              const cite = span => [{ evidence: span.evidence, start: span.start, end: span.end }]
-              const point = (text, span) => ({ text, refs: cite(span) })
-              const node = (id, span) => ({ id, title: id, summary: id, refs: cite(span) })
-              const chapter = (title, points) => ({ title, sections: [{ title, points }] })
-              const published = await tools.get('wiki_publish').execute({
-                chapters: [
-                  chapter('Entry', [point('Uses committed source', entry), point('Reject this obsolete claim', readme)]),
-                  chapter('Core', [point('Returns a value', core)]),
-                ],
-                graph: {
-                  layers: [{ title: 'Entry', nodes: [node('entry', entry)] },
-                    { title: 'Core', nodes: [node('core', core), node('output', entry)] }],
-                  edges: [{ from: 'entry', to: 'core', label: 'Calls', refs: cite(entry) },
-                    { from: 'core', to: 'output', label: 'Returns', refs: cite(core) },
-                    { from: 'output', to: 'entry', label: 'Obsolete relation', refs: cite(readme) }],
-                },
-              })
-              assert.match(published.status, /已通过校验/)
-            })()
-          },
-          whenIdle: () => run,
-          cancel: () => release.resolve(),
-        }
-        return { agent, dispose: () => run }
-      },
+      create: options => publishingAgent(options, release, restrictions),
     },
   })
   t.after(() => release.resolve())
@@ -169,6 +173,13 @@ test('running generation rejects deletion, then deleting its archive also remove
   assert.equal(finished?.phase, 'completed', finished?.error)
   assert.deepEqual(restrictions, [{ allow: [] }])
   assert.equal(finished.result.architecture.edges.length, 2)
+  assert.equal(finished.result.architecture.layers[1].nodes.length, 5)
+  assert.equal(finished.result.architecture.edges[1].to, 'fifth')
+  assert.match(finished.result.markdown, /\| fifth \|/)
+  assert.equal(finished.result.architecture.layers[0].nodes[0].technology, 'JavaScript')
+  assert.match(finished.result.markdown, /## Entry[\s\S]*## 技术沙盘[\s\S]*## Core/)
+  assert.match(finished.result.markdown, /\| entry \| entry \| JavaScript \| 进程内模块 \|/)
+  assert.match(finished.result.markdown, /\| core \| core \| 未确认 \| 未确认 \|/)
   assert.doesNotMatch(finished.result.markdown, /Reject this obsolete claim/)
   const source = new URL(finished.result.architecture.layers[0].nodes[0].refs[0].url)
   const code = await (await request('source' + source.search)).text()
@@ -178,4 +189,79 @@ test('running generation rejects deletion, then deleting its archive also remove
   assert.equal((await post('documents/delete', { id: job.id })).status, 204)
   assert.deepEqual(await (await request(generationPath)).json(), { job: null })
   assert.equal((await request('documents?id=' + job.id)).status, 404)
+})
+
+async function generateDocument(api, repositoryPath) {
+  const accepted = await api.post('generation', { repositoryPath })
+  assert.equal(accepted.status, 202)
+  const { job } = await accepted.json()
+  for (let attempt = 0; attempt < 250; attempt++) {
+    const current = (await (await api.request('generation?id=' + job.id)).json()).job
+    if (current.phase === 'completed' || current.phase === 'failed') return current
+    await delay(20)
+  }
+  assert.fail('Generation did not finish')
+}
+
+test('a fresh installation follows the current DSH provider, model and reasoning setting on each generation', async t => {
+  let selection = { provider: 'dsh-provider', model: 'dsh-model', reasoningEffort: 'medium' }
+  const calls = []
+  const api = await fixture(t, {
+    agentDefaultModel: { currentSelection: () => ({ ...selection }) },
+    llm: { registerAdapter() { assert.fail('A default installation must use the DSH adapter') } },
+    agents: { create(options) {
+      calls.push(options.agentOptions)
+      return publishingAgent(options)
+    } },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const first = await generateDocument(api, repositoryPath)
+  assert.equal(first.phase, 'completed', first.error)
+  assert.equal(first.result.model, selection.model)
+  assert.deepEqual(calls[0], { ...selection, maxTokens: 9000 })
+
+  selection = { provider: 'another-provider', model: 'another-model', reasoningEffort: 'high' }
+  const second = await generateDocument(api, repositoryPath)
+  assert.equal(second.phase, 'completed', second.error)
+  assert.equal(second.result.model, selection.model)
+  assert.deepEqual(calls[1], { ...selection, maxTokens: 9000 })
+})
+
+test('a local model override takes precedence over DSH and reports configuration failures', async t => {
+  const config = {}
+  const adapters = new Map()
+  let registrations = 0
+  const api = await fixture(t, {
+    agentDefaultModel: { currentSelection() { assert.fail('An explicit local override takes precedence') } },
+    llm: { registerAdapter([provider], adapter) {
+      registrations++
+      adapters.set(provider, adapter)
+      return () => adapters.delete(provider)
+    } },
+    agents: { create(options) {
+      const { provider, model } = options.agentOptions
+      assert.match(provider, /^code-wiki-/)
+      assert.equal(model, 'personal-gpt')
+      assert.equal(adapters.get(provider)?.model, model)
+      return publishingAgent(options)
+    } },
+  }, config)
+  config.modelConfigFile = join(api.profileDirectory, 'personal-model.json')
+  await writeFile(config.modelConfigFile, JSON.stringify({ judge: {
+    url: 'https://example.invalid/v1/chat/completions', model: 'personal-gpt', api_key: 'test-only-key',
+  } }))
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const result = await generateDocument(api, repositoryPath)
+  assert.equal(result.phase, 'completed', result.error)
+  assert.equal(result.result.model, 'personal-gpt')
+  assert.equal(registrations, 1)
+  assert.equal(adapters.size, 0)
+
+  await rm(config.modelConfigFile)
+  const failed = await generateDocument(api, repositoryPath)
+  assert.equal(failed.phase, 'failed')
+  assert.match(failed.error, /无法读取本地模型配置/)
+  assert.equal(registrations, 1)
 })
