@@ -499,40 +499,73 @@
   line-height: 1.2;
 }
 
+.dsh-code-wiki-progressbar {
+  position: relative;
+  block-size: 10px;
+  margin-block-start: 26px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wiki-accent) 17%, var(--wiki-paper));
+}
+
+.dsh-code-wiki-progressbar::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inline-size: 36%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--wiki-accent-ink), var(--wiki-accent));
+  animation: dsh-code-wiki-progress 1.9s ease-in-out infinite alternate;
+}
+
+@keyframes dsh-code-wiki-progress {
+  from { transform: translateX(0); }
+  to { transform: translateX(178%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsh-code-wiki-progressbar::before {
+    inline-size: 100%;
+    animation: none;
+    background: repeating-linear-gradient(135deg, var(--wiki-accent) 0 10px, transparent 10px 20px);
+  }
+}
+
 .dsh-code-wiki-generation-stages {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: clamp(8px, 2cqi, 18px);
-  margin: 25px 0 0;
+  margin: 13px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .dsh-code-wiki-generation-stages li {
-  display: grid;
-  gap: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--wiki-muted);
   font-size: 12px;
   line-height: 1.4;
 }
 
-.dsh-code-wiki-generation-stages li > span:last-child {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.dsh-code-wiki-stage-marker {
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  inline-size: 16px;
+  block-size: 16px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.55;
 }
 
-.dsh-code-wiki-stage-track {
-  position: relative;
-  display: block;
-  block-size: 5px;
-  overflow: hidden;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--wiki-muted) 13%, var(--wiki-paper));
-}
-
-.dsh-code-wiki-generation-stages li[data-state='done'] .dsh-code-wiki-stage-track {
-  background: var(--wiki-accent);
+.dsh-code-wiki-generation-stages li[data-state='done'] .dsh-code-wiki-stage-marker {
+  border-color: transparent;
+  background: var(--wiki-accent-fill);
+  color: var(--wiki-accent-ink);
+  opacity: 1;
 }
 
 .dsh-code-wiki-generation-stages li[data-state='active'] {
@@ -540,31 +573,9 @@
   font-weight: 700;
 }
 
-.dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-track {
-  background: var(--wiki-accent-fill);
-}
-
-.dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-track::before {
-  content: '';
-  position: absolute;
-  inset-block: 0;
-  inline-size: 44%;
-  border-radius: inherit;
-  background: var(--wiki-accent);
-  animation: dsh-code-wiki-progress 2.3s ease-in-out infinite alternate;
-}
-
-@keyframes dsh-code-wiki-progress {
-  from { transform: translateX(0); }
-  to { transform: translateX(127%); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-track::before {
-    inline-size: 100%;
-    animation: none;
-    opacity: 0.65;
-  }
+.dsh-code-wiki-generation-stages li[data-state='active'] .dsh-code-wiki-stage-marker {
+  border: 5px solid var(--wiki-accent);
+  opacity: 1;
 }
 
 .dsh-code-wiki-generation-detail,

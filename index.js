@@ -161,12 +161,39 @@ export function apply(ctx, config) {
     }
   }
 
+  async function startGeneration(request, background) {
+    if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+      return json({ error: '请求必须是 JSON。' }, 415)
+    }
+
+    const body = await request.json().catch(() => undefined)
+    const github = typeof body?.repositoryUrl === 'string' && body.repositoryUrl.length <= 300
+    const local = typeof body?.repositoryPath === 'string' && body.repositoryPath.length <= 4096
+    if (local === github) {
+      return json({ error: '请提供一个 GitHub 仓库地址或本地 Git 仓库路径。' }, 400)
+    }
+
+    if (active) return json({ error: '已有文档正在生成。', job: progress(active) }, 409)
+    const githubName = github && /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/i.exec(body.repositoryUrl.trim())?.[1]
+    const repository = github ? (githubName || 'GitHub 仓库') : (basename(body.repositoryPath) || '本地仓库')
+    const job = { id: randomUUID(), phase: 'reading', startedAt: Date.now(), repository }
+    jobs.set(job.id, job)
+    if (jobs.size > 8) jobs.delete(jobs.keys().next().value)
+    active = job
+    if (background) {
+      void runGeneration(job, body, github)
+      return json({ job: progress(job) }, 202)
+    }
+    return runGeneration(job, body, github, request.signal)
+  }
+
   ctx.effect(() => () => lifetime.abort())
   ctx.connection.fetch.register({
     path: generationRoute,
-    methods: ['GET'],
+    methods: ['GET', 'POST'],
     requestBody: 'buffered',
     fetch(request) {
+      if (request.method === 'POST') return startGeneration(request, true)
       const id = new URL(request.url).searchParams.get('id')
       return json({ job: progress(id === null ? active : jobs.get(id)) })
     },
@@ -187,30 +214,6 @@ export function apply(ctx, config) {
     path: generateRoute,
     methods: ['POST'],
     requestBody: 'buffered',
-    async fetch(request) {
-      if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
-        return json({ error: '请求必须是 JSON。' }, 415)
-      }
-
-      const body = await request.json().catch(() => undefined)
-      const github = typeof body?.repositoryUrl === 'string' && body.repositoryUrl.length <= 300
-      const local = typeof body?.repositoryPath === 'string' && body.repositoryPath.length <= 4096
-      if (local === github) {
-        return json({ error: '请提供一个 GitHub 仓库地址或本地 Git 仓库路径。' }, 400)
-      }
-
-      if (active) return json({ error: '已有文档正在生成。', job: progress(active) }, 409)
-      const githubName = github && /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/i.exec(body.repositoryUrl.trim())?.[1]
-      const repository = github ? (githubName || 'GitHub 仓库') : (basename(body.repositoryPath) || '本地仓库')
-      const job = { id: randomUUID(), phase: 'reading', startedAt: Date.now(), repository }
-      jobs.set(job.id, job)
-      if (jobs.size > 8) jobs.delete(jobs.keys().next().value)
-      active = job
-      if (request.headers.get('prefer') === 'respond-async') {
-        void runGeneration(job, body, github)
-        return json({ job: progress(job) }, 202)
-      }
-      return runGeneration(job, body, github, request.signal)
-    },
+    fetch: request => startGeneration(request, request.headers.get('prefer') === 'respond-async'),
   })
 }

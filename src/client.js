@@ -268,18 +268,19 @@ window.__ModuleLoader__.load({
           returnDocumentId: snapshot.result.id,
           chapterIndex: 0,
           formOpen: false,
+          ...(snapshot.generation?.phase === 'completed' && snapshot.generation.id === snapshot.result.id && { generation: null }),
           historyError: '',
           openingId: null,
         })
       }
 
-      function saveGenerationResult(data, revision, finished = null) {
+      function saveGenerationResult(data, revision, finished) {
         const result = readDocument(data)
-        if (!result || (finished && result.id !== finished.id)) throw new Error(generationError)
+        if (!result || result.id !== finished.id) throw new Error(generationError)
         const showResult = revision === readerRevision
         update({
           documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
-          generation: showResult ? null : finished,
+          generation: finished,
           formOpen: false,
           ...(showResult && { result, chapterIndex: 0 }),
         })
@@ -316,19 +317,21 @@ window.__ModuleLoader__.load({
         let response
         let data
         try {
-          response = await fetch(new URL('api/dsh-code-wiki/generate', document.baseURI), {
-            method: 'POST', credentials: 'same-origin', signal,
-            headers: { 'Content-Type': 'application/json', Prefer: 'respond-async' },
+          response = await fetch(new URL('api/dsh-code-wiki/generation', document.baseURI), {
+            method: 'POST', credentials: 'same-origin', signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(request),
           })
-          data = await response.json()
+          data = await response.json().catch(() => null)
         } catch {
           const job = !signal.aborted && await readGeneration(signal).catch(() => null)
-          if (job) return { job }
+          if (job) return job
           throw new Error(generationError)
         }
-        if ((response.status === 202 || response.status === 409) && validGeneration(data?.job)) return { job: data.job }
-        if (response.ok) return { result: data }
+        if ((response.status === 202 || response.status === 409) && validGeneration(data?.job)) return data.job
+        if (response.status === 404 || response.status === 405 || response.ok) {
+          throw new Error('生成进度服务尚未就绪。请重启 DSH 服务并刷新页面后重试。')
+        }
         throw new Error(typeof data?.error === 'string' && data.error ? data.error : generationError)
       }
 
@@ -346,12 +349,11 @@ window.__ModuleLoader__.load({
           })
         }
         try {
-          const { job, result } = request
+          const job = request
             ? await submitGeneration(request, controller.signal)
-            : { job: await readGeneration(controller.signal).catch(() => null) }
+            : await readGeneration(controller.signal).catch(() => null)
           if (controller.signal.aborted) return
           if (job) await followGeneration(job, controller.signal, revision)
-          else if (request) saveGenerationResult(result, revision)
         } catch (error) {
           if (!controller.signal.aborted) update({
             generation: null, error: error.message || generationError, formOpen: Boolean(snapshot.result),
@@ -569,7 +571,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function GenerationProgress({ generation, progressOffline, openDocument }) {
+    function GenerationProgress({ generation, progressOffline, openDocument, showingResult }) {
       const titleId = useId()
       const index = generationStages.findIndex(stage => stage.phase === generation.phase)
       const stage = generationStages[index]
@@ -577,7 +579,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'dsh-code-wiki-generation-done' },
           h('p', { role: 'status' }, h(IconCheckOutlineRegular, { size: 16, 'aria-hidden': true }),
             'Wiki 已保存', h('span', null, generation.repository + ' · 用时 ' + durationLabel(generation.elapsedMs))),
-          h(Button, { size: 'sm', variant: 'outline', onClick: () => void openDocument(generation.id) }, '打开文档'),
+          !showingResult && h(Button, { size: 'sm', variant: 'outline', onClick: () => void openDocument(generation.id) }, '打开文档'),
         )
       }
 
@@ -589,13 +591,15 @@ window.__ModuleLoader__.load({
           ),
           h(GenerationClock, { elapsedMs: generation.elapsedMs, receivedAt: generation.receivedAt }),
         ),
+        h('div', { className: 'dsh-code-wiki-progressbar', role: 'progressbar', 'aria-labelledby': titleId }),
         h('ol', { className: 'dsh-code-wiki-generation-stages', 'aria-label': '生成阶段' },
           generationStages.map(({ phase, label }, i) => h('li', {
             key: phase, 'data-state': i < index ? 'done' : i === index ? 'active' : 'waiting',
             'aria-current': i === index ? 'step' : undefined,
           },
-          h('span', { className: 'dsh-code-wiki-stage-track', 'aria-hidden': true }),
-          h('span', null, i < index && h(IconCheckOutlineRegular, { size: 13, 'aria-hidden': true }), label),
+          h('span', { className: 'dsh-code-wiki-stage-marker', 'aria-hidden': true },
+            i < index && h(IconCheckOutlineRegular, { size: 13 })),
+          label,
           )),
         ),
         h('p', { className: 'dsh-code-wiki-generation-detail' },
@@ -691,7 +695,9 @@ window.__ModuleLoader__.load({
               h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId, returnDocumentId }),
             ),
             h('div', { className: 'dsh-code-wiki-main' },
-              generation && h(GenerationProgress, { generation, progressOffline, openDocument: wiki.openDocument }),
+              generation && h(GenerationProgress, {
+                generation, progressOffline, openDocument: wiki.openDocument, showingResult: documentId === generation.id,
+              }),
               showForm && h(GenerationForm, { wiki, formId, ...snapshot }),
               result && h(WikiArticle, { result, chapterIndex }),
             ),
