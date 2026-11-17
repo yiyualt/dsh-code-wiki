@@ -12,6 +12,10 @@ dsh plugin --profile web add ./dsh-code-wiki-0.7.4.tgz
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
 
+## 测试
+
+在源码仓库根目录用 Node.js 22 和 Git 运行 `npm test`。测试使用临时归档和 Git 仓库，并用模拟代理验证生成接口。
+
 ## 试用
 
 1. 确认 DSH 的默认模型或插件单独配置的模型可用。
