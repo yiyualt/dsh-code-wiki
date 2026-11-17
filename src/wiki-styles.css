@@ -846,3 +846,163 @@ a.dsh-code-wiki-revision:hover {
     grid-template-columns: repeat(auto-fit, minmax(min(85px, 100%), 1fr));
   }
 }
+
+.dsh-code-wiki-generation-source {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 9px;
+  margin-block: 7px 0;
+  color: var(--wiki-accent-ink);
+  font-size: 12px;
+}
+
+.dsh-code-wiki-generation-source code {
+  min-inline-size: 0;
+  color: var(--wiki-muted);
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-architecture {
+  padding: clamp(20px, 4cqi, 36px) var(--wiki-reading-pad) 0;
+}
+
+.dsh-code-wiki-architecture h2 {
+  margin: 0 0 14px;
+  font-size: 21px;
+  line-height: 1.35;
+}
+
+.dsh-code-wiki-diagram-scroll {
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 14px;
+  background: var(--wiki-canvas);
+}
+
+.dsh-code-wiki-diagram {
+  position: relative;
+  isolation: isolate;
+}
+
+.dsh-code-wiki-diagram-lane {
+  position: absolute;
+  inset-block: 3px 4px;
+  border: 1px solid var(--wiki-accent-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--wiki-accent) 5%, var(--wiki-paper));
+}
+
+.dsh-code-wiki-diagram-lane span {
+  display: block;
+  margin: 10px 10px 0;
+  color: var(--wiki-accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-diagram-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: var(--wiki-accent);
+  pointer-events: none;
+}
+
+.dsh-code-wiki-diagram-edge path {
+  pointer-events: stroke;
+}
+
+.dsh-code-wiki-diagram-edge:hover,
+.dsh-code-wiki-diagram-edge:focus-visible {
+  color: var(--wiki-accent-ink);
+}
+
+.dsh-code-wiki-diagram-edge:hover path:last-child,
+.dsh-code-wiki-diagram-edge:focus-visible path:last-child {
+  stroke-width: 2.5;
+}
+
+.dsh-code-wiki-diagram-node {
+  box-sizing: border-box;
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--wiki-accent-line);
+  border-radius: 9px;
+  background: var(--wiki-paper);
+  color: var(--wiki-accent-ink);
+  text-decoration: none;
+  box-shadow: 0 2px 5px rgb(16 25 56 / 6%);
+}
+
+.dsh-code-wiki-diagram-node:hover,
+.dsh-code-wiki-diagram-node:focus-visible {
+  border-color: var(--wiki-accent);
+  background: color-mix(in srgb, var(--wiki-accent) 9%, var(--wiki-paper));
+}
+
+.dsh-code-wiki-diagram-node strong,
+.dsh-code-wiki-diagram-node span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-diagram-node strong {
+  font-size: 13px;
+  line-height: 1.25;
+  -webkit-line-clamp: 2;
+}
+
+.dsh-code-wiki-diagram-node span {
+  color: var(--wiki-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  -webkit-line-clamp: 2;
+}
+
+.dsh-code-wiki-diagram-relations {
+  margin-block-start: 11px;
+  padding: 9px 12px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 10px;
+  color: var(--wiki-ink);
+  font-size: 13px;
+}
+
+.dsh-code-wiki-diagram-relations summary {
+  padding-block: 2px;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.dsh-code-wiki-diagram-relations ul {
+  display: grid;
+  gap: 9px;
+  margin-block: 9px 2px;
+  padding-inline-start: 17px;
+}
+
+.dsh-code-wiki-diagram-relations li > * {
+  margin-inline-end: 6px;
+}
+
+.dsh-code-wiki-diagram-relations li span {
+  color: var(--wiki-muted);
+}
+
+.dsh-code-wiki-diagram-relations a {
+  color: var(--wiki-accent-ink);
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}

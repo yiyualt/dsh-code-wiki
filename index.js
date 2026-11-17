@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { readConfiguredModel } from './src/configured-model.js'
-import { collectGithubSource } from './src/github-source.js'
+import { exploreArchitecture } from './src/architecture.js'
+import { collectGithubSource, openGithubRepository } from './src/github-source.js'
 import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
-import { collectLocalSource } from './src/local-source.js'
+import { collectLocalSource, openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
 
 export const name = 'dsh-code-wiki'
-export const inject = ['connection', 'llm', 'agentDefaultModel', 'profileContext']
+export const inject = ['connection', 'agents', 'llm', 'agentDefaultModel', 'profileContext']
 
 const generateRoute = '/api/dsh-code-wiki/generate'
 const generationRoute = '/api/dsh-code-wiki/generation'
@@ -46,8 +47,9 @@ async function localSourceResponse(request, storage) {
     const document = await storage.get(query.get('key'))
     const evidence = document?.files?.[file - 1]
     const lines = evidence?.text.replace(/\r?\n$/, '').split('\n')
-    if (!lines || end > lines.length) return plainText(missing, 404)
-    const excerpt = lines.slice(start - 1, end).map((line, i) => `${start + i} | ${line}`).join('\n')
+    const first = evidence?.startLine ?? 1
+    if (!lines || start < first || end >= first + lines.length) return plainText(missing, 404)
+    const excerpt = lines.slice(start - first, end - first + 1).map((line, i) => `${start + i} | ${line}`).join('\n')
     return plainText(`${evidence.path}\nCommit ${document.commit}\n\n${excerpt}\n`)
   } catch {
     return plainText('无法读取本地源码引用。', 500)
@@ -103,7 +105,7 @@ export function apply(ctx, config) {
     return { ...status, elapsedMs: Math.max(0, (finishedAt ?? Date.now()) - startedAt) }
   }
 
-  async function runGeneration(job, body, github, requestSignal) {
+  async function runGeneration(job, body, github, architecture, requestSignal) {
     const timeout = AbortSignal.timeout(15 * 60_000)
     const signal = AbortSignal.any([lifetime.signal, timeout, ...(requestSignal ? [requestSignal] : [])])
     function fail(error, status) {
@@ -111,21 +113,35 @@ export function apply(ctx, config) {
       return json({ error }, status)
     }
     try {
-      const source = github
-        ? await collectGithubSource(body.repositoryUrl, { signal })
-        : await collectLocalSource(body.repositoryPath, { signal })
+      const readRepository = github ? architecture ? openGithubRepository : collectGithubSource
+        : architecture ? openLocalRepository : collectLocalSource
+      const source = await readRepository(github ? body.repositoryUrl : body.repositoryPath, { signal })
       job.repository = github ? `${source.owner}/${source.repo}` : source.repo
       job.phase = 'writing'
       if (!github) source.sourceKey = job.id
       let markdown
+      let graph
+      let files = source.files
       let note
       let model
       try {
         const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal)
-        markdown = await generateWiki(llm, selection, source, signal)
+        if (architecture) {
+          const result = await exploreArchitecture(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
+            signal, (count, path) => { job.filesRead = count; job.currentFile = path })
+          markdown = result.markdown
+          graph = result.architecture
+          files = result.files.map(file => ({ path: file.path, text: file.text, startLine: file.start }))
+        } else {
+          markdown = await generateWiki(llm, selection, source, signal)
+        }
         model = selection.model
       } catch (error) {
         if (signal.aborted || !['model-unavailable', 'model-output-invalid'].includes(error?.code)) throw error
+        if (architecture) {
+          return fail(error.code === 'model-output-invalid' ? '架构说明校验未通过。' + error.message
+            : '架构分析 ' + modelNote(error).replace('，以下为源码摘录。', '。请重试。'), 502)
+        }
         markdown = renderSourceWiki(source)
         note = modelNote(error)
       }
@@ -137,9 +153,10 @@ export function apply(ctx, config) {
         durationMs: Math.max(0, Date.now() - job.startedAt),
         source: github ? 'github' : 'local',
         ...(github ? { repoUrl: `https://github.com/${source.owner}/${source.repo}` }
-          : { repositoryPath: source.repositoryPath, repoName: source.repo, files: source.files }),
+          : { repositoryPath: source.repositoryPath, repoName: source.repo, files }),
         commit: source.commit,
         markdown,
+        ...(graph && { architecture: graph }),
         model,
         note,
       }
@@ -161,7 +178,7 @@ export function apply(ctx, config) {
     }
   }
 
-  async function startGeneration(request, background) {
+  async function startGeneration(request, background, architecture = false) {
     if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
       return json({ error: '请求必须是 JSON。' }, 415)
     }
@@ -181,10 +198,10 @@ export function apply(ctx, config) {
     if (jobs.size > 8) jobs.delete(jobs.keys().next().value)
     active = job
     if (background) {
-      void runGeneration(job, body, github)
+      void runGeneration(job, body, github, architecture)
       return json({ job: progress(job) }, 202)
     }
-    return runGeneration(job, body, github, request.signal)
+    return runGeneration(job, body, github, architecture, request.signal)
   }
 
   ctx.effect(() => () => lifetime.abort())
@@ -193,7 +210,7 @@ export function apply(ctx, config) {
     methods: ['GET', 'POST'],
     requestBody: 'buffered',
     fetch(request) {
-      if (request.method === 'POST') return startGeneration(request, true)
+      if (request.method === 'POST') return startGeneration(request, true, true)
       const id = new URL(request.url).searchParams.get('id')
       return json({ job: progress(id === null ? active : jobs.get(id)) })
     },

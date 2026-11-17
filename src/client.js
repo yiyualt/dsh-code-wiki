@@ -37,6 +37,45 @@ window.__ModuleLoader__.load({
       })
     }
 
+    function readArchitecture(graph, metadata) {
+      if (!Array.isArray(graph?.layers) || !Array.isArray(graph.edges)) return null
+      function citations(refs) {
+        if (!Array.isArray(refs)) return []
+        return refs.slice(0, 4).flatMap(ref => {
+          if (typeof ref?.label !== 'string' || typeof ref.url !== 'string') return []
+          const url = URL.parse(ref.url)
+          if (!url) return []
+          if (metadata.source === 'github') {
+            if (!url.href.startsWith(metadata.repoUrl + '/blob/' + metadata.commit + '/') || !/^#L\d+(?:-L\d+)?$/.test(url.hash)) return []
+            return [{ label: ref.label, href: url.href }]
+          }
+          if (url.origin !== 'https://dsh-code-wiki.invalid' || url.pathname !== '/source'
+            || !new RegExp('^\\?key=' + metadata.id + '&file=\\d+&start=\\d+&end=\\d+$').test(url.search)) return []
+          const local = new URL('api/dsh-code-wiki/source', document.baseURI)
+          local.search = url.search
+          return [{ label: ref.label, href: local.href }]
+        })
+      }
+      const ids = new Set()
+      const layers = graph.layers.slice(0, 4).flatMap(layer => {
+        if (typeof layer?.title !== 'string' || !Array.isArray(layer.nodes)) return []
+        const nodes = layer.nodes.slice(0, 3).flatMap(node => {
+          if (typeof node?.id !== 'string' || ids.has(node.id) || typeof node.title !== 'string' || typeof node.summary !== 'string') return []
+          const refs = citations(node.refs)
+          if (!refs.length) return []
+          ids.add(node.id)
+          return [{ ...node, refs }]
+        })
+        return nodes.length ? [{ title: layer.title, nodes }] : []
+      })
+      const edges = graph.edges.slice(0, 16).flatMap(edge => {
+        if (!ids.has(edge?.from) || !ids.has(edge?.to) || typeof edge.label !== 'string') return []
+        const refs = citations(edge.refs)
+        return refs.length ? [{ ...edge, refs }] : []
+      })
+      return layers.length > 1 && edges.length ? { layers, edges } : null
+    }
+
     function CodeWikiIcon({ size }) {
       return h(IconCodeOutlineRegular, { size })
     }
@@ -102,6 +141,7 @@ window.__ModuleLoader__.load({
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
         durationMs: Number.isSafeInteger(data.durationMs) && data.durationMs >= 0 ? data.durationMs : undefined,
+        architecture: readArchitecture(data.architecture, metadata),
       }
     }
 
@@ -604,7 +644,86 @@ window.__ModuleLoader__.load({
         ),
         h('p', { className: 'dsh-code-wiki-generation-detail' },
           progressOffline ? '正在重新连接，稍后会同步进度。' : stage?.detail ?? '任务开始后会显示当前阶段。'),
+        generation.filesRead > 0 && h('p', { className: 'dsh-code-wiki-generation-source' },
+          '已读取 ' + generation.filesRead + ' 个文件', h('code', null, generation.currentFile)),
         h('p', { className: 'dsh-code-wiki-generation-background' }, '可切换面板或关闭页面，生成会继续。'),
+      )
+    }
+
+    function ArchitectureGraph({ graph }) {
+      const titleId = useId()
+      const markerId = useId()
+      const { layers, edges } = graph
+      const nodeHeight = 92
+      const laneWidth = 250
+      const width = laneWidth * layers.length
+      const height = 57 + 120 * Math.max(...layers.map(layer => layer.nodes.length))
+      const nodes = new Map()
+      for (const [column, layer] of layers.entries()) {
+        const offset = (height - 57 - 120 * layer.nodes.length) / 2
+        for (const [row, node] of layer.nodes.entries()) {
+          nodes.set(node.id, { ...node, column, x: column * laneWidth + 21, y: 53 + offset + row * 120 })
+        }
+      }
+      const nodeWidth = laneWidth - 56
+      const percent = value => (100 * value / width) + '%'
+      const sourceLink = (ref, props, ...children) => h('a', {
+        href: ref.href, target: '_blank', rel: 'noopener noreferrer', ...props,
+      }, ...children)
+
+      function edgePath(edge) {
+        const from = nodes.get(edge.from)
+        const to = nodes.get(edge.to)
+        const fromY = from.y + nodeHeight / 2
+        const toY = to.y + nodeHeight / 2
+        if (from.column === to.column) {
+          const x = from.x + nodeWidth
+          return `M${x},${fromY} C${x + 38},${fromY} ${x + 38},${toY} ${x + 2},${toY}`
+        }
+        const forward = from.column < to.column
+        const x = forward ? from.x + nodeWidth : from.x
+        const end = forward ? to.x - 2 : to.x + nodeWidth + 2
+        const middle = x + (end - x) / 2
+        return `M${x},${fromY} C${middle},${fromY} ${middle},${toY} ${end},${toY}`
+      }
+
+      return h('section', { className: 'dsh-code-wiki-architecture', 'aria-labelledby': titleId },
+        h('h2', { id: titleId }, '架构图'),
+        h('div', { className: 'dsh-code-wiki-diagram-scroll', tabIndex: 0, role: 'region', 'aria-label': '可横向滚动的架构图' },
+          h('div', { className: 'dsh-code-wiki-diagram', style: { height, minWidth: layers.length * 190 } },
+            layers.map((layer, index) => h('div', {
+              className: 'dsh-code-wiki-diagram-lane', key: index,
+              style: { left: percent(index * laneWidth + 8), width: percent(laneWidth - 16) },
+            }, h('span', null, layer.title))),
+            h('svg', { className: 'dsh-code-wiki-diagram-edges', viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: 'none',
+              'aria-label': '模块连接' },
+              h('defs', null, h('marker', {
+                id: markerId, viewBox: '0 0 10 10', markerWidth: 7, markerHeight: 7, refX: 9, refY: 5, orient: 'auto-start-reverse',
+              }, h('path', { d: 'M0,0 L10,5 L0,10 Z', fill: 'currentColor' }))),
+              edges.map((edge, index) => {
+                const d = edgePath(edge)
+                return sourceLink(edge.refs[0], { key: index, tabIndex: -1, className: 'dsh-code-wiki-diagram-edge' },
+                  h('title', null, edge.label + ' · ' + edge.refs[0].label),
+                  h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 14 }),
+                  h('path', { d, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, markerEnd: `url(#${markerId})` }),
+                )
+              }),
+            ),
+            [...nodes.values()].map(node => sourceLink(node.refs[0], {
+              key: node.id, className: 'dsh-code-wiki-diagram-node',
+              style: { left: percent(node.x), width: percent(nodeWidth), top: node.y, height: nodeHeight },
+              title: node.title + ' · ' + node.refs[0].label,
+            }, h('strong', null, node.title), h('span', null, node.summary))),
+          ),
+        ),
+        h('details', { className: 'dsh-code-wiki-diagram-relations' },
+          h('summary', null, '模块关系与源码'),
+          h('ul', null, edges.map((edge, index) => h('li', { key: index },
+            h('strong', null, nodes.get(edge.from).title + ' → ' + nodes.get(edge.to).title),
+            h('span', null, edge.label),
+            edge.refs.map((ref, i) => sourceLink(ref, { key: i }, ref.label)),
+          ))),
+        ),
       )
     }
 
@@ -612,7 +731,8 @@ window.__ModuleLoader__.load({
       const chapter = result.chapters[chapterIndex]
       const repository = repositoryLabel(result)
       const title = result.documentTitle
-      const isDocumentTitle = title && title !== chapter.title && title !== repository.replace(/\s+/g, ' ') + ' Wiki'
+      const isDocumentTitle = title && title !== chapter.title
+        && ![repository + ' Wiki', repository + ' 架构 Wiki'].includes(title)
       const shortCommit = result.commit.slice(0, 12)
       const revision = h(React.Fragment, null,
         h('span', { 'aria-hidden': true }, h(IconBranchOutlineRegular, { size: 14 })),
@@ -641,6 +761,7 @@ window.__ModuleLoader__.load({
           ),
           result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
         ),
+        chapterIndex === 0 && result.architecture && h(ArchitectureGraph, { graph: result.architecture }),
         chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
           h(MarkdownText, { text: chapter.markdown, labels, omitHtml: true })),
       )

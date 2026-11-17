@@ -13,7 +13,7 @@ const nonempty = value => typeof value === 'string' && Boolean(value.trim())
 
 function documentRecord(document, id) {
   if (document?.id !== id || !uuid.test(id)) return
-  const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs } = document
+  const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs, architecture } = document
   if ((typeof createdAt !== 'string' && typeof createdAt !== 'number')
     || !Number.isFinite(timestamp(createdAt))
     || typeof commit !== 'string' || !commitHash.test(commit)
@@ -26,6 +26,7 @@ function documentRecord(document, id) {
   const content = {
     markdown, ...(model !== undefined && { model }), ...(note !== undefined && { note }),
     ...(Number.isSafeInteger(durationMs) && durationMs >= 0 && { durationMs }),
+    ...(Array.isArray(architecture?.layers) && Array.isArray(architecture?.edges) && { architecture }),
   }
   if (source === 'github' && typeof repoUrl === 'string' && githubRepo.test(repoUrl)) {
     return { ...metadata, repoUrl, ...content }
@@ -35,7 +36,9 @@ function documentRecord(document, id) {
       || !files.every(file => nonempty(file?.path) && typeof file.text === 'string'))) return
     return {
       ...metadata, repositoryPath, ...content,
-      ...(files !== undefined && { files: files.map(({ path, text }) => ({ path, text })) }),
+      ...(files !== undefined && { files: files.map(({ path, text, startLine }) => ({
+        path, text, ...(Number.isSafeInteger(startLine) && startLine > 1 && { startLine }),
+      })) }),
     }
   }
 }

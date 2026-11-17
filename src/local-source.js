@@ -102,7 +102,7 @@ function parseTree(output) {
   return tree
 }
 
-async function readFile(root, git, { path, sha, group, module }) {
+async function readBlob(root, git, sha, maxBytes) {
   let size
   try {
     size = Number(await git(root, ['cat-file', '-s', sha]))
@@ -114,36 +114,53 @@ async function readFile(root, git, { path, sha, group, module }) {
   if (!Number.isSafeInteger(size) || size < 1) return null
   let content
   try {
-    content = await git(root, ['cat-file', 'blob', sha], { encoding: 'buffer', maxBuffer: maxBlobBytes })
+    content = await git(root, ['cat-file', 'blob', sha], { encoding: 'buffer', maxBuffer: maxBytes })
     if (content.length !== size) throw readFailed()
   } catch (error) {
     // execFile terminates a larger Git read at the byte cap and returns its prefix.
-    if (size <= maxBlobBytes || error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-      || !Buffer.isBuffer(error.stdout) || error.stdout.length !== maxBlobBytes) throw error
+    if (size <= maxBytes || error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      || !Buffer.isBuffer(error.stdout) || error.stdout.length !== maxBytes) throw error
     content = error.stdout.subarray(0, error.stdout.lastIndexOf(10) + 1)
   }
-  const text = excerpt(content)
-  return text ? { path, text, group, ...(module && { module }) } : null
+  return content
 }
 
-export async function collectLocalSource(repositoryPath, { signal } = {}) {
+export async function openLocalRepository(repositoryPath, { signal } = {}) {
   const deadline = AbortSignal.timeout(readTimeout)
   const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline
   const git = createGit(requestSignal)
   const root = await worktreeRoot(repositoryPath, git)
   const commit = await headCommit(root, git)
+  try {
+    const tree = parseTree(await git(root, ['ls-tree', '-r', '-z', '--full-tree', commit]))
+    return {
+      repositoryPath: root, repo: basename(root), commit, tree,
+      read(entry, maxBytes, readSignal = signal) {
+        const timeout = AbortSignal.timeout(readTimeout)
+        return readBlob(root, createGit(readSignal ? AbortSignal.any([readSignal, timeout]) : timeout), entry.sha, maxBytes)
+      },
+    }
+  } catch {
+    throw readFailed()
+  }
+}
 
+export async function collectLocalSource(repositoryPath, { signal } = {}) {
+  const source = await openLocalRepository(repositoryPath, { signal })
   const files = []
   try {
-    const output = await git(root, ['ls-tree', '-r', '-z', '--full-tree', commit])
-    const candidates = selectFiles(parseTree(output))
+    const candidates = selectFiles(source.tree)
     for (let index = 0; index < candidates.length; index += batchSize) {
-      const batch = await Promise.all(candidates.slice(index, index + batchSize).map(file => readFile(root, git, file)))
+      const batch = await Promise.all(candidates.slice(index, index + batchSize).map(async file => {
+        const bytes = await source.read(file, maxBlobBytes)
+        const text = bytes ? excerpt(bytes) : ''
+        return text ? { ...file, text } : null
+      }))
       files.push(...batch.filter(Boolean))
     }
   } catch {
     throw readFailed()
   }
   if (!files.length) throw noEvidence('当前提交没有可读取的源码、项目文档或开发配置。')
-  return { repositoryPath: root, repo: basename(root), commit, files }
+  return { repositoryPath: source.repositoryPath, repo: source.repo, commit: source.commit, files }
 }

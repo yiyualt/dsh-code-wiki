@@ -283,7 +283,7 @@ async function readGitSnapshot(owner, repo, signal) {
   }
 }
 
-export async function collectGithubSource(repositoryUrl, { signal } = {}) {
+export async function openGithubRepository(repositoryUrl, { signal } = {}) {
   const { owner, repo } = parseRepository(repositoryUrl)
   const deadline = AbortSignal.timeout(requestTimeout)
   const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline
@@ -300,13 +300,24 @@ export async function collectGithubSource(repositoryUrl, { signal } = {}) {
   }
 
   const { commit, tree } = snapshot
-  const candidates = selectFiles(tree)
   const ref = `${rawBase}/${owner}/${repo}/${commit}`
+  return {
+    owner, repo, commit, tree,
+    read(path, bytes, readSignal = signal) {
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+      const timeout = AbortSignal.timeout(requestTimeout)
+      return readGitHub(`${ref}/${encodedPath}`, readSignal ? AbortSignal.any([readSignal, timeout]) : timeout, { raw: true, bytes })
+    },
+  }
+}
+
+export async function collectGithubSource(repositoryUrl, { signal } = {}) {
+  const source = await openGithubRepository(repositoryUrl, { signal })
+  const candidates = selectFiles(source.tree)
   const files = []
   for (let index = 0; index < candidates.length; index += batchSize) {
     const batch = await Promise.all(candidates.slice(index, index + batchSize).map(async ({ path, group, module }) => {
-      const encodedPath = path.split('/').map(encodeURIComponent).join('/')
-      const bytes = await readGitHub(`${ref}/${encodedPath}`, requestSignal, { raw: true, bytes: maxBlobBytes })
+      const bytes = await source.read(path, maxBlobBytes)
       return { path, text: bytes ? excerpt(bytes) : '', group, ...(module && { module }) }
     }))
     files.push(...batch.filter(file => file.text))
@@ -314,5 +325,5 @@ export async function collectGithubSource(repositoryUrl, { signal } = {}) {
   if (!files.length) {
     throw sourceError('repository-no-evidence', '该提交中没有找到可读取的源码、项目文档或开发配置。')
   }
-  return { owner, repo, commit, files }
+  return { owner: source.owner, repo: source.repo, commit: source.commit, files }
 }
