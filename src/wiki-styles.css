@@ -239,6 +239,39 @@
   margin-inline-start: 9px;
 }
 
+.dsh-code-wiki-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 2px;
+}
+
+.dsh-code-wiki-history .dsh-code-wiki-delete {
+  width: 28px;
+  padding: 0;
+  color: var(--wiki-muted);
+}
+
+.dsh-code-wiki-history .dsh-code-wiki-delete:hover,
+.dsh-code-wiki-history .dsh-code-wiki-delete:focus-visible {
+  color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+}
+
+.dsh-code-wiki-confirm-delete {
+  --dsw-alias-button-primary-fill: var(--dsw-alias-state-error-primary);
+  --dsw-alias-button-primary-hover: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-code-wiki-delete-summary {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-delete-error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
 .dsh-code-wiki-history .dsh-code-wiki-history-item {
   display: flex;
   align-items: center;

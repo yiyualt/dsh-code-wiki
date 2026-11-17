@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
     const { createElement: h, useEffect, useId, useRef, useState, useSyncExternalStore } = React
     const {
       Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronLeftOutlineRegular, IconCodeOutlineRegular,
-      IconPlusOutlineRegular, Input, MarkdownText,
+      IconPlusOutlineRegular, IconTrashOutlineRegular, Input, MarkdownText, Modal,
     } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const panelId = 'dsh-code-wiki'
@@ -206,13 +206,16 @@ window.__ModuleLoader__.load({
         historyStatus: 'idle',
         historyError: '',
         openingId: null,
+        deletion: null,
       }
       let activeRequest
       let listRequest
       let openRequest
+      let deleteRequest
       let readerRevision = 0
       let disposed = false
       const listeners = new Set()
+      const deletedIds = new Set()
 
       function update(patch) {
         if (disposed) return
@@ -255,7 +258,7 @@ window.__ModuleLoader__.load({
           })
           const data = await response.json()
           if (!response.ok || !Array.isArray(data?.documents)) throw new Error(historyLoadError)
-          const incoming = data.documents.map(documentMetadata).filter(Boolean)
+          const incoming = data.documents.map(documentMetadata).filter(item => item && !deletedIds.has(item.id))
           const recent = snapshot.documents.filter(item => !existingIds.has(item.id))
           update({ documents: mergeDocuments(incoming, recent), historyStatus: 'ready' })
         } catch {
@@ -266,7 +269,7 @@ window.__ModuleLoader__.load({
       }
 
       async function openDocument(id) {
-        if (disposed || snapshot.openingId === id) return
+        if (disposed || snapshot.openingId === id || deletedIds.has(id)) return
         openRequest?.abort()
         const revision = ++readerRevision
         if (snapshot.result?.id === id) {
@@ -298,6 +301,50 @@ window.__ModuleLoader__.load({
         }
       }
 
+      async function deleteDocument() {
+        const deletion = snapshot.deletion
+        if (disposed || !deletion || deleteRequest) return
+        const { id } = deletion.item
+        const controller = new AbortController()
+        deleteRequest = controller
+        update({ deletion: { ...deletion, pending: true, error: '' } })
+        try {
+          const response = await fetch(new URL('api/dsh-code-wiki/documents/delete', document.baseURI), {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id }),
+            signal: controller.signal,
+          })
+          if (response.status !== 204) {
+            const data = await response.json().catch(() => null)
+            throw new Error(typeof data?.error === 'string' ? data.error : '无法删除文档，请重试。')
+          }
+          if (controller.signal.aborted) return
+          deletedIds.add(id)
+          const openingDeleted = snapshot.openingId === id
+          if (openingDeleted) {
+            openRequest?.abort()
+            openRequest = undefined
+          }
+          update({
+            deletion: null,
+            documents: snapshot.documents.filter(item => item.id !== id),
+            ...(openingDeleted && { openingId: null }),
+            ...(snapshot.result?.id === id && { result: null, chapterIndex: 0, formOpen: false }),
+            ...(snapshot.returnDocumentId === id && { returnDocumentId: null }),
+            ...(snapshot.generation?.id === id && { generation: null }),
+          })
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            update({ deletion: { ...deletion, pending: false,
+              error: error instanceof TypeError ? '无法连接到 DSH，请重试。' : error.message || '无法删除文档，请重试。' } })
+          }
+        } finally {
+          deleteRequest = undefined
+        }
+      }
+
       function returnToHistory() {
         if (disposed || !snapshot.result) return
         readerRevision++
@@ -317,6 +364,10 @@ window.__ModuleLoader__.load({
       function saveGenerationResult(data, revision, finished) {
         const result = readDocument(data)
         if (!result || result.id !== finished.id) throw new Error(generationError)
+        if (deletedIds.has(result.id)) {
+          if (snapshot.generation?.id === result.id) update({ generation: null })
+          return
+        }
         const showResult = revision === readerRevision
         update({
           documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
@@ -436,6 +487,13 @@ window.__ModuleLoader__.load({
         listDirectory: (path, signal) => workspace.listDirectory(path, signal),
         loadHistory,
         openDocument,
+        requestDelete(item) {
+          if (!deleteRequest) update({ deletion: { item, pending: false, error: '' } })
+        },
+        cancelDelete() {
+          if (!deleteRequest) update({ deletion: null })
+        },
+        deleteDocument,
         returnToHistory,
         generate,
         resumeGeneration: () => trackGeneration(),
@@ -447,6 +505,7 @@ window.__ModuleLoader__.load({
           activeRequest?.abort()
           listRequest?.abort()
           openRequest?.abort()
+          deleteRequest?.abort()
           listeners.clear()
         },
       }
@@ -492,7 +551,7 @@ window.__ModuleLoader__.load({
         h('summary', { title: path }, label),
         path && path !== label && h('p', { className: 'dsh-code-wiki-history-path' }, path),
         h('ul', { className: 'dsh-code-wiki-history-list' },
-          entries.map(item => h('li', { key: item.id },
+          entries.map(item => h('li', { key: item.id, className: 'dsh-code-wiki-history-row' },
             h('button', {
               ref: !activeId && returnDocumentId === item.id ? returnedItem : undefined,
               type: 'button',
@@ -504,6 +563,13 @@ window.__ModuleLoader__.load({
             h('time', { dateTime: item.createdAt, title: dateFormat.format(new Date(item.createdAt)) },
               historyDateFormat.format(new Date(item.createdAt))),
             h('code', { title: item.commit }, item.commit.slice(0, 8))),
+            h(Button, {
+              type: 'button', size: 'sm', className: 'dsh-code-wiki-delete',
+              'aria-label': '删除文档 ' + dateFormat.format(new Date(item.createdAt)) + ' ' + item.commit.slice(0, 8),
+              title: '删除文档',
+              icon: h(IconTrashOutlineRegular, { size: 15 }),
+              onClick: () => wiki.requestDelete(item),
+            }),
           )),
         ))),
       )
@@ -519,6 +585,30 @@ window.__ModuleLoader__.load({
         h('h2', { id: titleId, className: 'dsh-code-wiki-rail-label' }, '已保存文档'),
         content,
         status,
+      )
+    }
+
+    function DeleteDocumentDialog({ deletion, wiki }) {
+      const { item, pending, error } = deletion
+      return h(Modal, {
+        open: true,
+        title: '删除文档？',
+        closeLabel: '关闭',
+        onClose: wiki.cancelDelete,
+        description: '将永久删除这篇已保存的文档。',
+        footer: h(React.Fragment, null,
+          h(Button, { 'data-modal-autofocus': '', disabled: pending, onClick: wiki.cancelDelete }, '取消'),
+          h(Button, {
+            variant: 'primary', className: 'dsh-code-wiki-confirm-delete', disabled: pending,
+            onClick: () => void wiki.deleteDocument(),
+          }, pending ? '正在删除…' : '删除'),
+        ),
+      },
+      h('p', { className: 'dsh-code-wiki-delete-summary' },
+        h('strong', null, repositoryLabel(item)), ' · ',
+        h('time', { dateTime: item.createdAt }, dateFormat.format(new Date(item.createdAt))), ' · ',
+        h('code', null, item.commit.slice(0, 8))),
+      error && h('p', { className: 'dsh-code-wiki-delete-error', role: 'alert' }, error),
       )
     }
 
@@ -770,7 +860,7 @@ window.__ModuleLoader__.load({
     function CodeWikiPage({ wiki }) {
       const snapshot = useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
       const { result, chapterIndex, formOpen, loading, picking, browserOpen,
-        documents, historyStatus, historyError, openingId, returnDocumentId, generation, progressOffline } = snapshot
+        documents, historyStatus, historyError, openingId, returnDocumentId, generation, progressOffline, deletion } = snapshot
       const formId = useId()
       const page = useRef(null)
       const documentId = result?.id
@@ -788,6 +878,7 @@ window.__ModuleLoader__.load({
         'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': result ? '' : undefined, ref: page,
       },
         h('style', null, codeWikiStyles),
+        deletion && h(DeleteDocumentDialog, { deletion, wiki }),
         h('div', { className: 'dsh-code-wiki-shell' },
           h('header', { className: 'dsh-code-wiki-bar' },
             result ? h(Button, {

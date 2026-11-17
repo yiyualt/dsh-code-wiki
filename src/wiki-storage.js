@@ -95,6 +95,15 @@ export function createWikiStorage(directory) {
       return record
     },
     get,
+    async remove(id) {
+      if (typeof id !== 'string' || !uuid.test(id)) return false
+      try {
+        await unlink(join(directory, id + '.json'))
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+      }
+      return true
+    },
     async list() {
       let entries
       try {

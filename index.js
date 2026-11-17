@@ -14,6 +14,7 @@ const generateRoute = '/api/dsh-code-wiki/generate'
 const generationRoute = '/api/dsh-code-wiki/generation'
 const sourceRoute = '/api/dsh-code-wiki/source'
 const documentsRoute = '/api/dsh-code-wiki/documents'
+const deleteDocumentRoute = '/api/dsh-code-wiki/documents/delete'
 const sourceErrors = new Map([
   ['invalid-repository-url', 400],
   ['repository-unavailable', 404],
@@ -220,6 +221,25 @@ export function apply(ctx, config) {
     methods: ['GET'],
     requestBody: 'buffered',
     fetch: request => documentsResponse(request, storage),
+  })
+  ctx.connection.fetch.register({
+    path: deleteDocumentRoute,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+        return json({ error: '请求必须是 JSON。' }, 415)
+      }
+      const { id } = await request.json().catch(() => null) ?? {}
+      if (active && active.id === id) return json({ error: '文档正在生成，请等保存完成后再删除。' }, 409)
+      try {
+        if (!await storage.remove(id)) return json({ error: '文档编号无效。' }, 400)
+        jobs.delete(id)
+        return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+      } catch {
+        return json({ error: '无法删除文档，请重试。' }, 500)
+      }
+    },
   })
   ctx.connection.fetch.register({
     path: sourceRoute,

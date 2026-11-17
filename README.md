@@ -7,7 +7,7 @@ DSH 代理通过只读的目录、代码读取和符号搜索工具探索固定�
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.7.3.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.7.4.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
@@ -22,6 +22,7 @@ dsh plugin --profile web add ./dsh-code-wiki-0.7.3.tgz
 生成时会显示当前阶段和已耗时。切换面板、刷新或关闭浏览器页面后，任务继续在运行中的 DSH 服务上执行。重新打开「代码百科」可以查看进行中的任务。单次生成上限为 15 分钟。
 
 每次生成完成后，文档会保存到当前 DSH profile 的 `dsh-code-wiki/documents/` 目录。本地仓库的引用片段随文档保存。重新打开代码百科后，可从「已保存文档」按仓库查看此前保存的版本。
+点击文档旁的垃圾桶图标并确认，可删除这一篇存档。
 
 ## 选择本地模型配置
 
