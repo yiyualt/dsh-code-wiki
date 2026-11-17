@@ -4,7 +4,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const { createElement: h, useEffect, useId, useRef, useSyncExternalStore } = React
-    const { Button, IconCodeOutlineRegular, Input, MarkdownText } = primitives
+    const { Button, IconBranchOutlineRegular, IconCodeOutlineRegular, IconPlusOutlineRegular, Input, MarkdownText } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
@@ -12,34 +12,11 @@ window.__ModuleLoader__.load({
     const historyLoadError = '无法读取文档历史，请重试。'
     const documentLoadError = '无法打开这篇文档，请重试。'
     const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
+    const historyDateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
     const labels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
     }
-    const layoutStyles = `
-      .dsh-code-wiki-columns {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 24px;
-      }
-      .dsh-code-wiki-sidebar {
-        min-width: 0;
-      }
-      @container dsh-code-wiki (min-width: 640px) {
-        .dsh-code-wiki-columns {
-          grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
-          gap: clamp(22px, 4vw, 44px);
-          align-items: start;
-        }
-        .dsh-code-wiki-sidebar {
-          position: sticky;
-          inset-block-start: 12px;
-          max-block-size: 72vh;
-          overflow-y: auto;
-          padding-inline-end: 6px;
-        }
-      }
-    `
 
     function resolveLocalReferences(markdown) {
       const reference = /\]\(https:\/\/dsh-code-wiki\.invalid\/source(\?key=[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}&file=\d+&start=\d+&end=\d+)\)/gi
@@ -73,6 +50,9 @@ window.__ModuleLoader__.load({
 
     function splitChapters(markdown) {
       const lines = markdown.split(/\r?\n/)
+      const firstLine = lines.findIndex(line => line.trim())
+      const headingText = value => value?.replace(/[ \t]+#+[ \t]*$/, '').trim().replace(/\\([^\w\s])/g, '$1')
+      const documentTitle = headingText(/^ {0,3}#[ \t]+(.+)$/.exec(lines[firstLine] ?? '')?.[1])
       const headings = []
       let fence = null
       for (const [index, line] of lines.entries()) {
@@ -85,16 +65,21 @@ window.__ModuleLoader__.load({
           fence = marker[1]
           continue
         }
-        const title = /^ {0,3}##[ \t]+(.+)$/.exec(line)?.[1].replace(/[ \t]+#+[ \t]*$/, '').trim()
+        const title = headingText(/^ {0,3}##[ \t]+(.+)$/.exec(line)?.[1])
         if (title) headings.push({ title, index })
+        else if (headings.length) lines[index] = line.replace(/^( {0,3})#(?=#{2,5}[ \t])/, '$1')
       }
-      if (!headings.length) return [{ title: '正文', markdown }]
+      const start = documentTitle ? firstLine + 1 : 0
+      if (!headings.length) {
+        return { documentTitle, chapters: [{ title: documentTitle || '正文', markdown: lines.slice(start).join('\n') }] }
+      }
 
-      const preamble = lines.slice(0, headings[0].index).join('\n').trimEnd()
-      return headings.map(({ title, index }, i) => {
-        const chapter = lines.slice(index, headings[i + 1]?.index).join('\n')
+      const preamble = lines.slice(start, headings[0].index).join('\n').trimEnd()
+      const chapters = headings.map(({ title, index }, i) => {
+        const chapter = lines.slice(index + 1, headings[i + 1]?.index).join('\n')
         return { title, markdown: preamble ? preamble + '\n\n' + chapter : chapter }
       })
+      return { documentTitle, chapters }
     }
 
     function readDocument(data) {
@@ -103,7 +88,7 @@ window.__ModuleLoader__.load({
       const markdown = metadata.source === 'local' ? resolveLocalReferences(data.markdown) : data.markdown
       return {
         ...metadata,
-        chapters: splitChapters(markdown),
+        ...splitChapters(markdown),
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
       }
@@ -139,6 +124,7 @@ window.__ModuleLoader__.load({
         source: 'github',
         repositoryUrl: '',
         repositoryPath: '',
+        formOpen: false,
         result: null,
         chapterIndex: 0,
         error: '',
@@ -271,6 +257,7 @@ window.__ModuleLoader__.load({
           }
           update({
             documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
+            formOpen: false,
             ...(revision === readerRevision && { result, chapterIndex: 0 }),
           })
         } catch {
@@ -291,6 +278,9 @@ window.__ModuleLoader__.load({
           if (!snapshot.loading && !snapshot.picking && !snapshot.browserOpen) update({ source, error: '' })
         },
         setRepositoryUrl: repositoryUrl => update({ repositoryUrl }),
+        toggleForm() {
+          update({ formOpen: !snapshot.formOpen })
+        },
         chooseFolder,
         selectFolder,
         closeBrowser: () => update({ browserOpen: false }),
@@ -313,21 +303,15 @@ window.__ModuleLoader__.load({
 
     function ChapterDirectory({ chapters, chapterIndex, selectChapter }) {
       const titleId = useId()
-      return h('nav', { 'aria-labelledby': titleId, style: { marginBlockEnd: 24 } },
-        h('h2', { id: titleId, style: { marginBlock: '0 8px', fontSize: '1rem' } }, '章节目录'),
-        h('ul', { style: { display: 'grid', gap: 2, margin: 0, padding: 0, listStyle: 'none' } },
-          ...chapters.map(({ title }, index) => h('li', { key: index },
-            h(Button, {
+      return h('nav', { 'aria-labelledby': titleId, className: 'dsh-code-wiki-rail-section' },
+        h('h2', { id: titleId, className: 'dsh-code-wiki-rail-label' }, '章节目录'),
+        h('ul', { className: 'dsh-code-wiki-chapter-list' },
+          chapters.map(({ title }, index) => h('li', { key: index },
+            h('button', {
               type: 'button',
+              className: 'dsh-code-wiki-chapter-button',
               'aria-current': index === chapterIndex ? 'true' : undefined,
               onClick: () => selectChapter(index),
-              style: {
-                width: '100%', height: 'auto', minHeight: 36, padding: '6px 10px', justifyContent: 'start',
-                textAlign: 'start', overflowWrap: 'anywhere',
-                ...(index === chapterIndex && {
-                  background: 'var(--dsw-alias-interactive-bg-active)', fontWeight: 600,
-                }),
-              },
             }, title),
           )),
         ),
@@ -337,166 +321,199 @@ window.__ModuleLoader__.load({
     function DocumentHistory({ wiki, documents, historyStatus, historyError, openingId, activeId }) {
       const titleId = useId()
       const groups = groupDocuments(documents)
-      const content = h('div', { style: { overflowWrap: 'anywhere' } },
-      (historyStatus === 'idle' || historyStatus === 'loading') && !documents.length
-        ? h('p', { role: 'status' }, '正在读取历史…') : null,
-      historyStatus === 'ready' && !documents.length && h('p', null, '暂无已保存文档。'),
-      historyStatus === 'error' && h('div', { role: 'alert' },
-        h('p', null, historyLoadError),
-        h(Button, { type: 'button', size: 'sm', onClick: () => void wiki.loadHistory() }, '重试')),
-      historyError && h('p', { role: 'alert' }, historyError),
-      openingId && h('p', { role: 'status' }, '正在打开文档…'),
-      ...groups.map(({ key, label, path, entries }, index) =>
-        h('details', {
-          key, open: index === 0 ? true : undefined, style: { marginBlock: '0 12px' },
+      const content = h('div', null,
+        (historyStatus === 'idle' || historyStatus === 'loading') && !documents.length
+          ? h('p', { role: 'status' }, '正在读取历史…') : null,
+        historyStatus === 'ready' && !documents.length && h('p', null, '暂无已保存文档。'),
+        historyStatus === 'error' && h('div', { role: 'alert' },
+          h('p', null, historyLoadError),
+          h(Button, { type: 'button', size: 'sm', onClick: () => void wiki.loadHistory() }, '重试')),
+        groups.map(({ key, label, path, entries }, index) => h('details', {
+          key, open: index === 0 || undefined, className: 'dsh-code-wiki-history-group',
         },
-        h('summary', { title: path, style: { cursor: 'pointer', fontWeight: 600 } }, label),
-        path && path !== label && h('p', {
-          style: { marginBlock: '4px', fontSize: '0.75rem', color: 'var(--dsw-alias-label-secondary)' },
-        }, path),
-        h('ul', { style: { margin: '4px 0 0', padding: 0, listStyle: 'none' } },
-          ...entries.map(item => h('li', { key: item.id },
-            h(Button, {
-              type: 'button', size: 'sm', disabled: openingId === item.id,
+        h('summary', { title: path }, label),
+        path && path !== label && h('p', { className: 'dsh-code-wiki-history-path' }, path),
+        h('ul', { className: 'dsh-code-wiki-history-list' },
+          entries.map(item => h('li', { key: item.id },
+            h('button', {
+              type: 'button',
+              className: 'dsh-code-wiki-history-item',
+              disabled: openingId === item.id,
               'aria-current': activeId === item.id ? 'true' : undefined,
               onClick: () => void wiki.openDocument(item.id),
             },
-            h('time', { dateTime: item.createdAt }, dateFormat.format(new Date(item.createdAt))),
-            ' · ', h('code', { title: item.commit }, item.commit.slice(0, 8))),
+            h('time', { dateTime: item.createdAt, title: dateFormat.format(new Date(item.createdAt)) },
+              historyDateFormat.format(new Date(item.createdAt))),
+            h('code', { title: item.commit }, item.commit.slice(0, 8))),
           )),
-        )),
-      ))
+        ))),
+      )
+      const status = historyError ? h('p', { role: 'alert' }, historyError)
+        : openingId && h('p', { role: 'status' }, '正在打开文档…')
       if (activeId) {
-        return h('details', null,
-          h('summary', { style: { cursor: 'pointer', fontWeight: 600, marginBlock: '0 10px' } }, '已保存文档'),
-          content,
+        return h('div', { className: 'dsh-code-wiki-history dsh-code-wiki-rail-divider' },
+          h('details', null, h('summary', null, '已保存文档'), content),
+          status,
         )
       }
-      return h('section', { 'aria-labelledby': titleId },
-        h('h2', { id: titleId, style: { marginBlock: '0 10px', fontSize: '1rem' } }, '已保存文档'),
+      return h('section', { 'aria-labelledby': titleId, className: 'dsh-code-wiki-history' },
+        h('h2', { id: titleId, className: 'dsh-code-wiki-rail-label' }, '已保存文档'),
         content,
+        status,
       )
     }
 
-    function CodeWikiPage({ wiki }) {
-      const { source, repositoryUrl, repositoryPath, result, chapterIndex, error, loading, picking, browserOpen,
-        documents, historyStatus, historyError, openingId } =
-        useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
+    function GenerationForm({ wiki, formId, source, repositoryUrl, repositoryPath, loading, picking, browserOpen, error }) {
       const sourceId = useId()
-      const reader = useRef(null)
+      const titleId = useId()
       const local = source === 'local'
+      const busy = loading || picking || browserOpen
       const ready = local ? Boolean(repositoryPath) : Boolean(repositoryUrl.trim())
-      useEffect(() => { void wiki.loadHistory() }, [wiki])
-      const documentId = result?.id
-      useEffect(() => {
-        if (documentId) reader.current?.scrollIntoView({ block: 'start', inline: 'nearest' })
-      }, [documentId, chapterIndex])
 
       return h('section', {
-        'aria-label': panelTitle,
-        style: { flex: 1, minHeight: 0, minWidth: 0, overflow: 'auto' },
-      }, h('style', null, layoutStyles), h('div', {
-        style: {
-          boxSizing: 'border-box',
-          marginInline: 'auto',
-          maxWidth: 1200,
-          padding: 'clamp(20px, 4vw, 48px)',
-          containerType: 'inline-size',
-          containerName: 'dsh-code-wiki',
-        },
+        id: formId, className: 'dsh-code-wiki-form-card', 'aria-labelledby': titleId,
       },
-      h('div', { className: 'dsh-code-wiki-columns' },
-      h('aside', { className: 'dsh-code-wiki-sidebar' },
-        result && h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter }),
-        h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId }),
-      ),
-      h('div', { style: { minWidth: 0 } },
+      h('h2', { id: titleId, className: 'dsh-code-wiki-form-title' }, '生成仓库 Wiki'),
       h('form', {
+        className: 'dsh-code-wiki-form',
         onSubmit: event => {
           event.preventDefault()
           void wiki.generate()
         },
-        style: { display: 'flex', alignItems: 'end', flexWrap: 'wrap', gap: 8 },
       },
-      h('fieldset', {
-        disabled: loading || picking || browserOpen,
-        style: { border: 0, padding: 0, margin: '0 0 4px', flexBasis: '100%' },
-      },
-      h('legend', null, '仓库来源'),
-      h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBlockStart: 4 } },
-        ...[['github', 'GitHub 地址'], ['local', '本地仓库']].map(([value, label]) =>
-          h('label', { key: value, style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
-            h('input', {
-              type: 'radio', name: sourceId, value, checked: source === value,
-              onChange: () => wiki.changeSource(value),
-            }),
-            label,
+      h('fieldset', { disabled: busy },
+        h('legend', null, '仓库来源'),
+        h('div', { className: 'dsh-code-wiki-source-options' },
+          [['github', 'GitHub 地址'], ['local', '本地仓库']].map(([value, label]) =>
+            h('label', { key: value },
+              h('input', {
+                type: 'radio', name: sourceId, value, checked: source === value,
+                onChange: () => wiki.changeSource(value),
+              }),
+              h('span', null, label),
+            ),
           ),
         ),
-      )),
-      local ? h('div', {
-        style: { display: 'grid', gap: 6, flex: '1 1 240px', minWidth: 0 },
-      },
-      '本地 Git 仓库',
-      h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 } },
-        h(Button, {
-          type: 'button', disabled: loading || picking || browserOpen,
-          onClick: () => void wiki.chooseFolder(),
-        }, repositoryPath ? '更换文件夹' : '选择文件夹'),
-        repositoryPath && h('span', { title: repositoryPath, style: { overflowWrap: 'anywhere' } }, repositoryPath),
-      )) : h('label', {
-        style: { display: 'grid', gap: 6, flex: '1 1 240px', minWidth: 0 },
-      },
-      '公开 GitHub 仓库地址',
-      h(Input, {
-        type: 'url',
-        name: 'repositoryUrl',
-        value: repositoryUrl,
-        onChange: event => wiki.setRepositoryUrl(event.target.value),
-        required: true,
-        disabled: loading,
-        autoComplete: 'off',
-        spellCheck: false,
-      })),
+      ),
+      local ? h('div', { className: 'dsh-code-wiki-field' },
+        h('span', null, '本地 Git 仓库'),
+        h('div', { className: 'dsh-code-wiki-folder-field' },
+          h(Button, {
+            type: 'button', variant: 'outline', disabled: busy,
+            onClick: () => void wiki.chooseFolder(),
+          }, repositoryPath ? '更换文件夹' : '选择文件夹'),
+          repositoryPath && h('span', { title: repositoryPath }, repositoryPath),
+        ),
+      ) : h('label', { className: 'dsh-code-wiki-field' },
+        h('span', null, '公开 GitHub 仓库地址'),
+        h(Input, {
+          type: 'url',
+          name: 'repositoryUrl',
+          value: repositoryUrl,
+          onChange: event => wiki.setRepositoryUrl(event.target.value),
+          required: true,
+          disabled: busy,
+          autoComplete: 'off',
+          spellCheck: false,
+        }),
+      ),
       h(Button, {
-        type: 'submit', variant: 'primary',
-        disabled: !ready || loading || picking || browserOpen,
+        type: 'submit', variant: 'primary', disabled: !ready || busy,
       }, '生成文档'),
-      local && h('p', {
-        style: { flexBasis: '100%', margin: 0, color: 'var(--dsw-alias-label-secondary)' },
-      }, '只读取当前 HEAD 提交中的 Git 跟踪文件。选中的源码片段会发送给已配置的模型。')),
+      local && h('p', { className: 'dsh-code-wiki-hint' },
+        '只读取当前 HEAD 提交中的 Git 跟踪文件。选中的源码片段会发送给已配置的模型。')),
       local && browserOpen && h(FolderBrowser, {
         listDirectory: wiki.listDirectory,
         onPick: wiki.selectFolder,
         onClose: wiki.closeBrowser,
       }),
-      (loading || picking) && h('p', { role: 'status', style: { marginBlock: '12px' } },
+      (loading || picking) && h('p', { role: 'status', className: 'dsh-code-wiki-feedback' },
         picking ? '正在打开文件夹选择器…' : '正在读取仓库并生成文档…'),
-      error && h('p', {
-        role: 'alert',
-        style: { color: 'var(--dsw-alias-label-error)', marginBlockEnd: 16 },
-      }, error),
-      result && h('article', {
-        ref: reader,
-        'aria-label': '文档正文',
-        style: { marginBlockStart: 24, scrollMarginBlockStart: 12 },
-      },
-      h('div', {
-        style: { fontSize: '0.875rem', color: 'var(--dsw-alias-label-secondary)', marginBlockEnd: 16, overflowWrap: 'anywhere' },
-      },
-        result.source === 'local' && h('span', { title: result.repositoryPath },
-          repositoryLabel(result),
-          ' · 固定提交 ', h('code', { title: result.commit }, result.commit.slice(0, 12))),
-        result.source === 'github' && h('a', {
-          href: `${result.repoUrl}/commit/${result.commit}`,
-          target: '_blank',
-          rel: 'noreferrer',
-          title: result.commit,
-        }, repositoryLabel(result), ' · 固定提交 ', h('code', null, result.commit.slice(0, 12))),
-        result.model && ' · ' + result.model,
-        result.note && h('p', { style: { marginBlock: '8px 0' } }, result.note),
-      ),
-      h(MarkdownText, { text: result.chapters[chapterIndex].markdown, labels, omitHtml: true }))))))
+      error && h('p', { role: 'alert', className: 'dsh-code-wiki-feedback', 'data-error': 'true' }, error))
+    }
+
+    function WikiArticle({ result, chapterIndex }) {
+      const chapter = result.chapters[chapterIndex]
+      const repository = repositoryLabel(result)
+      const title = result.documentTitle
+      const isDocumentTitle = title && title !== chapter.title && title !== repository.replace(/\s+/g, ' ') + ' Wiki'
+      const shortCommit = result.commit.slice(0, 12)
+      const revision = h(React.Fragment, null,
+        h('span', { 'aria-hidden': true }, h(IconBranchOutlineRegular, { size: 14 })),
+        h('code', null, shortCommit),
+      )
+
+      return h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
+        h('header', { className: 'dsh-code-wiki-article-header' },
+          h('p', { className: 'dsh-code-wiki-eyebrow', title: result.repositoryPath },
+            result.source === 'github' ? h('a', { href: result.repoUrl, target: '_blank', rel: 'noreferrer' }, repository) : repository,
+            isDocumentTitle && ' · ' + title),
+          h('h1', { className: 'dsh-code-wiki-article-title' }, chapter.title),
+          h('div', { className: 'dsh-code-wiki-meta' },
+            result.source === 'github' ? h('a', {
+              className: 'dsh-code-wiki-revision',
+              href: result.repoUrl + '/commit/' + result.commit,
+              target: '_blank', rel: 'noreferrer',
+              'aria-label': '查看固定提交 ' + shortCommit,
+              title: result.commit,
+            }, revision) : h('span', {
+              className: 'dsh-code-wiki-revision', title: '固定提交 ' + result.commit,
+            }, revision),
+            h('time', { dateTime: result.createdAt, title: '生成时间' }, dateFormat.format(new Date(result.createdAt))),
+            result.model && h('span', { title: '生成模型' }, result.model),
+          ),
+          result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
+        ),
+        chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
+          h(MarkdownText, { text: chapter.markdown, labels, omitHtml: true })),
+      )
+    }
+
+    function CodeWikiPage({ wiki }) {
+      const snapshot = useSyncExternalStore(wiki.subscribe, wiki.getSnapshot)
+      const { result, chapterIndex, formOpen, loading, picking, browserOpen,
+        documents, historyStatus, historyError, openingId } = snapshot
+      const formId = useId()
+      const page = useRef(null)
+      const documentId = result?.id
+      const showForm = !result || formOpen || loading || picking || browserOpen
+
+      useEffect(() => { void wiki.loadHistory() }, [wiki])
+      useEffect(() => {
+        if (documentId && page.current) page.current.scrollTop = 0
+      }, [documentId, chapterIndex])
+
+      return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', ref: page },
+        h('style', null, codeWikiStyles),
+        h('div', { className: 'dsh-code-wiki-shell' },
+          h('header', { className: 'dsh-code-wiki-bar' },
+            h('div', { className: 'dsh-code-wiki-brand' },
+              h('span', { className: 'dsh-code-wiki-brand-icon', 'aria-hidden': true }, h(CodeWikiIcon, { size: 18 })),
+              h('span', null, panelTitle),
+            ),
+            result && h('div', { className: 'dsh-code-wiki-actions' },
+              h(Button, {
+                type: 'button', variant: 'outline', size: 'sm',
+                icon: showForm ? undefined : h(IconPlusOutlineRegular, { size: 16 }),
+                disabled: loading || picking || browserOpen,
+                'aria-expanded': showForm,
+                'aria-controls': showForm ? formId : undefined,
+                onClick: wiki.toggleForm,
+              }, showForm ? '收起生成表单' : '新建 Wiki'),
+            ),
+          ),
+          h('div', { className: 'dsh-code-wiki-columns' },
+            h('aside', { className: 'dsh-code-wiki-sidebar' },
+              result && h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter }),
+              h(DocumentHistory, { wiki, documents, historyStatus, historyError, openingId, activeId: documentId }),
+            ),
+            h('div', { className: 'dsh-code-wiki-main' },
+              showForm && h(GenerationForm, { wiki, formId, ...snapshot }),
+              result && h(WikiArticle, { result, chapterIndex }),
+            ),
+          ),
+        ),
+      )
     }
 
     return {

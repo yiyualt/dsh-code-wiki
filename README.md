@@ -8,7 +8,7 @@ DeepSeek Harness Web 插件。在侧栏打开「代码百科」，选择公开 G
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.5.0.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.5.1.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
@@ -16,7 +16,7 @@ dsh plugin --profile web add ./dsh-code-wiki-0.5.0.tgz
 ## 试用
 
 1. 确认 DSH 的默认模型或插件单独配置的模型可用。
-2. 选择「GitHub 地址」并输入公开仓库地址，或在「本地仓库」中点击「选择文件夹」，选中已克隆的仓库。
+2. 阅读时可点击「新建 Wiki」打开生成表单。选择「GitHub 地址」并输入公开仓库地址，或在「本地仓库」中点击「选择文件夹」，选中已克隆的仓库。
 3. 在左侧目录选择章节，在右侧阅读正文。点击文中的源码引用可打开该 commit 对应的文件和行号。
 
 本地模式读取当前 `HEAD` 中已提交的文件。它会把选取的文件片段发给所选模型，本地引用由当前 DSH 实例显示。
