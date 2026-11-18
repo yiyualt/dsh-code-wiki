@@ -284,7 +284,7 @@ Available actions: exit (remove an old subject and release its space), highlight
 
 export async function generateMotionPlan({ llm, selection, document, signal, onPhase, checkedCall }) {
   if (!allNodes(document).length) fail('这篇文档还没有架构图，请先生成架构 Wiki。')
-  onPhase('reading')
+  onPhase('reading', { step: 'material' })
   const material = await loadVideoMaterial(document, signal)
   const sources = editorialSources(document, material)
   const context = { repository: document.repoUrl || document.repoName, commit: document.commit, sources,
@@ -293,15 +293,15 @@ export async function generateMotionPlan({ llm, selection, document, signal, onP
     sourceReferences: material.references, sourceExcerpts: material.excerpts,
     images: material.images?.map(({ id, path }) => ({ id, path })) }
   const source = JSON.stringify(context)
-  onPhase('scripting')
+  onPhase('scripting', { step: 'brief', attempt: 1 })
   const brief = await checkedCall(llm, selection, repositoryEditor, source,
     raw => normalizeEditorialBrief(raw, document, sources), signal)
-  onPhase('scripting', { brief })
+  onPhase('scripting', { step: 'script', attempt: 1, brief })
   let script = await checkedCall(llm, selection, director, describe({ material: context, brief }), normalizeMotionScript, signal)
   // Review the narrative before committing to scene design or paid speech.
   // One targeted rewrite is allowed; an unresolved story must not reach rendering.
   for (let attempt = 0; attempt < 2; attempt++) {
-    onPhase('scripting', { brief, script })
+    onPhase('scripting', { step: 'story-review', attempt: attempt + 1, sceneCount: script.scenes.length, brief, script })
     const review = await checkedCall(llm, selection, storyEditor, describe({ material: context, brief, script }), raw => {
       if (typeof raw?.approved !== 'boolean' || !Array.isArray(raw.issues) || raw.issues.length > 4
         || raw.approved !== (raw.issues.length === 0) || raw.issues.some(issue => !script.scenes.some(scene => scene.id === issue?.sceneId)
@@ -310,19 +310,29 @@ export async function generateMotionPlan({ llm, selection, document, signal, onP
     }, signal)
     if (review.approved) break
     if (attempt) fail('仓库介绍文案仍未通过审核，请重试生成。')
+    onPhase('scripting', { step: 'story-rewrite', attempt: attempt + 2, sceneCount: script.scenes.length, brief, script })
     script = await checkedCall(llm, selection, director, describe({ material: context, brief,
       previous: script, corrections: review.issues }), normalizeMotionScript, signal)
   }
-  onPhase('designing', { script })
+  const sceneCount = script.scenes.length
+  let completedScenes = 0
+  onPhase('designing', { step: 'scene-design', attempt: 1, sceneCount, completedScenes, script })
   // Three independent designers at a time. Each gets the whole story, but owns
   // only one scene. The model determines compositions, not a four-slide template.
   const scenes = []
   for (let i = 0; i < script.scenes.length; i += 3) {
     const batch = new AbortController()
     const batchSignal = signal ? AbortSignal.any([signal, batch.signal]) : batch.signal
-    const drafts = script.scenes.slice(i, i + 3).map(scene => checkedCall(llm, selection, designer,
-      JSON.stringify({ material: context, story: script.scenes.map(({ id, title, narration }) => ({ id, title, narration })), scene }),
-      raw => normalizeMotionDesign(raw, scene, document, material), batchSignal))
+    const drafts = script.scenes.slice(i, i + 3).map(async (scene, offset) => {
+      const sceneIndex = i + offset + 1
+      onPhase('designing', { step: 'scene-design', attempt: 1, sceneIndex, sceneCount, completedScenes })
+      const draft = await checkedCall(llm, selection, designer,
+        JSON.stringify({ material: context, story: script.scenes.map(({ id, title, narration }) => ({ id, title, narration })), scene }),
+        raw => normalizeMotionDesign(raw, scene, document, material), batchSignal)
+      completedScenes++
+      onPhase('designing', { step: 'scene-design', attempt: 1, sceneIndex, sceneCount, completedScenes })
+      return draft
+    })
     try { scenes.push(...await Promise.all(drafts)) }
     catch (error) {
       // Stop paid sibling requests and finish their cleanup before releasing the job.
@@ -331,15 +341,17 @@ export async function generateMotionPlan({ llm, selection, document, signal, onP
       throw error
     }
   }
-  onPhase('reviewing', { draft: { ...script, scenes } })
+  onPhase('reviewing', { step: 'film-review', attempt: 1, sceneCount, completedScenes, draft: { ...script, scenes } })
   const review = await checkedCall(llm, selection, `You are the FILM EDITOR. Review this repository film against the source evidence and the viewer's experience. Find concrete defects: invented facts/values, code or diagrams not explaining the spoken point, identical adjacent compositions, too many objects, a scene that fails to advance the story. Every beat must visibly advance the explanation. Do not demand additions merely for completeness. Return {"repairs":[{"sceneId":"scene-N","instruction":"Specific correction to the visual design, with evidence"}]} with at most 3 necessary fixes, or an empty repairs array. Do not rewrite the narration.`,
     describe({ material: context, scenes }), raw => {
       if (!Array.isArray(raw?.repairs) || raw.repairs.length > 3 || raw.repairs.some(item => !scenes.some(scene => scene.id === item.sceneId) || !text(item.instruction, 900))) fail('审片反馈无效。')
       return raw
     }, signal)
+  const sceneAttempts = Array(sceneCount).fill(1)
   for (const fix of review.repairs) {
     const index = scenes.findIndex(scene => scene.id === fix.sceneId)
     const scene = script.scenes[index]
+    onPhase('reviewing', { step: 'scene-repair', attempt: ++sceneAttempts[index], sceneIndex: index + 1, sceneCount, completedScenes })
     scenes[index] = await checkedCall(llm, selection, designer + '\nRefinement capabilities: exit fades out its target and releases its layout space. Add exit actions on old subjects when introducing a replacement, so no more than six subjects are visible simultaneously (up to twelve across the whole scene). Code may specify startLine/endLine to show 1–8 exact source lines containing focusLine. Table/bars highlight can specify row, one-based data row. Prefer one clear panel and two supporting labels; simplify instead of stacking several small panels.',
       describe({ material: context, scene, previous: scenes[index].motion, correction: fix.instruction }),
       raw => normalizeMotionDesign(raw, scene, document, material), signal)

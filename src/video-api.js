@@ -7,6 +7,14 @@ import { createVideoStorage, validVideoId } from './video-storage.js'
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } })
 const hasJson = request => request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json'
 const voiceModes = new Set(['charon', 'alternative', 'none'])
+const timeoutMs = 30 * 60_000
+const phases = new Set(['reading', 'scripting', 'designing', 'reviewing', 'voicing', 'saving'])
+const steps = new Set(['preparing', 'material', 'brief', 'script', 'story-review', 'story-rewrite', 'scene-design', 'film-review', 'scene-repair', 'speech', 'archive'])
+const defaultSteps = { reading: 'material', scripting: 'script', designing: 'scene-design', reviewing: 'film-review', voicing: 'speech', saving: 'archive' }
+const progressFields = ['sceneIndex', 'sceneCount', 'attempt', 'completedScenes']
+const safeCodes = new Set(['video-plan-invalid', 'video-voice-failed', 'model-unavailable', 'TRANSPORT', 'TIMEOUT', 'STREAM_CLOSED',
+  'RATE_LIMIT', 'SERVER', 'AUTH', 'MODEL_CONFIG', 'INVALID_REQUEST', 'EMPTY_RESPONSE', 'MALFORMED_RESPONSE',
+  'MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'MODEL_NOT_FOUND', 'UNKNOWN', 'EACCES', 'EPERM', 'EIO', 'ENOSPC', 'EDQUOT', 'ENOENT'])
 
 export function registerVideoApi(ctx, config, documents, selectModel, lifetime) {
   const storage = createVideoStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'videos'))
@@ -15,24 +23,55 @@ export function registerVideoApi(ctx, config, documents, selectModel, lifetime) 
   let active
   const status = job => {
     if (!job) return null
-    const { stop, startedAt, finishedAt, ...result } = job
-    return { ...result, elapsedMs: (finishedAt ?? Date.now()) - startedAt }
+    const { stop, startedAt, finishedAt, phaseStartedAt, stepStartedAt, ...result } = job
+    const now = finishedAt ?? Date.now()
+    return { ...result, elapsedMs: now - startedAt,
+      ...(phaseStartedAt !== undefined && { phaseElapsedMs: now - phaseStartedAt }) }
   }
   function register(suffix, methods, fetch) {
     ctx.connection.fetch.register({ path: '/api/dsh-code-wiki/video' + suffix, methods, requestBody: 'buffered', fetch })
   }
   async function run(job, document, provider) {
-    const timeout = AbortSignal.timeout(10 * 60_000)
+    const timeout = AbortSignal.timeout(timeoutMs)
     const signal = AbortSignal.any([lifetime.signal, job.stop.signal, timeout])
+    Object.assign(job, { step: 'preparing', phaseStartedAt: Date.now(), stepStartedAt: Date.now() })
+    function log(event, details = {}) {
+      const now = Date.now()
+      console.info('[dsh-code-wiki:video] ' + JSON.stringify({ timestamp: new Date(now).toISOString(), jobId: job.id, documentId: job.documentId,
+        event, phase: job.phase, step: job.step, elapsedMs: now - job.startedAt,
+        phaseElapsedMs: now - job.phaseStartedAt, stepElapsedMs: now - job.stepStartedAt, timeoutMs,
+        ...Object.fromEntries(progressFields.filter(key => Number.isSafeInteger(job[key])).map(key => [key, job[key]])), ...details }))
+    }
+    function progress(phase, details) {
+      if (!phases.has(phase)) return
+      const step = steps.has(details?.step) ? details.step : phase === job.phase ? job.step : defaultSteps[phase]
+      const values = Object.fromEntries(progressFields.filter(key => Number.isSafeInteger(details?.[key])
+        && details[key] >= 0 && details[key] <= 100).map(key => [key, details[key]]))
+      const changed = phase !== job.phase || step !== job.step || Object.entries(values).some(([key, value]) => job[key] !== value)
+      if (!changed) return
+      if (phase !== job.phase) job.phaseStartedAt = Date.now()
+      if (phase !== job.phase || step !== job.step) {
+        job.stepStartedAt = Date.now()
+        for (const key of progressFields) delete job[key]
+      }
+      Object.assign(job, { phase, step }, values)
+      log('progress')
+    }
+    log('start')
+    const heartbeat = setInterval(() => log('heartbeat'), 30_000)
+    heartbeat.unref?.()
     try {
       const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal)
       job.model = selection.model
-      const plan = await generateVideoPlan(llm, selection, document, signal, phase => { job.phase = phase })
-      job.phase = 'voicing'
+      const plan = await generateVideoPlan(llm, selection, document, signal, progress)
       job.scenes = plan.scenes.length
-      const voiced = await voiceVideo(plan, provider, signal, done => { job.voiced = done })
+      progress('voicing', { step: 'speech', sceneCount: job.scenes, completedScenes: 0 })
+      const voiced = await voiceVideo(plan, provider, signal, done => {
+        job.voiced = done
+        progress('voicing', { step: 'speech', sceneCount: job.scenes, completedScenes: done })
+      })
       signal.throwIfAborted()
-      job.phase = 'saving'
+      progress('saving', { step: 'archive' })
       const { clips, ...content } = voiced
       const artifact = { version: 1, id: job.id, documentId: document.id,
         repository: videoRepository(document), commit: document.commit, title: plan.title,
@@ -43,16 +82,27 @@ export function registerVideoApi(ctx, config, documents, selectModel, lifetime) 
         ...(plan.editorial && { editorial: plan.editorial }),
         model: selection.model, createdAt: new Date().toISOString(), ...content }
       await storage.save(artifact, clips)
+      log('finish', { outcome: 'completed', reason: 'completed' })
       Object.assign(job, { phase: 'completed', artifact, finishedAt: Date.now() })
     } catch (error) {
       let message = '视频生成失败，请重试。'
-      if (timeout.aborted) message = '视频生成达到十分钟上限，请重试。'
+      if (timeout.aborted) message = '视频生成达到三十分钟上限，请重试。'
       else if (signal.aborted) message = '视频生成已取消。'
       else if (['video-plan-invalid', 'video-voice-failed'].includes(error.code)) message = error.message
       else if (error.code === 'model-unavailable') message = error.providerCode === 'MODEL_CONFIG'
         ? '无法读取本地模型配置。' : `讲解模型调用失败${error.providerCode ? `（${error.providerCode}）` : ''}，请检查模型配置后重试。`
-      Object.assign(job, { phase: signal.aborted ? 'cancelled' : 'failed', error: message, finishedAt: Date.now() })
-    } finally { if (active === job) active = undefined }
+      const phase = !timeout.aborted && signal.aborted ? 'cancelled' : 'failed'
+      const reason = timeout.aborted ? 'timeout' : job.stop.signal.aborted ? 'user-cancelled'
+        : lifetime.signal.aborted ? 'service-stopped' : safeCodes.has(error?.code) ? error.code : 'unexpected-error'
+      log('finish', { outcome: phase, reason,
+        ...(phase === 'failed' && { failedPhase: job.phase, failedStep: job.step }),
+        ...(safeCodes.has(error?.code) && { errorCode: error.code }),
+        ...(safeCodes.has(error?.providerCode) && { providerCode: error.providerCode }) })
+      Object.assign(job, { phase, error: message, finishedAt: Date.now() })
+    } finally {
+      clearInterval(heartbeat)
+      if (active === job) active = undefined
+    }
   }
   register('/capabilities', ['GET'], async () => {
     try {
