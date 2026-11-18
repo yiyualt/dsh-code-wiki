@@ -234,7 +234,8 @@ export function apply(ctx, config) {
       }
       const { id } = await request.json().catch(() => null) ?? {}
       if (active && active.id === id) return json({ error: '文档正在生成，请等保存完成后再删除。' }, 409)
-      if (videos.busy(id)) return json({ error: '讲解视频正在生成，请先取消视频任务。' }, 409)
+      const releaseRemoval = videos.reserveRemoval(id)
+      if (!releaseRemoval) return json({ error: '文档正在删除或生成讲解视频，请等任务完成后再删除。' }, 409)
       try {
         if (!await storage.remove(id)) return json({ error: '文档编号无效。' }, 400)
         await videos.remove(id)
@@ -242,7 +243,7 @@ export function apply(ctx, config) {
         return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
       } catch {
         return json({ error: '无法删除文档，请重试。' }, 500)
-      }
+      } finally { releaseRemoval() }
     },
   })
   ctx.connection.fetch.register({

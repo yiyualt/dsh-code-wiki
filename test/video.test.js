@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import fs from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -9,8 +11,11 @@ import { apply } from '../index.js'
 import { createWikiStorage } from '../src/wiki-storage.js'
 import { createVideoStorage } from '../src/video-storage.js'
 import { generateVideoPlan, normalizeVideoScript, normalizeVideoDesign } from '../src/video-plan.js'
+import { editorialSources, normalizeEditorialBrief } from '../src/video-director.js'
+import { loadVideoMaterial } from '../src/video-evidence.js'
 import { voiceVideo, waveSeconds } from '../src/video-speech.js'
 import { codeWikiVideoFrame } from '../src/video-scene.js'
+import { editorialBriefFixture, editorialDocumentText, motionModelResponse, motionPipelineCalls, motionScriptFixture, promotionalScriptFixture } from '../fixtures/video-motion.js'
 
 function documentFixture() {
   return { id: randomUUID(), createdAt: new Date().toISOString(), source: 'github', repoUrl: 'https://github.com/example/repo',
@@ -19,6 +24,10 @@ function documentFixture() {
       { title: '入口', nodes: [{ id: 'entry', title: '实验入口', summary: '读取配置并启动训练。', technology: 'Python', refs: [] }] },
       { title: '训练', nodes: [{ id: 'trainer', title: '训练器', summary: '训练模型并返回指标。', technology: 'PyTorch', refs: [] }] },
     ], edges: [{ from: 'entry', to: 'trainer', label: '启动训练', refs: [] }] } }
+}
+function localDocumentFixture() {
+  const { repoUrl, ...document } = documentFixture()
+  return { ...document, source: 'local', repositoryPath: '/example/repo', repoName: 'repo', files: [], markdown: editorialDocumentText }
 }
 function scriptFixture() {
   return { title: 'One training experiment', scenes: [
@@ -45,7 +54,7 @@ function fakeLlm(calls = [], wait) {
   return { async *stream(options) {
     calls.push(options)
     if (wait) await wait(options.signal)
-    const raw = options.system.includes('You write the narration') ? scriptFixture() : designFixture(scriptFixture())
+    const raw = motionModelResponse(options.system, options.messages[0].content[0].text)
     yield { type: 'text-delta', text: JSON.stringify(raw) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   } }
@@ -119,11 +128,49 @@ test('director and designer retain the selected provider/model/reasoning and rep
     yield* valid.stream(options)
   } }
   const selection = { provider: 'deepseek', model: 'selected-model', reasoningEffort: 'high' }
-  const plan = await generateVideoPlan(llm, selection, documentFixture(), new AbortController().signal)
-  assert.equal(plan.scenes.length, 4)
-  assert.equal(calls.length, 2)
+  const plan = await generateVideoPlan(llm, selection, localDocumentFixture(), new AbortController().signal)
+  assert.equal(plan.scenes.length, promotionalScriptFixture().scenes.length)
+  assert.equal(calls.length, motionPipelineCalls())
   for (const options of calls) for (const [key, value] of Object.entries(selection)) assert.equal(options[key], value)
   assert.match(calls[0].messages[0].content[0].text, /上次输出校验未通过/)
+})
+
+test('a rejected tutorial story is rewritten and approved before any visual design starts', async () => {
+  const stages = []
+  let directorCalls = 0
+  let storyReviews = 0
+  const llm = { async *stream(options) {
+    const system = options.system
+    const prompt = options.messages[0].content[0].text
+    let raw
+    if (system.includes('REPOSITORY EDITOR')) stages.push('brief')
+    else if (system.includes('You are the DIRECTOR')) {
+      stages.push('director')
+      directorCalls++
+      const data = JSON.parse(prompt)
+      assert(data.brief.selectedFeatures.includes('fact_trainer'))
+      if (directorCalls > 1) assert.match(prompt, /tutorial/)
+      raw = directorCalls === 1 ? motionScriptFixture() : promotionalScriptFixture()
+    } else if (system.includes('STORY EDITOR')) {
+      stages.push('story-review')
+      storyReviews++
+      raw = storyReviews === 1 ? { approved: false, issues: [{ sceneId: 'scene-1', reason: 'The introduction becomes a tutorial instead of presenting the repository value.' }] }
+        : { approved: true, issues: [] }
+    } else if (system.includes('MOTION DESIGNER')) {
+      stages.push('design')
+      assert.equal(storyReviews, 2)
+    } else if (system.includes('FILM EDITOR')) stages.push('film-review')
+    raw ??= motionModelResponse(system, prompt)
+    yield { type: 'text-delta', text: JSON.stringify(raw) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  const plan = await generateVideoPlan(llm, { provider: 'test', model: 'test' }, localDocumentFixture(), new AbortController().signal)
+  assert.deepEqual(stages.slice(0, 6), ['brief', 'director', 'story-review', 'director', 'story-review', 'design'])
+  assert.equal(stages.filter(stage => stage === 'design').length, promotionalScriptFixture().scenes.length)
+  assert.equal(stages.at(-1), 'film-review')
+  assert.equal(plan.editorial.goal, 'repository-introduction')
+  assert.deepEqual(plan.editorial.selectedFeatures, ['fact_trainer'])
+  assert.equal(plan.scenes[0].kind, 'problem')
 })
 
 test('narration uses actual PCM durations, subtitle mode is explicit, and empty audio is rejected', async () => {
@@ -133,7 +180,7 @@ test('narration uses actual PCM durations, subtitle mode is explicit, and empty 
   assert.throws(() => waveSeconds(wav(0)), /有效音频/)
   const signal = new AbortController().signal
   const voiced = await voiceVideo(plan, { available: true, kind: 'test', label: 'fixture', speak: async () => ({ bytes: wav(2), seconds: 2 }) }, signal)
-  assert.equal(voiced.scenes[1].start, 2.8)
+  assert.equal(voiced.scenes[1].start, 2.7)
   assert.equal(voiced.clips.length, plan.scenes.length)
   const silent = await voiceVideo(plan, { available: false, kind: 'none', label: '字幕版' }, signal)
   assert.equal(silent.clips.length, 0)
@@ -156,6 +203,38 @@ test('saved video and audio reopen together and cannot be read through invalid p
   assert.equal(await storage.latest(doc.id), null)
 })
 
+test('large motion archives reuse image assets, reopen the last clip and reject oversize saves atomically', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'wiki-video-motion-storage-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const storage = createVideoStorage(dir)
+  const documentId = randomUUID()
+  const imageRef = 1
+  const dataUrl = 'data:image/png;base64,' + 'U'.repeat(1150 * 1024)
+  const scenes = Array.from({ length: 10 }, (_, index) => ({ id: `scene-${index + 1}`,
+    motion: { elements: [{ id: 'screenshot', kind: 'image', imageRef }] } }))
+  const artifact = { version: 1, motionVersion: 1, id: randomUUID(), documentId, createdAt: '2026-11-18T00:00:00.000Z',
+    scenes, images: { [imageRef]: dataUrl }, speech: { available: true } }
+  const lastClip = wav(2)
+  await storage.save(artifact, [...scenes.slice(0, -1).map(() => wav()), lastClip])
+
+  const serialized = await readFile(join(dir, documentId, artifact.id, 'video.json'), 'utf8')
+  assert(Buffer.byteLength(serialized) > 1024 * 1024)
+  assert.equal(serialized.split('data:image/png;base64,').length - 1, 1)
+  const reopened = await storage.latest(documentId)
+  assert.equal(reopened.id, artifact.id)
+  assert.equal(reopened.images[imageRef], dataUrl)
+  assert(reopened.scenes.every(scene => scene.motion.elements[0].imageRef === imageRef))
+  assert.deepEqual(await storage.audio(documentId, artifact.id, 9), lastClip)
+  assert.equal(await storage.audio(documentId, artifact.id, 10), null)
+
+  const tooLarge = { ...artifact, id: randomUUID(), createdAt: '2026-11-18T00:01:00.000Z',
+    images: { [imageRef]: 'data:image/png;base64,' + 'U'.repeat(8 * 1024 * 1024) } }
+  await assert.rejects(storage.save(tooLarge, [lastClip]), /too large/)
+  assert.equal(await storage.get(documentId, tooLarge.id), null)
+  assert.equal((await storage.latest(documentId)).id, artifact.id)
+  assert.deepEqual(await readdir(join(dir, documentId)), [artifact.id])
+})
+
 async function apiFixture(t, services = {}, config) {
   const dir = await mkdtemp(join(tmpdir(), 'wiki-video-api-'))
   const routes = new Map()
@@ -165,7 +244,7 @@ async function apiFixture(t, services = {}, config) {
     llm: fakeLlm(), agentDefaultModel: { currentSelection: () => ({ provider: 'dsh', model: 'dsh-model' }) }, ...services }, config)
   t.after(async () => { dispose.forEach(fn => fn()); await rm(dir, { recursive: true, force: true }) })
   const documents = createWikiStorage(join(dir, 'dsh-code-wiki', 'documents'))
-  const doc = documentFixture()
+  const doc = localDocumentFixture()
   await documents.save(doc)
   const request = (path, body) => {
     const req = new Request('http://localhost/api/dsh-code-wiki/' + path, body ? {
@@ -183,6 +262,11 @@ async function waitJob(request, id) {
   }
   throw new Error('Job did not finish')
 }
+function deferred() {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
 
 test('opening and rereading a document or video never starts model generation', async t => {
   const calls = []
@@ -197,13 +281,13 @@ test('opening and rereading a document or video never starts model generation', 
   const accepted = await request('video', { documentId: doc.id, narration: false })
   const generated = await waitJob(request, (await accepted.json()).job.id)
   assert.equal(generated.phase, 'completed')
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, motionPipelineCalls())
   for (let i = 0; i < 3; i++) {
     const saved = await (await request('video?documentId=' + doc.id)).json()
     assert.equal(saved.artifact.id, generated.id)
     assert.equal(saved.job, null)
   }
-  assert.equal(calls.length, 2, 'reopening an existing video must reuse it')
+  assert.equal(calls.length, motionPipelineCalls(), 'reopening an existing video must reuse it')
 })
 
 test('requesting Charon without credentials does not use another voice or start model generation', async t => {
@@ -252,6 +336,36 @@ test('reopening shows a regeneration failure while retaining the last saved vide
   assert.equal(saved.lastFailure, failed.error)
 })
 
+test('two failed story reviews stop video generation before visual design or saving an archive', async t => {
+  const previous = process.env.OPENROUTER_API_KEY
+  process.env.OPENROUTER_API_KEY = 'mock-voice-key'
+  t.after(() => {
+    if (previous === undefined) delete process.env.OPENROUTER_API_KEY
+    else process.env.OPENROUTER_API_KEY = previous
+  })
+  const speech = t.mock.method(globalThis, 'fetch', () => assert.fail('An unapproved story must not request speech synthesis'))
+  const stages = []
+  const llm = { async *stream(options) {
+    const prompt = options.messages[0].content[0].text
+    const system = options.system
+    if (system.includes('MOTION DESIGNER') || system.includes('FILM EDITOR')) assert.fail('An unapproved story must not enter visual design')
+    const review = system.includes('STORY EDITOR')
+    stages.push(review ? 'story-review' : system.includes('You are the DIRECTOR') ? 'director' : 'brief')
+    const raw = review ? { approved: false, issues: [{ sceneId: 'scene-1', reason: 'The script omits the intended audience and the project value.' }] }
+      : motionModelResponse(system, prompt)
+    yield { type: 'text-delta', text: JSON.stringify(raw) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  const { request, doc } = await apiFixture(t, { llm })
+  const accepted = await request('video', { documentId: doc.id, voice: 'charon' })
+  assert.equal(accepted.status, 202)
+  const failed = await waitJob(request, (await accepted.json()).job.id)
+  assert.equal(failed.phase, 'failed')
+  assert.deepEqual(stages, ['brief', 'director', 'story-review', 'director', 'story-review'])
+  assert.equal(speech.mock.callCount(), 0)
+  assert.equal((await (await request('video?documentId=' + doc.id)).json()).artifact, null)
+})
+
 test('video API generates with the DSH default, reopens, regenerates with the changed model and deletes its archive', async t => {
   let model = 'first-model'
   const calls = []
@@ -262,12 +376,17 @@ test('video API generates with the DSH default, reopens, regenerates with the ch
   const result = await waitJob(request, (await accepted.json()).job.id)
   assert.equal(result.phase, 'completed', result.error)
   assert.equal(result.artifact.model, 'first-model')
-  assert.equal((await (await request('video?documentId=' + doc.id)).json()).artifact.id, result.id)
+  const reopened = (await (await request('video?documentId=' + doc.id)).json()).artifact
+  assert.equal(reopened.id, result.id)
+  assert.equal(reopened.editorial.goal, 'repository-introduction')
+  assert.deepEqual(reopened.editorial.selectedFeatures, editorialBriefFixture().selectedFeatures)
+  assert.deepEqual(reopened.editorial.facts.map(({ source, quote }) => ({ source, quote })),
+    editorialBriefFixture().facts.map(({ source, quote }) => ({ source, quote })))
   model = 'second-model'
   const again = await request('video', { documentId: doc.id, narration: false })
   const second = await waitJob(request, (await again.json()).job.id)
   assert.equal(second.artifact.model, model)
-  assert.equal(calls.length, 4)
+  assert.equal(calls.length, 2 * motionPipelineCalls())
   assert.equal((await request('documents/delete', { id: doc.id })).status, 204)
   assert.equal((await request('video?documentId=' + doc.id)).status, 404)
   assert.equal((await (await request('video/job?id=' + result.id)).json()).job, null)
@@ -287,7 +406,129 @@ test('concurrent video requests are serialized and cancellation terminates the m
   assert.ok(calls.length <= 1)
 })
 
-test('personal GPT configuration overrides DSH for both video roles', async t => {
+test('deletion reserves the document before filesystem I/O so a video cannot start during removal', async t => {
+  const calls = []
+  const { request, doc, dir } = await apiFixture(t, { llm: fakeLlm(calls) })
+  const videos = createVideoStorage(join(dir, 'dsh-code-wiki', 'videos'))
+  const saved = { version: 1, id: randomUUID(), documentId: doc.id, createdAt: new Date().toISOString(),
+    scenes: [{}], speech: { available: true } }
+  await videos.save(saved, [wav()])
+  const entered = deferred()
+  const release = deferred()
+  const original = fs.unlink
+  const unlink = t.mock.method(fs, 'unlink', async path => {
+    if (path === join(dir, 'dsh-code-wiki', 'documents', doc.id + '.json')) {
+      entered.resolve()
+      await release.promise
+    }
+    return original(path)
+  })
+  syncBuiltinESMExports()
+  t.after(() => { release.resolve(); unlink.mock.restore(); syncBuiltinESMExports() })
+  const deleting = request('documents/delete', { id: doc.id })
+  try {
+    await entered.promise
+    assert.equal((await request('video', { documentId: doc.id, voice: 'none' })).status, 409)
+    assert.equal((await request('documents/delete', { id: doc.id })).status, 409)
+    assert.equal((await videos.latest(doc.id)).id, saved.id)
+    assert.deepEqual(await videos.audio(doc.id, saved.id, 0), wav())
+  } finally { release.resolve() }
+  assert.equal((await deleting).status, 204)
+  assert.equal((await request('video', { documentId: doc.id, voice: 'none' })).status, 404)
+  assert.equal(await videos.latest(doc.id), null)
+  assert.equal(calls.length, 0)
+})
+
+test('a failed deletion releases its reservation and retains the previous video and audio', async t => {
+  const { request, doc, dir } = await apiFixture(t)
+  const videos = createVideoStorage(join(dir, 'dsh-code-wiki', 'videos'))
+  const saved = { version: 1, id: randomUUID(), documentId: doc.id, createdAt: new Date().toISOString(),
+    scenes: [{}], speech: { available: true } }
+  await videos.save(saved, [wav()])
+  const original = fs.unlink
+  const unlink = t.mock.method(fs, 'unlink', async path => {
+    if (path === join(dir, 'dsh-code-wiki', 'documents', doc.id + '.json')) throw Object.assign(new Error('fixture'), { code: 'EACCES' })
+    return original(path)
+  })
+  syncBuiltinESMExports()
+  try { assert.equal((await request('documents/delete', { id: doc.id })).status, 500) }
+  finally { unlink.mock.restore(); syncBuiltinESMExports() }
+  assert.equal((await videos.latest(doc.id)).id, saved.id)
+  assert.deepEqual(await videos.audio(doc.id, saved.id, 0), wav())
+  const accepted = await request('video', { documentId: doc.id, voice: 'none' })
+  assert.equal(accepted.status, 202)
+  assert.equal((await waitJob(request, (await accepted.json()).job.id)).phase, 'completed')
+})
+
+test('persisted local fact links open the quoted README and linked document lines through the source API', async t => {
+  const { request, doc, dir } = await apiFixture(t)
+  const brief = editorialBriefFixture()
+  const [purpose, feature, architecture] = brief.facts.map(fact => fact.quote)
+  const record = { ...doc, id: randomUUID(), files: [
+    { path: 'README.md', startLine: 100,
+      text: '# Project\n\n[Capabilities](docs/overview.md)\n' + purpose + '\n' + architecture },
+    { path: 'docs/overview.md', startLine: 200, text: '# Capabilities\n' + feature },
+  ] }
+  await createWikiStorage(join(dir, 'dsh-code-wiki', 'documents')).save(record)
+  const material = await loadVideoMaterial(record)
+  brief.facts[0].source = 'readme'
+  brief.facts[1].source = 'document-1'
+  brief.facts[2].source = 'readme'
+  const normalized = normalizeEditorialBrief(brief, record, editorialSources(record, material))
+  for (const fact of normalized.facts) {
+    const response = await request('source' + new URL(fact.sourceUrl).search)
+    assert.equal(response.status, 200)
+    assert((await response.text()).includes(fact.quote))
+  }
+})
+
+test('a terminal designer failure aborts and drains sibling streams before another job can start', async t => {
+  let fail = false
+  const cancelled = deferred()
+  const cleanup = deferred()
+  const siblings = []
+  const llm = { async *stream(options) {
+    const prompt = options.messages[0].content[0].text
+    if (fail && options.system.includes('MOTION DESIGNER')) {
+      const scene = JSON.parse(prompt).scene
+      if (scene.id === 'scene-1') throw new Error('fixture transport failure')
+      const state = { signal: options.signal, finished: false }
+      siblings.push(state)
+      try { await delay(60_000, undefined, { signal: options.signal }) }
+      finally {
+        if (siblings.length === 2 && siblings.every(item => item.signal.aborted)) cancelled.resolve()
+        await cleanup.promise
+        state.finished = true
+      }
+    }
+    yield { type: 'text-delta', text: JSON.stringify(motionModelResponse(options.system, prompt)) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  t.after(() => cleanup.resolve())
+  const { request, doc } = await apiFixture(t, { llm })
+  const previous = await request('video', { documentId: doc.id, voice: 'none' })
+  const saved = await waitJob(request, (await previous.json()).job.id)
+  assert.equal(saved.phase, 'completed')
+  fail = true
+  const accepted = await request('video', { documentId: doc.id, voice: 'none' })
+  const id = (await accepted.json()).job.id
+  try {
+    await Promise.race([cancelled.promise, delay(1000).then(() => assert.fail('Sibling streams were not cancelled'))])
+    assert.equal(siblings.length, 2)
+    assert(siblings.every(item => item.signal.aborted && !item.finished))
+    assert.equal((await request('video', { documentId: doc.id, voice: 'none' })).status, 409)
+  } finally { cleanup.resolve() }
+  const failed = await waitJob(request, id)
+  assert.equal(failed.phase, 'failed', 'an internal sibling abort must preserve the original failure status')
+  assert(siblings.every(item => item.finished))
+  assert.equal((await (await request('video?documentId=' + doc.id)).json()).artifact.id, saved.id)
+  fail = false
+  const retry = await request('video', { documentId: doc.id, voice: 'none' })
+  assert.equal(retry.status, 202)
+  assert.equal((await waitJob(request, (await retry.json()).job.id)).phase, 'completed')
+})
+
+test('personal GPT configuration overrides DSH for the repository and story editors and visual roles', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'wiki-video-model-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   const path = join(dir, 'model.json')
@@ -296,7 +537,7 @@ test('personal GPT configuration overrides DSH for both video roles', async t =>
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     const body = JSON.parse(options.body)
     calls.push(body)
-    const value = body.messages[0].content.includes('You write the narration') ? scriptFixture() : designFixture(scriptFixture())
+    const value = motionModelResponse(body.messages[0].content, body.messages[1].content)
     return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(value) } }] })
   })
   const { request, doc } = await apiFixture(t, { agentDefaultModel: { currentSelection() { assert.fail('Must not use DSH for a personal override') } } }, { modelConfigFile: path })
@@ -304,7 +545,7 @@ test('personal GPT configuration overrides DSH for both video roles', async t =>
   const result = await waitJob(request, (await accepted.json()).job.id)
   assert.equal(result.phase, 'completed', result.error)
   assert.equal(result.artifact.model, 'personal-gpt')
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, motionPipelineCalls())
   assert.ok(calls.every(call => call.model === 'personal-gpt'))
 })
 

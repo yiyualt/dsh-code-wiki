@@ -11,6 +11,7 @@ const voiceModes = new Set(['charon', 'alternative', 'none'])
 export function registerVideoApi(ctx, config, documents, selectModel, lifetime) {
   const storage = createVideoStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'videos'))
   const jobs = new Map()
+  const removing = new Set()
   let active
   const status = job => {
     if (!job) return null
@@ -37,6 +38,9 @@ export function registerVideoApi(ctx, config, documents, selectModel, lifetime) 
         repository: videoRepository(document), commit: document.commit, title: plan.title,
         source: document.source, ...(document.repoUrl && { repoUrl: document.repoUrl }),
         ...(plan.language && { language: plan.language }),
+        ...(plan.motionVersion && { motionVersion: plan.motionVersion }),
+        ...(plan.images && { images: plan.images }),
+        ...(plan.editorial && { editorial: plan.editorial }),
         model: selection.model, createdAt: new Date().toISOString(), ...content }
       await storage.save(artifact, clips)
       Object.assign(job, { phase: 'completed', artifact, finishedAt: Date.now() })
@@ -74,6 +78,7 @@ export function registerVideoApi(ctx, config, documents, selectModel, lifetime) 
     const body = await request.json().catch(() => null)
     if (!validVideoId(body?.documentId) || (body.narration !== undefined && typeof body.narration !== 'boolean')
       || (body.voice !== undefined && (body.narration !== undefined || !voiceModes.has(body.voice)))) return json({ error: '视频请求无效。' }, 400)
+    if (removing.has(body.documentId)) return json({ error: '文档正在删除，请稍后重试。' }, 409)
     if (active) return json({ error: '已有讲解视频正在生成，请稍后重试。', job: status(active) }, 409)
     // Reserve before any awaited reads, so two concurrent requests cannot both start.
     const job = { id: randomUUID(), documentId: body.documentId, phase: 'scripting', startedAt: Date.now(), stop: new AbortController() }
@@ -118,6 +123,12 @@ export function registerVideoApi(ctx, config, documents, selectModel, lifetime) 
   })
   return {
     busy: documentId => Boolean(active && active.documentId === documentId),
+    reserveRemoval(documentId) {
+      // Check and reserve synchronously, before either deletion or generation awaits I/O.
+      if (removing.has(documentId) || (active && active.documentId === documentId)) return null
+      removing.add(documentId)
+      return () => removing.delete(documentId)
+    },
     async remove(documentId) {
       await storage.remove(documentId)
       for (const [id, job] of jobs) if (job.documentId === documentId) jobs.delete(id)

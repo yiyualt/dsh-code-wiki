@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
+import { stretchSpeechPcm } from './video-tempo.js'
 
 const exec = promisify(execFile)
 const voiceError = message => Object.assign(new Error(message), { code: 'video-voice-failed' })
@@ -10,9 +11,21 @@ const command = (file, args, signal) => exec(file, args, { signal, timeout: 90_0
 const speechEndpoint = 'https://openrouter.ai/api/v1/audio/speech'
 const charonModel = 'google/gemini-3.8-flash-tts'
 const gatewayCharonModel = 'gemini-3.1-flash-tts-preview'
-const charonStyle = 'A warm, technically precise engineer speaking to a colleague. Keep the delivery understated, with gentle changes in pace and natural pauses at punctuation.'
+const charonStyle = 'Warm, conversational English from an engineer speaking to a colleague. Keep a relaxed, natural conversational pace of 135–145 words per minute. Give each phrase room to finish without rushing. Stress action verbs and results, with brief breaths between sentences and a short pause between topics.'
 const sampleRate = 24_000
 const pcmBytesPerSecond = sampleRate * 2
+const targetWordsPerMinute = 140
+const scenePauseSeconds = 0.5
+const englishWordCount = text => text.match(/[a-z\d]+(?:['’.-][a-z\d]+)*/gi)?.length ?? 0
+
+function indexBeats(scene) {
+  let wordIndex = 0
+  return scene.beats.map(beat => {
+    const indexed = { ...beat, wordIndex }
+    wordIndex += englishWordCount(beat.narration)
+    return indexed
+  })
+}
 
 // Duration comes from the actual PCM file; headers may contain extra chunks.
 export function waveSeconds(bytes) {
@@ -93,7 +106,7 @@ async function gatewayCharonProvider(configFile, signal) {
   return { available: true, kind: 'api', label: 'Charon · Gemini 3.1 Flash TTS',
     async speakTake(text, signal) {
       const body = {
-        contents: [{ role: 'user', parts: [{ text: `Read the following in a warm, conversational English tone:\n\n${text}` }] }],
+        contents: [{ role: 'user', parts: [{ text: `Read the transcript aloud. ${charonStyle} Read only the words after TRANSCRIPT.\n\nTRANSCRIPT\n${text}` }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } } } },
       }
       const response = await requestSpeech(endpoint, headers, body, signal)
@@ -137,12 +150,16 @@ function estimateSpeechWeight(text) {
   return words.reduce((sum, word) => sum + 1 + 0.1 * Math.min(word.length, 12), 0) + pauses * 0.7 + 1
 }
 
-function splitTake(pcm, paragraphs) {
+function validateTake(pcm, paragraphs) {
   const duration = pcm.length / pcmBytesPerSecond
   if (duration < paragraphs.length * 0.25 || duration > 120 || pcm.length % 2 || pcm.toString('ascii', 0, 4) === 'RIFF') {
     throw voiceError('Charon 配音的 PCM 格式或时长无效。')
   }
+  return duration
+}
 
+function splitTake(pcm, paragraphs) {
+  const duration = pcm.length / pcmBytesPerSecond
   // Find sustained quiet around the estimated end of each paragraph. This changes
   // scene timing only. The successive clips contain every sample of one take.
   const levels = []
@@ -276,26 +293,45 @@ export async function voiceVideo(plan, provider, signal, onScene = () => {}) {
   const scenes = []
   const continuous = provider.available && provider.speakTake
   let takes
+  let tempo
   if (continuous) {
     const paragraphs = plan.scenes.map(scene => scene.narration)
     const pcm = await provider.speakTake(paragraphs.join('\n\n'), signal)
     signal.throwIfAborted()
-    takes = splitTake(pcm, paragraphs)
+    const duration = validateTake(pcm, paragraphs)
+    let prepared = pcm
+    if (plan.language === 'en') {
+      const words = paragraphs.reduce((total, paragraph) => total + englishWordCount(paragraph), 0)
+      const originalWpm = 60 * words / duration
+      const completeTake = words >= 20 && duration >= 5 && originalWpm >= 80 && originalWpm <= 250
+      const ratio = completeTake ? Math.max(0.8, Math.min(1.35, targetWordsPerMinute / originalWpm)) : 1
+      // Keep a minimum amount of audio per scene, including on short inputs.
+      if (ratio !== 1 && duration / ratio >= paragraphs.length * 0.25) prepared = stretchSpeechPcm(pcm, sampleRate, ratio)
+      tempo = { originalWordsPerMinute: Math.round(originalWpm), tempoRatio: prepared === pcm ? 1 : ratio }
+    }
+    takes = splitTake(prepared, paragraphs)
   }
   for (const [i, scene] of plan.scenes.entries()) {
     signal.throwIfAborted()
     const take = takes ? { bytes: wrapPcm(takes[i]), seconds: takes[i].length / pcmBytesPerSecond }
       : provider.available ? await provider.speak(scene.narration, signal) : null
     if (take) clips.push(take.bytes)
-    const estimatedSeconds = plan.language === 'en' ? scene.narration.split(/\s+/).length * 60 / 155 : scene.narration.length / 4.2
+    const estimatedSeconds = plan.language === 'en' ? englishWordCount(scene.narration) * 60 / targetWordsPerMinute : scene.narration.length / 4.2
     const speechSeconds = take?.seconds ?? Math.max(5, estimatedSeconds)
     const audioOffset = !takes || i === 0 ? 0.2 : 0
-    const tail = !takes || i === plan.scenes.length - 1 ? 0.6 : 0
+    const tail = i === plan.scenes.length - 1 ? 0.6 : scenePauseSeconds
     const duration = speechSeconds + (audioOffset + tail)
-    scenes.push({ ...scene, start, duration, speechSeconds, ...(takes && { audioOffset }) })
+    scenes.push({ ...scene, start, duration, speechSeconds, ...(takes && { audioOffset }),
+      ...(plan.language === 'en' && scene.beats && { beats: indexBeats(scene) }) })
     start += duration
     onScene(scenes.length)
   }
   if (start > 240) throw voiceError('视频超过四分钟，请缩短讲稿后重新生成。')
-  return { scenes, duration: start, clips, speech: { kind: provider.kind, label: provider.label, available: provider.available } }
+  const speech = { kind: provider.kind, label: provider.label, available: provider.available, ...tempo, scenePauseSeconds }
+  if (provider.available && plan.language === 'en') {
+    const words = scenes.reduce((total, scene) => total + englishWordCount(scene.narration), 0)
+    const seconds = scenes.reduce((total, scene) => total + scene.speechSeconds, 0)
+    if (seconds > 0) Object.assign(speech, { words, wordsPerMinute: Math.round(60 * words / seconds), alignment: 'estimated' })
+  }
+  return { scenes, duration: start, clips, speech }
 }

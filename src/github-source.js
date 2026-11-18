@@ -283,6 +283,21 @@ async function readGitSnapshot(owner, repo, signal) {
   }
 }
 
+export function readPinnedGithubFile(repositoryUrl, commit, path, bytes, signal) {
+  const { owner, repo } = parseRepository(repositoryUrl)
+  if (typeof commit !== 'string' || !objectId.test(commit)) throw requestFailed()
+  const parts = path.split('/')
+  if (parts.some(part => !part || part === '.' || part === '..' || /[\\\u0000-\u001f\u007f]/.test(part))) throw requestFailed()
+  return readGithubBlob(owner, repo, commit, parts, bytes, signal)
+}
+
+function readGithubBlob(owner, repo, commit, parts, bytes, signal) {
+  const encodedPath = parts.map(encodeURIComponent).join('/')
+  const timeout = AbortSignal.timeout(requestTimeout)
+  return readGitHub(`${rawBase}/${owner}/${repo}/${commit}/${encodedPath}`,
+    signal ? AbortSignal.any([signal, timeout]) : timeout, { raw: true, bytes })
+}
+
 export async function openGithubRepository(repositoryUrl, { signal } = {}) {
   const { owner, repo } = parseRepository(repositoryUrl)
   const deadline = AbortSignal.timeout(requestTimeout)
@@ -300,13 +315,10 @@ export async function openGithubRepository(repositoryUrl, { signal } = {}) {
   }
 
   const { commit, tree } = snapshot
-  const ref = `${rawBase}/${owner}/${repo}/${commit}`
   return {
     owner, repo, commit, tree,
     read(path, bytes, readSignal = signal) {
-      const encodedPath = path.split('/').map(encodeURIComponent).join('/')
-      const timeout = AbortSignal.timeout(requestTimeout)
-      return readGitHub(`${ref}/${encodedPath}`, readSignal ? AbortSignal.any([readSignal, timeout]) : timeout, { raw: true, bytes })
+      return readGithubBlob(owner, repo, commit, path.split('/'), bytes, readSignal)
     },
   }
 }

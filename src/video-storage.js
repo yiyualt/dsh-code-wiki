@@ -4,6 +4,7 @@ import { mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const validVideoId = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value)
+const maxArtifactBytes = 8 * 1024 * 1024
 
 async function regularFile(path, maxBytes) {
   let file
@@ -21,7 +22,7 @@ async function regularFile(path, maxBytes) {
 export function createVideoStorage(directory) {
   async function get(documentId, id) {
     if (!validVideoId(documentId) || !validVideoId(id)) return null
-    const bytes = await regularFile(join(directory, documentId, id, 'video.json'), 1024 * 1024)
+    const bytes = await regularFile(join(directory, documentId, id, 'video.json'), maxArtifactBytes)
     if (!bytes) return null
     try {
       const artifact = JSON.parse(bytes)
@@ -46,12 +47,14 @@ export function createVideoStorage(directory) {
     },
     async save(artifact, clips) {
       if (!validVideoId(artifact.documentId) || !validVideoId(artifact.id)) throw new Error('Invalid video ID')
+      const serialized = JSON.stringify(artifact)
+      if (Buffer.byteLength(serialized) > maxArtifactBytes) throw new Error('Video artifact is too large')
       const parent = join(directory, artifact.documentId)
       const temporary = join(parent, '.' + randomUUID())
       await mkdir(temporary, { recursive: true, mode: 0o700 })
       try {
         for (const [i, clip] of clips.entries()) await writeFile(join(temporary, `${i}.wav`), clip, { mode: 0o600 })
-        await writeFile(join(temporary, 'video.json'), JSON.stringify(artifact), { mode: 0o600 })
+        await writeFile(join(temporary, 'video.json'), serialized, { mode: 0o600 })
         await rename(temporary, join(parent, artifact.id))
       } finally { await rm(temporary, { recursive: true, force: true }) }
     },

@@ -1,3 +1,5 @@
+import { drawMotionScene } from './video-motion.js'
+
 const frameWidth = 1280
 const frameHeight = 720
 const ink = '#261e38'
@@ -7,6 +9,8 @@ const stroke = '#d7cee9'
 const serif = '"Instrument Serif", "New York", Georgia, serif'
 const sans = 'Geist, "Helvetica Neue", "PingFang SC", Arial, sans-serif'
 const mono = '"Geist Mono", Menlo, monospace'
+const codeColors = ['#0d7357', '#70657e', '#6434a2', '#9a480e']
+const codeTokens = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(\/\/.*|#.*|\/\*.*)|(\b(?:as|async|await|break|case|catch|class|const|continue|def|elif|else|except|export|extends|false|False|finally|fn|for|from|function|if|impl|import|in|is|let|match|new|None|null|pass|return|self|switch|throw|true|True|try|type|use|var|while|with|yield)\b)|(\b\d+(?:\.\d+)?\b)/g
 const captionCache = new WeakMap()
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' })
 const clamp = value => Math.max(0, Math.min(1, value))
@@ -83,15 +87,21 @@ function captionsFor(scene) {
 
 function drawCaption(ctx, scene, progress) {
   const spoken = progress * scene.narration.length
-  const caption = captionsFor(scene).findLast(item => item.start <= spoken)?.value
-  if (!caption) return
-  const rows = lines(ctx, caption, 30, 570, sans, 1010, 2)
-  const width = Math.max(...rows.map(row => ctx.measureText(row).width)) + 38
-  const height = rows.length * 36 + 14
+  const wordProgress = progress * (scene.narration.match(/[a-z\d]+(?:['’.-][a-z\d]+)*/gi)?.length ?? 0)
+  const beat = scene.motion && scene.beats?.findLast(item => item.wordIndex <= wordProgress)
+  const caption = beat ? { value: beat.narration } : captionsFor(scene).findLast(item => item.start <= spoken)
+  if (!caption?.value) return
+  const visual = Boolean(scene.visual)
+  const size = visual ? 27 : 30
+  const weight = visual ? 550 : 570
+  const leading = visual ? 33 : 36
+  const rows = lines(ctx, caption.value, size, weight, sans, visual ? 950 : 1010, 2)
+  const width = Math.max(...rows.map(row => ctx.measureText(row).width)) + (visual ? 32 : 38)
+  const height = rows.length * leading + 14
   const y = frameHeight - 30 - height
   roundRect(ctx, (frameWidth - width) / 2, y, width, height, 9, '#252033')
   ctx.textAlign = 'center'
-  rows.forEach((row, i) => text(ctx, row, frameWidth / 2, y + 33 + i * 36, 30, { color: '#fff', weight: 570 }))
+  rows.forEach((row, i) => text(ctx, row, frameWidth / 2, y + leading - 3 + i * leading, size, { color: '#fff', weight }))
   ctx.textAlign = 'left'
 }
 
@@ -226,6 +236,125 @@ function drawDetail(ctx, scene, focus, isNew) {
   }
 }
 
+function drawWindow(ctx, x, y, width, height, title, dark = false) {
+  ctx.save()
+  roundRect(ctx, x + 7, y + 7, width, height, 12, dark ? '#5d3997' : '#312748')
+  roundRect(ctx, x, y, width, height, 12, dark ? '#211a30' : '#fdfbff', '#312748')
+  ctx.fillStyle = dark ? '#564566' : '#d8cce8'
+  ctx.fillRect(x + 1, y + 45, width - 2, 2)
+  for (const [i, color] of ['#ef9eaa', '#eec480', '#88c7ad'].entries()) {
+    roundRect(ctx, x + 17 + i * 16, y + 18, 9, 9, 4.5, color)
+  }
+  paragraph(ctx, title, x + 78, y + 30, {
+    size: 17, family: mono, color: dark ? '#e2d5f0' : muted, maxWidth: width - 95, maxLines: 1,
+  })
+  ctx.restore()
+}
+
+function focusAmount(progress, offset = .08, length = .2) {
+  const ratio = clamp((progress - offset) / length)
+  return 1 - (1 - ratio) ** 3
+}
+
+function sourceLabel(ref) {
+  return ref?.path || ref?.label || ''
+}
+
+function drawCommand(ctx, scene, progress) {
+  const visual = scene.visual
+  const x = 126
+  const y = 229
+  const width = 1028
+  const height = 253
+  drawWindow(ctx, x, y, width, height, 'Terminal', true)
+  const command = Array.from(visual.command)
+  const visible = command.slice(0, Math.max(1, Math.ceil(command.length * focusAmount(progress, .05, .32)))).join('')
+  const available = width - 135
+  const rows = lines(ctx, visible, 26, 500, mono, available, 4)
+  rows.forEach((row, i) => text(ctx, row, x + 72, y + 99 + i * 39, 26, { family: mono, color: '#f6efff' }))
+  text(ctx, '$', x + 31, y + 99, 26, { family: mono, color: '#8fd7b6' })
+  if (rows.length && visible.length < visual.command.length) {
+    const lineWidth = Math.min(available, ctx.measureText(rows.at(-1)).width)
+    ctx.fillStyle = '#b992ef'
+    ctx.fillRect(x + 75 + lineWidth, y + 77 + (rows.length - 1) * 39, 3, 26)
+  }
+  const source = sourceLabel(visual.ref)
+  if (source) paragraph(ctx, source, x, y + height + 43, {
+    size: 18, family: mono, color: muted, maxWidth: width, maxLines: 1,
+  })
+}
+
+function drawCodeLine(ctx, code, x, y, size, width) {
+  ctx.font = `500 ${size}px ${mono}`
+  const columnWidth = ctx.measureText('M').width
+  const columns = Math.max(1, Math.floor(width / columnWidth))
+  const characters = Array.from(code.replace(/\t/g, '    '))
+  let count = Math.min(characters.length, columns)
+  let visible = characters.slice(0, count).join('')
+  while (count && ctx.measureText(visible + (count < characters.length ? '…' : '')).width > width) {
+    visible = characters.slice(0, --count).join('')
+  }
+  let index = 0
+  for (const token of visible.matchAll(codeTokens)) {
+    if (token.index > index) text(ctx, visible.slice(index, token.index), x + ctx.measureText(visible.slice(0, index)).width, y, size, { family: mono })
+    const color = codeColors[token.slice(1).findIndex(group => group !== undefined)]
+    text(ctx, token[0], x + ctx.measureText(visible.slice(0, token.index)).width, y, size, { family: mono, color })
+    index = token.index + token[0].length
+  }
+  text(ctx, visible.slice(index) + (count < characters.length ? '…' : ''), x + ctx.measureText(visible.slice(0, index)).width, y, size, { family: mono })
+}
+
+function drawSourceWindow(ctx, visual, progress, { x, y, width, fontSize, maxLines, minHeight }) {
+  const source = sourceLabel(visual.ref)
+  const lineHeight = fontSize + 10
+  const body = (visual.lines || []).slice(0, maxLines)
+  const height = Math.max(minHeight, 86 + body.length * lineHeight)
+  drawWindow(ctx, x, y, width, height, body.length ? source : 'Source file')
+  if (!body.length) {
+    paragraph(ctx, source, x + 36, y + 137, { size: 32, weight: 600, family: mono, maxWidth: width - 72 })
+    return
+  }
+  const firstLine = visual.startLine || 1
+  const lineNumberWidth = String(firstLine + body.length - 1).length * (fontSize * .65) + 36
+  const highlighted = visual.focusLine - firstLine
+  if (Number.isInteger(highlighted) && highlighted >= 0 && highlighted < body.length) {
+    ctx.save()
+    ctx.globalAlpha = focusAmount(progress, .05, .22)
+    roundRect(ctx, x + 11, y + 60 + highlighted * lineHeight, width - 22, lineHeight - 1, 4, '#e9ddfa')
+    ctx.restore()
+  }
+  ctx.fillStyle = '#e2d8ee'
+  ctx.fillRect(x + lineNumberWidth, y + 55, 1, height - 70)
+  body.forEach((line, i) => {
+    const baseline = y + 81 + i * lineHeight
+    ctx.textAlign = 'right'
+    text(ctx, String(firstLine + i), x + lineNumberWidth - 12, baseline, fontSize - 3, { family: mono, color: muted })
+    ctx.textAlign = 'left'
+    drawCodeLine(ctx, line, x + lineNumberWidth + 15, baseline, fontSize, width - lineNumberWidth - 33)
+  })
+}
+
+function drawVisual(ctx, scene, progress) {
+  const { visual } = scene
+  if (visual?.kind === 'command' && visual.command) {
+    paragraph(ctx, scene.headline || scene.title, 76, 145, { size: 59, maxWidth: 1120, family: serif })
+    drawCommand(ctx, scene, progress)
+    return true
+  }
+  if (!['entry', 'code'].includes(visual?.kind) || !sourceLabel(visual.ref)) return false
+
+  const detail = visual.kind === 'code'
+  const measured = detail
+    ? { x: 460, y: 157, width: 744, fontSize: 18, maxLines: 10, minHeight: 222 }
+    : { x: 126, y: 224, width: 1028, fontSize: 21, maxLines: 8, minHeight: 228 }
+  const title = detail
+    ? { y: 231, size: 60, maxWidth: 340, maxLines: 4 }
+    : { y: 145, size: 59, maxWidth: 1120, maxLines: 2 }
+  paragraph(ctx, scene.headline || scene.title, 76, title.y, { ...title, family: serif })
+  drawSourceWindow(ctx, visual, progress, measured)
+  return true
+}
+
 // Playback, seeking, and export use identical frame coordinates and timing.
 export function codeWikiVideoFrame(canvas, film, time, { captions: showCaptions = true } = {}) {
   const ctx = canvas.getContext('2d')
@@ -241,14 +370,17 @@ export function codeWikiVideoFrame(canvas, film, time, { captions: showCaptions 
   const isNew = film.language === 'en'
   const headline = scene.headline || scene.title
   drawBackdrop(ctx, film)
-  if (scene.kind === 'intro' || scene.kind === 'outro') {
-    const titleSize = isNew ? 90 : 65
-    paragraph(ctx, headline, 76, 304, { size: titleSize, maxWidth: 1110, maxLines: 3, family: serif })
-  } else if (scene.kind === 'detail') {
-    drawDetail(ctx, scene, focus, isNew)
-  } else {
-    paragraph(ctx, headline, 76, 145, { size: isNew ? 59 : 51, maxWidth: 1120, family: serif })
-    drawGraph(ctx, scene, focus, progress, isNew)
+  if (scene.motion) drawMotionScene(ctx, scene, progress, local)
+  else if (!drawVisual(ctx, scene, progress)) {
+    if (scene.kind === 'intro' || scene.kind === 'outro') {
+      const titleSize = isNew ? 90 : 65
+      paragraph(ctx, headline, 76, 304, { size: titleSize, maxWidth: 1110, maxLines: 3, family: serif })
+    } else if (scene.kind === 'detail') {
+      drawDetail(ctx, scene, focus, isNew)
+    } else {
+      paragraph(ctx, headline, 76, 145, { size: isNew ? 59 : 51, maxWidth: 1120, family: serif })
+      drawGraph(ctx, scene, focus, progress, isNew)
+    }
   }
   if (showCaptions) drawCaption(ctx, scene, progress)
   ctx.restore()

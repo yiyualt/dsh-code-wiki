@@ -1654,6 +1654,79 @@ a.dsh-code-wiki-revision:hover {
   font-weight: 665;
 }
 
+.dsh-code-wiki-video-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.dsh-code-wiki-video-dialog button.dsh-code-wiki-video-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--film-line);
+  border-radius: 7px;
+  background: var(--film-paper);
+  color: var(--film-ink);
+  box-shadow: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dsh-code-wiki-video-dialog button.dsh-code-wiki-video-action-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--film-muted);
+}
+
+.dsh-code-wiki-video-dialog button.dsh-code-wiki-video-action:hover:not(:disabled) {
+  border-color: var(--film-line);
+  background: var(--film-fill);
+  color: var(--film-accent);
+}
+
+.dsh-code-wiki-video-dialog button.dsh-code-wiki-video-action:focus-visible {
+  outline: 2px solid var(--film-accent);
+  outline-offset: 2px;
+}
+
+.dsh-code-wiki-video-dialog button.dsh-code-wiki-video-action:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.dsh-code-wiki-video-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--film-line);
+  border-radius: 8px;
+  background: var(--film-panel);
+}
+
+.dsh-code-wiki-video-confirm p {
+  flex: 1 1 240px;
+  margin: 0;
+  color: var(--film-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dsh-code-wiki-video-confirm .dsh-code-wiki-video-actions {
+  margin-left: auto;
+}
+
 .dsh-code-wiki-video-scenes {
   display: flex;
   gap: 8px;
@@ -1697,46 +1770,11 @@ a.dsh-code-wiki-revision:hover {
   line-height: 1.45;
 }
 
-.dsh-code-wiki-video-player details {
-  margin: 12px 0 0;
-  padding: 12px 0 0;
-  border-top: 1px solid var(--film-line);
-  font-size: 13px;
-}
-
-.dsh-code-wiki-video-player summary {
-  color: var(--film-ink);
-  cursor: pointer;
-}
-
-.dsh-code-wiki-video-transcript {
-  margin-top: 14px;
-  padding-left: 12px;
-  border-left: 2px solid var(--film-line);
-}
-
-.dsh-code-wiki-video-transcript p {
-  margin: 6px 0;
-  line-height: 1.8;
-}
-
-.dsh-code-wiki-video-evidence {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  margin-top: 6px;
-  font-size: 11px;
-}
-
 .dsh-code-wiki-video-generate {
   padding: 15px 16px;
   border: 1px solid var(--film-line);
   border-radius: 10px;
   background: var(--film-panel);
-}
-
-.dsh-code-wiki-video-generate[data-replace] {
-  margin-top: 16px;
 }
 
 .dsh-code-wiki-video-failure {
@@ -1807,6 +1845,7 @@ a.dsh-code-wiki-revision:hover {
 
 .dsh-code-wiki-video-dialog button.dsh-code-wiki-video-primary:hover:not(:disabled) {
   background: #414894;
+  color: #fff;
 }
 
 .dsh-code-wiki-video-spinner {
@@ -1825,20 +1864,6 @@ a.dsh-code-wiki-revision:hover {
   display: block;
   margin: 8px 0;
   font-size: 13px;
-}
-
-.dsh-code-wiki-video-dialog button.dsh-code-wiki-video-text-button {
-  margin: 4px 0 0;
-  padding: 4px 0;
-  border: 0;
-  background: transparent;
-  color: var(--film-accent);
-  box-shadow: none;
-  font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
 }
 
 @keyframes dsh-wiki-video-spin {

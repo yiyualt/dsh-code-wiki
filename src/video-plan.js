@@ -1,4 +1,6 @@
 import { modelError } from './generate-wiki.js'
+import { videoReferences } from './video-evidence.js'
+import { generateMotionPlan } from './video-director.js'
 
 const invalid = message => Object.assign(new Error(message), { code: 'video-plan-invalid' })
 const layouts = new Set(['row', 'column', 'hub'])
@@ -55,7 +57,7 @@ function designEdges(scene, suggestions, relations) {
   return selected
 }
 
-export function normalizeVideoScript(raw, document) {
+export function normalizeVideoScript(raw, document, references = videoReferences(document), commands = []) {
   if (!Array.isArray(raw?.scenes) || raw.scenes.length !== sceneRequirements.length) {
     throw invalid('讲稿需要四个场景，依次介绍用途、主要组件、一次实际操作和一项设计。')
   }
@@ -80,14 +82,17 @@ export function normalizeVideoScript(raw, document) {
       const linked = new Set(sceneRelations(nodes, relations).flatMap(edge => [edge.from, edge.to]))
       if (linked.size !== nodes.length) throw invalid(`运行流程场景 ${i + 1} 的每个组件都需要连接到同场景的组件。`)
     }
-    return { id: `scene-${i + 1}`, kind, title, headline, narration, nodes }
+    const ref = ['architecture', 'detail'].includes(kind) && references.find(item => item.id === scene.sourceRef)
+    const command = kind === 'architecture' && commands.find(item => item.id === scene.commandRef)
+    return { id: `scene-${i + 1}`, kind, title, headline, narration, nodes,
+      ...(ref && { sourceRef: ref.id }), ...(command && { commandRef: command.id }) }
   })
   const totalWords = scenes.reduce((sum, scene) => sum + wordCount(scene.narration), 0)
   if (totalWords < 90 || totalWords > 175) throw invalid('四个场景的英文旁白合计需要 90 至 175 个单词。')
   return { title: englishText(raw.title, 50) || videoRepository(document), language: 'en', scenes }
 }
 
-export function normalizeVideoDesign(raw, script, document) {
+export function normalizeVideoDesign(raw, script, document, references = videoReferences(document), commands = []) {
   const known = new Map(repositoryNodes(document).map(node => [node.id, node]))
   const relations = document.architecture?.edges ?? []
   if (!Array.isArray(raw?.scenes) || raw.scenes.length !== script.scenes.length) throw invalid('分镜数量与讲稿不一致。')
@@ -114,7 +119,15 @@ export function normalizeVideoDesign(raw, script, document) {
       const match = word && new RegExp(`(?<![a-z0-9])${literal}(?![a-z0-9])`, 'i').exec(scene.narration)
       if (match) actions.set(cue.node, { node: cue.node, word, offset: wordCount(scene.narration.slice(0, match.index)) / totalWords })
     }
-    return { ...scene, layout: shot.layout, cues: [...actions.values()].sort((a, b) => a.offset - b.offset), nodes, edges }
+    const { sourceRef, commandRef, ...content } = scene
+    const ref = references.find(item => item.id === sourceRef)
+    const command = commands.find(item => item.id === commandRef)
+    const focusLine = shot.focusLine
+    const visual = command ? { kind: 'command', command: command.command, ref: command.ref }
+      : ref && { kind: scene.kind === 'architecture' ? 'entry' : 'code', ref,
+      ...(Number.isInteger(focusLine) && focusLine >= ref.start && focusLine <= ref.end && { focusLine }) }
+    return { ...content, layout: shot.layout, cues: [...actions.values()].sort((a, b) => a.offset - b.offset), nodes, edges,
+      ...(visual && { visual }) }
   })
   return { ...script, scenes }
 }
@@ -154,27 +167,5 @@ async function checkedCall(llm, selection, task, prompt, validate, signal) {
 }
 
 export async function generateVideoPlan(llm, selection, document, signal, onPhase = () => {}) {
-  const nodes = repositoryNodes(document)
-  if (!nodes.length) throw invalid('这篇文档还没有架构图，请先生成架构 Wiki。')
-  const edges = (document.architecture.edges ?? []).map((edge, i) => ({ ...edge, ref: i + 1 }))
-  const material = JSON.stringify({ repository: videoRepository(document), commit: document.commit,
-    architecture: { nodes, edges }, wiki: document.markdown.slice(0, 50_000) })
-  onPhase('scripting')
-  const script = await checkedCall(llm, selection, `You write the narration for a roughly one-minute repository explainer. Write about 115 to 155 words in total, with complete sentences and natural punctuation. Each scene should have one idea and lead directly to the next.
-Use exactly four scenes in this order:
-1. intro. Open with what the software helps someone do. Introduce the same concrete action used in the rest of the video. Use no diagram nodes.
-2. architecture. Introduce only the 1 to 3 parts someone needs to understand that action. Give each part a different, concrete responsibility.
-3. flow. Follow that action step by step through 2 to 3 parts. Every part needs a verified connection to another chosen part. Say what each does with the input and what it passes on or produces. Choose nodes in reading order.
-4. detail. Explain one implemented choice with 1 to 2 parts and how it affects that action. End with a specific consequence. Skip a separate recap.
-Use short spoken sentences, familiar verbs and contractions where natural. Start with the software's purpose. Omit greetings, previews, lists of features, generic praise, metaphors and repeated conclusions. Use brief English titles and a short headline for each scene. Exclude narration headings, markup and stage directions. Use this structure:
-{"title":"Repository or concrete topic","scenes":[{"kind":"intro|architecture|flow|detail","title":"Short scene label","headline":"Short on-screen heading","narration":"Complete spoken sentences.","nodes":["component-id"]}]}.`,
-    material, raw => normalizeVideoScript(raw, document), signal)
-  onPhase('designing')
-  return checkedCall(llm, selection, `You design the four scenes for an existing narration. Keep only what the viewer needs to follow the sentence being spoken. Use a row for an ordered flow and a column or a row for a short set of related parts. Use the hub layout only when the verified connections all meet at one part.
-Use a 1 to 3 word English label per component. An optional action is 2 to 5 words and says what it does in this scene. Omit repeated names, package lists and vague labels such as "core engine".
-Each scene includes its own allowedEdges. Choose up to two of those connections by their numeric ref. Include a connection only where the narration explains it. Its English label is optional and should be no more than 28 characters. In the flow scene prefer the connections that link all of its components. Match arrows to the source direction.
-Where a component is mentioned, include one cue per component using a short contiguous phrase spoken at that moment. The intro has no diagram, so return empty node, edge and cue arrays for it.
-Use this structure: {"scenes":[{"id":"scene-1","layout":"row|column|hub","nodes":[{"id":"component-id","label":"Short label","action":"Optional short action"}],"edges":[{"ref":1,"label":"Passes configuration"}],"cues":[{"node":"component-id","word":"spoken phrase"}]}]}.`,
-    JSON.stringify({ script: { ...script, scenes: script.scenes.map(scene => ({ ...scene, allowedEdges: sceneRelations(scene.nodes, edges) })) }, nodes }),
-    raw => normalizeVideoDesign(raw, script, document), signal)
+  return generateMotionPlan({ llm, selection, document, signal, onPhase, checkedCall })
 }

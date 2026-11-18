@@ -1,29 +1,17 @@
 function createCodeWikiVideo(React, primitives) {
   const { createElement: h, useEffect, useId, useRef, useState } = React
   const { Button } = primitives
-  const labels = { scripting: '编写讲稿', designing: '设计分镜', voicing: '生成配音', saving: '保存视频' }
+  const labels = { reading: '读取素材', scripting: '编写讲稿', designing: '设计分镜', reviewing: '检查分镜', voicing: '生成配音', saving: '保存视频' }
   const running = job => job && !['completed', 'failed', 'cancelled'].includes(job.phase)
   const timeLabel = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
   function Icon({ name, size = 18 }) {
     const paths = { play: 'M8 5l11 7-11 7z', pause: 'M8 5v14M16 5v14',
       close: 'M6 6l12 12M18 6L6 18', full: 'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5',
-      captions: 'M4 5h16v14H4zM10 10H7v4h3M17 10h-3v4h3', replay: 'M4 10a8 8 0 1 1 1 8M4 4v6h6' }
+      captions: 'M4 5h16v14H4zM10 10H7v4h3M17 10h-3v4h3', replay: 'M4 10a8 8 0 1 1 1 8M4 4v6h6',
+      download: 'M12 3v12M7 10l5 5 5-5M4 16v5h16v-5' }
     return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: name === 'play' ? 'currentColor' : 'none',
       stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
     h('path', { d: paths[name] || paths.play }))
-  }
-  function evidenceUrl(ref, film) {
-    const url = typeof ref?.url === 'string' ? URL.parse(ref.url) : null
-    if (!url) return null
-    if (film.source === 'github' && url.href.startsWith(film.repoUrl + '/blob/' + film.commit + '/')
-      && /^#L\d+(?:-L\d+)?$/.test(url.hash)) return url.href
-    if (film.source === 'local' && url.origin === 'https://dsh-code-wiki.invalid' && url.pathname === '/source'
-      && new RegExp('^\\?key=' + film.documentId + '&file=\\d+&start=\\d+&end=\\d+$').test(url.search)) {
-      const local = new URL('api/dsh-code-wiki/source', document.baseURI)
-      local.search = url.search
-      return local.href
-    }
-    return null
   }
   const endpoint = (path = '', query = {}) => {
     const url = new URL('api/dsh-code-wiki/video' + path, document.baseURI)
@@ -108,7 +96,7 @@ function createCodeWikiVideo(React, primitives) {
     }
   }
 
-  function Player({ film }) {
+  function Player({ film, regeneration }) {
     const shell = useRef(null)
     const canvas = useRef(null)
     const clock = useRef(null)
@@ -116,6 +104,7 @@ function createCodeWikiVideo(React, primitives) {
     const lifetime = useRef(null)
     const record = useRef(null)
     const download = useRef(null)
+    const regenerationTrigger = useRef(null)
     const current = useRef(0)
     const [position, setPosition] = useState(0)
     const [playing, setPlaying] = useState(false)
@@ -123,12 +112,12 @@ function createCodeWikiVideo(React, primitives) {
     const [exporting, setExporting] = useState(false)
     const [error, setError] = useState('')
     const [file, setFile] = useState(null)
-    const [expanded, setExpanded] = useState(false)
     const [full, setFull] = useState(false)
     const [speed, setSpeed] = useState(1)
     const speedRef = useRef(1)
     const [captions, setCaptions] = useState(true)
     const captionsRef = useRef(true)
+    const regenerationId = useId()
     const mime = supportedRecording(film.speech.available)
     const extension = mime?.startsWith('video/mp4') ? 'mp4' : 'webm'
 
@@ -165,8 +154,9 @@ function createCodeWikiVideo(React, primitives) {
       const controller = new AbortController()
       lifetime.current = controller
       draw(0)
+      void prepareMotionImages(film).then(() => { if (!controller.signal.aborted) draw(current.current) })
       // Font loading can finish after the first still is drawn.
-      document.fonts?.ready.then(() => { if (!controller.signal.aborted && !clock.current) draw(0) })
+      document.fonts?.ready.then(() => { if (!controller.signal.aborted && !clock.current) draw(current.current) })
       const visibility = () => {
         if (document.hidden && record.current) cancelExport('导出已停止：页面切到了后台。请保持此页面可见后重新导出。')
       }
@@ -186,6 +176,7 @@ function createCodeWikiVideo(React, primitives) {
     }, [film.id])
     async function audio() {
       if (!clock.current) clock.current = createAudioClock(film)
+      await prepareMotionImages(film)
       await clock.current.load(lifetime.current.signal)
       lifetime.current.signal.throwIfAborted()
       return clock.current
@@ -281,7 +272,7 @@ function createCodeWikiVideo(React, primitives) {
           if (!blob.size) throw new Error('浏览器没有生成有效视频。')
           if (download.current) URL.revokeObjectURL(download.current)
           download.current = URL.createObjectURL(blob)
-          const name = film.repository.replace(/[^\w\u4e00-\u9fff.-]+/g, '-') + '-架构讲解.' + extension
+          const name = film.repository.replace(/[^\w\u4e00-\u9fff.-]+/g, '-') + '-仓库介绍.' + extension
           setFile({ url: download.current, name })
           const anchor = document.createElement('a')
           anchor.href = download.current
@@ -326,8 +317,25 @@ function createCodeWikiVideo(React, primitives) {
           onClick: toggleFull }, h(Icon, { name: full ? 'close' : 'full' })))),
       h('div', { className: 'dsh-code-wiki-video-scene-heading' },
         h('h3', null, '场景'),
-        exporting ? h(Button, { size: 'sm', onClick: () => cancelExport() }, '取消导出')
-          : h(Button, { size: 'sm', variant: 'outline', disabled: preparing || !mime, onClick: () => void exportFilm() }, `导出 ${extension.toUpperCase()}`),
+        h('div', { className: 'dsh-code-wiki-video-actions' },
+          regeneration && !regeneration.requested && h('button', { type: 'button',
+            ref: regenerationTrigger,
+            className: 'dsh-code-wiki-video-action dsh-code-wiki-video-action-quiet', disabled: preparing || exporting,
+            'aria-expanded': false, 'aria-controls': regenerationId,
+            onClick: () => { pause(); regeneration.onRequest() } }, h(Icon, { name: 'replay', size: 14 }), '重新生成'),
+          exporting ? h('button', { type: 'button', className: 'dsh-code-wiki-video-action', onClick: () => cancelExport() }, '取消导出')
+            : h('button', { type: 'button', className: 'dsh-code-wiki-video-action', disabled: preparing || !mime || regeneration?.requested,
+              onClick: () => void exportFilm() }, h(Icon, { name: 'download', size: 14 }), `导出 ${extension.toUpperCase()}`))),
+      regeneration?.requested && h('div', { id: regenerationId, className: 'dsh-code-wiki-video-confirm', role: 'group', 'aria-label': '重新生成视频' },
+        h('p', null, regeneration.available ? '重新生成完成后，将替换当前视频。' : regeneration.error || '当前没有可用的 Charon 配音服务。'),
+        h('div', { className: 'dsh-code-wiki-video-actions' },
+          h('button', { type: 'button', className: 'dsh-code-wiki-video-action dsh-code-wiki-video-action-quiet',
+            autoFocus: true, disabled: regeneration.starting, onClick: () => {
+              regeneration.onCancel()
+              requestAnimationFrame(() => regenerationTrigger.current?.focus())
+            } }, '取消'),
+          h('button', { type: 'button', className: 'dsh-code-wiki-video-action dsh-code-wiki-video-primary',
+            disabled: regeneration.starting || !regeneration.available, onClick: regeneration.onConfirm }, regeneration.starting ? '正在提交…' : '重新生成')),
       ),
       exporting && h('p', { role: 'status' }, `正在导出 ${Math.round(position / film.duration * 100)}% · 请保持此页面可见，约需 ${timeLabel(film.duration)}。`),
       preparing && !exporting && h('p', { role: 'status' }, '正在准备音频…'),
@@ -338,15 +346,6 @@ function createCodeWikiVideo(React, primitives) {
         film.scenes.map((scene, i) => h('button', { key: scene.id, type: 'button', disabled: exporting || preparing,
           'aria-current': sceneIndex === i ? 'true' : undefined, onClick: () => seek(scene.start) },
         h('small', null, timeLabel(scene.start)), h('span', null, scene.title)))),
-      h('details', { open: expanded, onToggle: event => setExpanded(event.currentTarget.open) },
-        h('summary', null, '讲解文字与源码依据'),
-        film.scenes.map(scene => h('div', { key: scene.id, lang: film.language, className: 'dsh-code-wiki-video-transcript' },
-          h('strong', null, scene.title), h('p', null, scene.narration),
-          h('div', { className: 'dsh-code-wiki-video-evidence' },
-            [...new Map(scene.nodes.flatMap(node => node.refs).map(ref => [ref.url, ref])).values()].slice(0, 5).map(ref => {
-              const href = evidenceUrl(ref, film)
-              return href ? h('a', { key: href, href, target: '_blank', rel: 'noreferrer' }, ref.label) : null
-            }))))),
     )
   }
 
@@ -445,18 +444,17 @@ function createCodeWikiVideo(React, primitives) {
       catch (failure) { if (!control.current.signal.aborted) setError(failure.message) }
     }
     const showFilm = film && !busy && !lookupError
-    const generationCard = h('div', { className: 'dsh-code-wiki-video-generate', 'data-replace': film ? '' : undefined },
+    const generationCard = h('div', { className: 'dsh-code-wiki-video-generate' },
       h('div', { className: 'dsh-code-wiki-video-generate-row' },
         h('div', null,
-          h('h3', null, film ? '重新生成视频' : '暂无讲解视频'),
+          h('h3', null, '暂无讲解视频'),
           h('p', null, hasArchitecture ? '英语男声 · Charon' : '请先生成包含架构图的 Wiki。')),
         hasArchitecture && h('div', { className: 'dsh-code-wiki-video-generate-actions' },
-          film && h(Button, { type: 'button', size: 'sm', variant: 'outline', disabled: starting, onClick: () => setRegenerate(false) }, '取消'),
           h(Button, { type: 'button', size: 'sm', variant: 'primary', className: 'dsh-code-wiki-video-primary',
             disabled: starting || !speech?.available, 'aria-describedby': speech?.available ? undefined : configurationHintId,
-            onClick: () => void generate() }, starting ? '正在提交…' : film ? '开始重新生成' : '生成视频'))),
-      hasArchitecture && (!speech?.available || film) && h('p', { id: configurationHintId, className: 'dsh-code-wiki-video-generate-hint' },
-        !speech?.available ? speech?.error || '当前没有可用的 Charon 配音服务。' : '完成后会替换当前视频。'))
+            onClick: () => void generate() }, starting ? '正在提交…' : '生成视频'))),
+      hasArchitecture && !speech?.available && h('p', { id: configurationHintId, className: 'dsh-code-wiki-video-generate-hint' },
+        speech?.error || '当前没有可用的 Charon 配音服务。'))
     return h(React.Fragment, null,
       h(Button, { type: 'button', size: 'sm', variant: 'outline', className: 'dsh-code-wiki-video-entry',
         icon: h(Icon, { name: 'play', size: 14 }), 'aria-haspopup': 'dialog', onClick: event => {
@@ -476,25 +474,25 @@ function createCodeWikiVideo(React, primitives) {
       },
         open && h(React.Fragment, null,
           h('header', { className: 'dsh-code-wiki-video-heading' },
-            h('div', null, h('h2', { id: headingId }, '架构讲解'), h('p', null, repository)),
+            h('div', null, h('h2', { id: headingId }, '仓库介绍'), h('p', null, repository)),
             h('button', { type: 'button', className: 'dsh-code-wiki-video-close', 'aria-label': '关闭视频', title: '关闭视频',
               onClick: () => setOpen(false) }, h(Icon, { name: 'close', size: 19 }))),
           h('div', { className: 'dsh-code-wiki-video-watch' },
             generationFailed && showFilm && error && h('p', { role: 'alert', className: 'dsh-code-wiki-video-failure' },
               h('strong', null, '重新生成失败，当前仍是上次保存的视频。'), h('span', null, error)),
-            showFilm && h(Player, { key: film.id, film }),
+            showFilm && h(Player, { key: film.id, film, regeneration: !loading && hasArchitecture ? {
+              requested: regenerate, available: speech?.available, error: speech?.error, starting,
+              onRequest: () => setRegenerate(true), onCancel: () => setRegenerate(false), onConfirm: () => void generate(),
+            } : null }),
             !showFilm && !busy && loading && h('p', { role: 'status', className: 'dsh-code-wiki-video-lookup' },
               h('span', { className: 'dsh-code-wiki-video-spinner', 'aria-hidden': true }), '正在读取视频…'),
-            !busy && !loading && !lookupError && (!film || regenerate) && generationCard,
+            !busy && !loading && !lookupError && !film && generationCard,
             busy && h('div', { className: 'dsh-code-wiki-video-generate' },
               h('div', { className: 'dsh-code-wiki-video-generate-row' },
                 h('div', { role: 'status' },
                   h('h3', null, h('span', { className: 'dsh-code-wiki-video-spinner', 'aria-hidden': true }), labels[job.phase] || '准备视频'),
                   h('p', null, '关闭窗口后会继续生成。')),
                 h(Button, { size: 'sm', variant: 'outline', onClick: () => void cancel() }, '取消生成'))),
-            showFilm && !loading && !regenerate && hasArchitecture && h('button', {
-              type: 'button', className: 'dsh-code-wiki-video-text-button', onClick: () => setRegenerate(true),
-            }, '重新生成视频'),
             error && !(generationFailed && showFilm) && h('p', { role: 'alert', className: 'dsh-code-wiki-error' }, error),
             lookupError && h(Button, { size: 'sm', onClick: () => setLookup(value => value + 1) }, '重新读取视频'),
           ),
