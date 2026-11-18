@@ -10,6 +10,7 @@ paragraph 使用 text；steps 使用 items:[{text,refs}]；code 使用 caption �
 架构图沿用graph:{layers:[{title,nodes:[{id,title,summary,technology,boundary,refs}]}],edges:[{from,to,label,refs}]}。保持2–5个分组、至少3个主要组件及2–24条关系，只画真实主要组件与有方向的已验证关系。技术或运行边界不明确时填空字符串。所有章节、正文块、研究领域及节点id使用简短英文小写标识符。可用inlineCode:["实际术语"]选择正文内的短标识符按行内代码显示。草稿提交后停止，等待独立审核意见。审核要求补读时可继续使用读取工具，保留未要求改变的内容。`
   + `\n专门视图使用正文块type=diagram，kind为flow|sequence|dataflow|dependency|scenario|deployment，另含title、purpose、nodes:[{id,label,role,refs}]和edges:[{from,to,label,refs}]。role为actor|component|process|data|store；2–8个节点、1–10条边、label最多60字符，所有节点都参与关系。每种计划视图恰好一个diagram块，放在解释该问题的章节。scenario可以引用项目文档；其他视图的整体、节点和边均须有primary实现证据。节点是当前视图要讨论的实际实体，边说明实际发生的操作、数据或依赖。不要提供Mermaid字符串，程序从已验证结构生成。`
   + `\n收到独立审核后用wiki_publish(kind=revise,revisions={blocks:[{chapter,action,target,block}],graph?,coverage?})只提交修改。chapter是已有章节id，target是该章已有正文块id。action=replace时提供替换后的完整block；insert_after时提供放在target之后的新block，同一target的多个新增块按提交数组顺序排列；delete时不提供block。blocks为0–16项；未涉及的正文、架构graph和覆盖coverage保持原样，不重复输出。需要修改graph或coverage时分别提供完整的新字段。程序合并修改后重新运行同一套完整结构、事实及证据审核；不能省略原结论需要的引用。`
+  + `\n按kind提交对应字段：plan用plan、draft用draft、revise用revisions。未选中的顶层payload不参与本次发布；修订始终依据已有草稿与revisions合并，不使用附带的plan或draft覆盖已有研究。`
 
 const ref = { type: 'object', properties: { evidence: { type: 'integer', minimum: 1 }, start: { type: 'integer', minimum: 1 }, end: { type: 'integer', minimum: 1 } },
   required: ['evidence', 'start', 'end'], additionalProperties: false }
@@ -65,7 +66,7 @@ function normalizeReview(output, targets, source) {
   }) }
 }
 
-async function review(llm, selection, instructions, context, targets, source, signal) {
+async function review(llm, selection, instructions, context, targets, source, signal, onRetry) {
   const messages = [{ role: 'user', content: [{ type: 'text', text: JSON.stringify(context) }] }]
   const readInstructions = '\n补读reads每项意见最多3个范围，可为空数组。path必须为当前提交中真实blob文件的相对路径，不能是目录；start为正整数，count为1–95的整数。需要更长范围时，在最多3项内明确拆成连续的95行以内片段，不要省略必要证据。只返回JSON。'
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -89,6 +90,7 @@ async function review(llm, selection, instructions, context, targets, source, si
       return normalizeReview(output, targets, source)
     } catch (error) {
       if (signal.aborted || error.code !== 'model-output-invalid' || attempt > 0) throw error
+      onRetry?.({ attempt: attempt + 2, attemptLimit: 2, retryMessage: error.message })
       messages.push({ role: 'assistant', content: [{ type: 'text', text: output.slice(0, 24_000) }] },
         { role: 'user', content: [{ type: 'text', text: '审核反馈格式未通过：' + error.message
           + '\n这是唯一一次格式修复机会。保留已发现的事实或编辑问题，只修正JSON/字段/补读范围；不要因格式错误把不通过改成通过。重新返回完整审核JSON。' }] })
@@ -96,14 +98,14 @@ async function review(llm, selection, instructions, context, targets, source, si
   }
 }
 
-export async function reviewWikiDraft(llm, selection, draft, plan, evidence, source, signal) {
+export async function reviewWikiDraft(llm, selection, draft, plan, evidence, source, signal, onRetry) {
   const targets = wikiTargets(draft)
   const context = { ...wikiReviewMaterial(draft, plan, evidence), targets,
     targetInstructions: 'target 必须精确选自 targets；专门视图内节点或边的问题指向该 diagram 正文块 id。' }
   const stop = new AbortController()
   const reviewSignal = AbortSignal.any([signal, stop.signal])
-  const calls = [review(llm, selection, semantic, context, targets, source, reviewSignal),
-    review(llm, selection, editorial, context, targets, source, reviewSignal)]
+  const calls = [review(llm, selection, semantic, context, targets, source, reviewSignal, onRetry),
+    review(llm, selection, editorial, context, targets, source, reviewSignal, onRetry)]
   let facts, writing
   try { [facts, writing] = await Promise.all(calls) }
   catch (error) {

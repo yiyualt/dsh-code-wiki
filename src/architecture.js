@@ -9,6 +9,10 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
   const provider = adapter ? 'code-wiki-' + randomUUID() : selection.provider
   let disposeAdapter, handle, publication, plan, phase = 'planning', plans = 0
   let lastRejection = '', submissions = 0
+  let repair = 0, roundAttempt = 1, rejections = 0, lastRetry
+  const progress = (phase, step, details = {}) => onPhase(phase, {
+    step, repair, attempt: roundAttempt, attemptLimit: 3, rejections, ...lastRetry, ...details,
+  })
   let currentRaw = checkpoint?.draft
   let checkpointWrites = Promise.resolve(), lastCheckpoint
   async function saveCheckpoint(draft = currentRaw) {
@@ -28,6 +32,7 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
   for (const definition of definitions) {
     const execute = definition.execute
     definition.execute = async (...args) => {
+      if (plan && phase !== 'reviewing') progress('researching', repair ? 'review-reading' : 'researching', { plan })
       const before = evidence.length
       const result = await execute(...args)
       if (evidence.length !== before) await saveCheckpoint()
@@ -51,14 +56,14 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           const next = normalizeWikiPlan(args.plan, source)
           plan = next; plans++; phase = 'researching'
           await saveCheckpoint()
-          onPhase('researching', { plan })
+          lastRetry = undefined
+          lastRejection = ''
+          progress('researching', 'researching', { plan })
           return { status: '研究计划已接受。现在按领域读取实际证据，完成覆盖记录后提交 kind=draft；这还不是最终发布。' }
         }
         if (!['draft', 'revise'].includes(args?.kind)) throw wikiInvalid('wiki_publish 需要 kind=plan、kind=draft 或 kind=revise。')
-        if (args.kind === 'revise' && (args.draft !== undefined || args.plan !== undefined)) {
-          throw wikiInvalid('kind=revise 只提交 revisions，不要附加 plan 或 draft（包括空占位内容）。正文修改写入 revisions.blocks。')
-        }
-        onPhase('writing', { plan })
+        // A shared tool schema can produce unused payloads; only the selected kind participates.
+        progress('writing', 'validating', { plan })
         const candidate = args.kind === 'revise' ? reviseWikiDraft(currentRaw, args.revisions) : args.draft
         const draft = normalizeWikiDraft(candidate, source, evidence, plan)
         const previousRaw = currentRaw, previousPhase = phase
@@ -66,17 +71,23 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
         phase = 'reviewing'
         try { await saveCheckpoint() }
         catch (error) { currentRaw = previousRaw; phase = previousPhase; throw error }
+        lastRetry = undefined
+        lastRejection = ''
+        progress('writing', 'agent-finishing', { plan })
         publication.draft = draft
         publication.resolve(draft)
         return { status: '草稿已收到。请停止并等待事实审核与编辑审核，不要宣称文档已经发布。' }
       } catch (error) {
         if (signal.aborted) throw error
         lastRejection = error.code === 'model-output-invalid' ? error.message : '请检查字段类型和已读取的证据。'
+        rejections++
+        lastRetry = { reasonCategory: 'validation', retryMessage: lastRejection }
+        progress('writing', 'submission-retry', { plan })
         return { status: '提交未通过。' + lastRejection }
       }
     },
   }
-  onPhase('planning')
+  progress('planning', 'planning')
   try {
     let resumedDraft
     if (checkpoint) {
@@ -84,7 +95,7 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
       if (checkpoint.draft !== undefined) resumedDraft = normalizeWikiDraft(checkpoint.draft, source, evidence, plan)
       phase = resumedDraft ? 'reviewing' : 'researching'; plans = 1
       await saveCheckpoint()
-      onPhase(phase)
+      progress(phase, resumedDraft ? 'reviewing' : 'researching')
       onRead?.(new Set(evidence.map(item => item.path)).size, evidence.at(-1)?.path)
     }
     if (adapter) disposeAdapter = ctx.llm.registerAdapter([provider], adapter)
@@ -99,7 +110,12 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
     signal.throwIfAborted()
     const { agent } = handle
     async function draftRound(prompt) {
+      const requestedKind = currentRaw === undefined ? 'draft' : 'revise'
       for (let attempt = 0; attempt < 3; attempt++) {
+        roundAttempt = attempt + 1
+        if (lastRetry) progress('writing', 'submission-retry', { plan })
+        else progress(plan ? 'writing' : 'planning', plan ? repair ? 'revising' : 'drafting' : 'planning',
+          { plan, ...(repair && { reasonCategory: 'review' }) })
         publication = Promise.withResolvers()
         agent.followup({ id: randomUUID(), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: prompt }] })
         await Promise.race([publication.promise, agent.whenIdle()])
@@ -114,13 +130,19 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           throw wrapped?.providerCode ? wrapped : modelError(failure)
         }
         const reason = turn?.data?.reason?.kind
-        const detail = lastRejection || (submissions ? '尚未收到完整、有效的 kind=draft 提交。' : '研究代理结束前没有调用 wiki_publish。')
+        const detail = lastRejection || (submissions ? `尚未收到完整、有效的 kind=${requestedKind} 提交。` : '研究代理结束前没有调用 wiki_publish。')
+        lastRetry = { reasonCategory: lastRejection ? 'validation' : 'missing-publication', retryMessage: detail }
+        progress('writing', 'submission-retry', { plan })
         if (attempt === 2) throw wikiInvalid('研究代理三次尝试后尚未提交有效草稿：' + detail.slice(0, 900)
           + (reason === 'max-tokens' ? '模型输出达到长度上限。' : '') + '本次没有保存不完整文档。')
-        prompt = '研究尚未完成，也没有保存任何文档。继续当前任务，必须调用 wiki_publish 提交有效草稿，不能只在聊天中回复。'
+        prompt = `研究尚未完成，也没有保存任何文档。继续当前任务，必须调用 wiki_publish(kind=${requestedKind}) 提交有效${requestedKind === 'revise' ? '定向修订' : '草稿'}，不能只在聊天中回复。`
           + (plan ? '已接受研究计划，不需要重复提交计划。' : '先提交 kind=plan 的有效计划。')
-          + '\n最近校验反馈：' + detail + '\n复用已读取的证据，按工具 schema 精简完整草稿；只补读确实缺少的实现证据。'
-          + (reason === 'max-tokens' ? '\n上次输出达到长度上限，请缩短各段，保留主要论述、所选视图及引用，重新提交完整 JSON。' : '')
+          + '\n最近校验反馈：' + detail + '\n复用已读取的证据，按工具 schema '
+          + (requestedKind === 'revise' ? '仅提交 revisions 中必要的改动，不重新输出整篇草稿。' : '精简完整草稿。')
+          + '只补读确实缺少的实现证据。'
+          + (reason === 'max-tokens' ? requestedKind === 'revise'
+            ? '\n上次输出达到长度上限，请精简必要改动并保留所需引用，重新提交完整 revisions JSON。'
+            : '\n上次输出达到长度上限，请缩短各段，保留主要论述、所选视图及引用，重新提交完整 JSON。' : '')
       }
     }
     const repository = source.owner ? `${source.owner}/${source.repo}` : source.repo
@@ -130,15 +152,25 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           evidence: evidence.map((file, index) => ({ id: index + 1, ...file })) })
       : '\n先列目录并读取项目介绍。工具请求预算有限，优先批量读取和有目标的搜索；通常在40轮模型请求内提交初稿，预留后续审核修订所需请求。覆盖主要架构问题后及时写作，不穷举整个代码仓。'
     let draft = resumedDraft ?? await draftRound(wikiResearchInstructions + '\n\n仓库：' + repository + '\n固定提交：' + source.commit + researchPrompt)
-    for (let repair = 0; repair <= 2; repair++) {
-      onPhase('reviewing', { plan, draft, repair })
-      const review = await reviewWikiDraft(adapter ?? ctx.llm, { ...selection, provider }, draft, plan, evidence, source, signal)
+    for (let reviewRound = 0; reviewRound <= 2; reviewRound++) {
+      repair = reviewRound
+      roundAttempt = 1
+      progress('reviewing', 'reviewing', { plan, draft, attemptLimit: 2 })
+      const review = await reviewWikiDraft(adapter ?? ctx.llm, { ...selection, provider }, draft, plan, evidence, source, signal,
+        details => {
+          rejections++
+          lastRetry = { reasonCategory: 'validation', retryMessage: details.retryMessage }
+          progress('reviewing', 'submission-retry', details)
+        })
+      lastRetry = undefined
       if (review.approved) return { ...renderWikiDocument(draft, source), files: [...evidence] }
       if (repair === 2) throw wikiInvalid('Wiki 经过两次定向修订仍未通过独立审核：' + review.issues.map(issue => issue.reason).join('；').slice(0, 1200))
       const requests = [...new Map(review.issues.flatMap(issue => issue.reads).map(read => [`${read.path}:${read.start}:${read.count}`, read])).values()]
       const additionalEvidence = []
+      repair = reviewRound + 1
+      roundAttempt = 1
       if (requests.length) {
-        onPhase('researching', { plan, repair: repair + 1 })
+        progress('researching', 'review-reading', { plan, reasonCategory: 'review' })
         const read = definitions.find(tool => tool.name === 'wiki_read')
         for (const request of requests) {
           signal.throwIfAborted()
@@ -149,9 +181,9 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
         }
       }
       phase = 'writing'
-      onPhase('writing', { plan, repair: repair + 1 })
+      progress('writing', 'revising', { plan, reasonCategory: 'review' })
       let recoveryContext = ''
-      if (resumedDraft && repair === 0) {
+      if (resumedDraft && reviewRound === 0) {
         const targets = new Set(review.issues.map(issue => issue.target))
         const objects = [
           ...draft.chapters.flatMap(chapter => chapter.blocks.map(block => [block.id, block])),

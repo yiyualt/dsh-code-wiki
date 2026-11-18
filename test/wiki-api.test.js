@@ -357,6 +357,50 @@ async function generateDocument(api, repositoryPath) {
   assert.fail('Generation did not finish')
 }
 
+test('generation polling exposes safe detailed progress while an accepted draft awaits the agent', async t => {
+  const accepted = Promise.withResolvers(), release = Promise.withResolvers(), logs = []
+  t.after(() => release.resolve())
+  t.mock.method(console, 'info', line => {
+    if (line.startsWith('[dsh-code-wiki:wiki] ')) logs.push(JSON.parse(line.slice('[dsh-code-wiki:wiki] '.length)))
+  })
+  const api = await fixture(t, {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    agents: { async create(options) {
+      const handle = await publishingAgent(options)
+      const idle = handle.agent.whenIdle
+      handle.agent.whenIdle = async () => { await idle(); accepted.resolve(); await release.promise }
+      return handle
+    } },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const response = await api.post('generation', { repositoryPath })
+  assert.equal(response.status, 202)
+  const { job } = await response.json()
+  await accepted.promise
+  const current = (await (await api.request('generation?id=' + job.id)).json()).job
+  assert.equal(current.phase, 'writing')
+  assert.equal(current.step, 'agent-finishing')
+  assert.equal(current.attempt, 1)
+  assert.equal(current.attemptLimit, 3)
+  assert.equal(current.canResume, true)
+  assert(Number.isSafeInteger(current.phaseElapsedMs))
+  for (const field of ['plan', 'draft', 'evidence', 'startedAt', 'finishedAt']) assert.equal(field in current, false)
+  release.resolve()
+  let final
+  for (let i = 0; i < 100; i++) {
+    final = (await (await api.request('generation?id=' + job.id)).json()).job
+    if (final.phase === 'completed' || final.phase === 'failed') break
+    await delay(10)
+  }
+  assert.equal(final.phase, 'completed', final.error)
+  assert(logs.some(entry => entry.event === 'checkpoint' && entry.hasDraft))
+  assert(logs.some(entry => entry.event === 'progress' && entry.step === 'agent-finishing'))
+  assert.equal(logs.at(-1).event, 'finish')
+  assert.equal(logs.at(-1).outcome, 'completed')
+  assert(!JSON.stringify(logs).includes(repositoryPath), 'server logs exclude the private repository path')
+})
+
 test('a research connection failure without a draft offers a fresh retry without exposing provider internals', async t => {
   const api = await fixture(t, {
     agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },

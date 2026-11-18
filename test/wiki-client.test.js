@@ -15,6 +15,7 @@ async function client(fetchRequest) {
   const React = {
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }),
     Fragment: Symbol('fragment'), useEffect() {}, useId: () => 'test-id', useRef: () => ({ current: null }),
+    useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
     useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
   }
   const primitives = new Proxy({ MarkdownText: 'markdown' }, { get: (object, key) => object[key] ?? (() => null) })
@@ -282,4 +283,131 @@ test('an incomplete resume identity falls back to a fresh retry and stale histor
   finishOld()
   await initial
   assert.equal(wiki.getSnapshot().documents[0].id, id, 'The aborted stale empty list cannot replace the refreshed saved documents')
+})
+
+function content(node) {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  return (node?.children ?? []).map(content).join('')
+}
+
+async function progressRenderer() {
+  const { wiki, Page } = await client(() => Response.json({ job: null }))
+  return (generation = {}, progressOffline = false) => {
+    const pending = { ...wiki, getSnapshot: () => ({ ...wiki.getSnapshot(), progressOffline,
+      generation: { id, repository: 'example/project', phase: 'writing', elapsedMs: 65_000,
+        receivedAt: performance.now(), ...generation } }) }
+    const element = find(Page({ wiki: pending }), node => node.type?.name === 'GenerationProgress')
+    return element.type(element.props)
+  }
+}
+
+test('Wiki progress distinguishes revision, rejected submissions and waiting for the model without changing its six stages', async () => {
+  const render = await progressRenderer()
+  const cases = [
+    [{ step: 'drafting' }, '正在撰写初稿'],
+    [{ step: 'revising', repair: 1 }, '按审核意见修订（第 1 轮）'],
+    [{ step: 'revising', repair: 2 }, '按审核意见修订（第 2 轮）'],
+    [{ step: 'submission-retry', rejections: 3 }, '提交校验未通过，正在修正（累计 3 次）'],
+    [{ step: 'validating' }, '正在校验草稿'],
+    [{ step: 'agent-finishing' }, '草稿已收到，等待模型结束当前回复'],
+    [{ phase: 'researching', step: 'review-reading', repair: 1 }, '按审核意见补读源码（第 1 轮）'],
+    [{ phase: 'reviewing', step: 'reviewing' }, '正在检查文档'],
+    [{ phase: 'reviewing', step: 'submission-retry', attempt: 2, attemptLimit: 2 }, '审核反馈格式未通过，正在重新检查'],
+  ]
+  for (const [generation, expected] of cases) {
+    const tree = render(generation)
+    assert.equal(content(find(tree, node => node.props.role === 'status')), expected)
+    const stages = find(tree, node => node.type === 'ol')
+    assert.equal(stages.children.length, 6)
+    assert.equal(stages.children.filter(node => node.props['aria-current'] === 'step').length, 1)
+  }
+  const retry = render({ step: 'submission-retry', rejections: 2, attempt: 2, attemptLimit: 3,
+    retryMessage: '引用范围需要调整。'.repeat(40) })
+  assert(content(retry).includes('草稿提交：第 2 / 3 次尝试。'))
+  const feedback = find(retry, node => node.type === 'p' && content(node).startsWith('校验反馈：'))
+  assert.equal(content(feedback).length, '校验反馈：'.length + 180)
+  assert.equal(find(render({ step: 'agent-finishing', retryMessage: '已经解决的反馈' }),
+    node => node.type === 'p' && content(node).startsWith('校验反馈：')), undefined)
+  const reviewerRetry = render({ phase: 'reviewing', step: 'submission-retry', rejections: 1,
+    attempt: 2, attemptLimit: 2, retryMessage: '审核补读范围需要调整。' })
+  assert(content(reviewerRetry).includes('审核反馈：第 2 / 2 次尝试。'))
+  assert(content(reviewerRetry).includes('校验反馈：审核补读范围需要调整。'))
+  assert.doesNotMatch(content(reviewerRetry), /草稿提交/)
+})
+
+test('Wiki transport retries show the upcoming or current attempt and only translated safe reasons', async () => {
+  const render = await progressRenderer()
+  const transport = { event: 'request-retry', requestId: 'PRIVATE_REQUEST_ID', attempt: 1, attemptLimit: 3,
+    retryCode: 'TRANSPORT', url: 'https://private.invalid', error: 'PRIVATE_RAW_ERROR', providerStatus: 503 }
+  const pending = render({ step: 'revising', repair: 1, transport })
+  assert(content(pending).includes('按审核意见修订（第 1 轮）'))
+  assert(content(pending).includes('连接暂时中断，即将重试模型请求（第 2 / 3 次尝试）。'))
+  for (const event of ['request-start', 'request-receiving']) {
+    assert(content(render({ transport: { ...transport, event, attempt: 2 } }))
+      .includes('正在重试模型请求（第 2 / 3 次尝试）。'))
+  }
+  for (const [retryCode, reason] of [['TIMEOUT', '单次请求等待超时'], ['STREAM_CLOSED', '响应传输中断'],
+    ['RATE_LIMIT', '模型服务请求受限'], ['SERVER', '模型服务暂时异常']]) {
+    assert(content(render({ transport: { ...transport, retryCode } })).includes(reason))
+  }
+  const unknown = render({ transport: { ...transport, retryCode: 'PRIVATE_UNKNOWN_CODE' } })
+  assert(content(unknown).includes('即将重试模型请求（第 2 / 3 次尝试）。'))
+  assert.doesNotMatch(JSON.stringify([pending, unknown]), /PRIVATE_|private\.invalid|503/)
+  for (const retryCode of ['__proto__', 'constructor', 'toString']) {
+    assert(content(render({ transport: { ...transport, retryCode } }))
+      .includes('即将重试模型请求（第 2 / 3 次尝试）。'))
+    assert.doesNotMatch(content(render({ transport: { ...transport, retryCode } })), /native code|\[object Object\]/)
+  }
+  for (const invalid of [{ attempt: 0 }, { attempt: '1' }, { attemptLimit: 1 }, { attemptLimit: 100 }, { attempt: NaN }]) {
+    assert.doesNotMatch(content(render({ transport: { ...transport, ...invalid } })), /重试模型请求/)
+  }
+})
+
+test('Wiki reconnection takes precedence over stale retries and file labels distinguish previous reads from current work', async () => {
+  const render = await progressRenderer()
+  const generation = { step: 'submission-retry', rejections: 4, retryMessage: '先前校验反馈', attempt: 2, attemptLimit: 3,
+    transport: { event: 'request-retry', attempt: 1, attemptLimit: 3, retryCode: 'TIMEOUT' },
+    filesRead: 18, currentFile: 'recbole/trainer/trainer.py' }
+  const online = render(generation)
+  assert(content(online).includes('已读取 18 个文件 · 最近读取：recbole/trainer/trainer.py'))
+  const clock = find(online, node => node.type?.name === 'GenerationClock')
+  const renderedClock = clock.type(clock.props)
+  assert(content(renderedClock).includes('整次耗时'))
+  assert.equal(find(renderedClock, node => node.type === 'time').props['aria-label'], '生成耗时')
+  const offline = render(generation, true)
+  assert.equal(content(find(offline, node => node.props.role === 'status')), '正在重新连接')
+  assert(content(offline).includes('稍后会同步进度'))
+  assert.doesNotMatch(content(offline), /先前校验反馈|重试模型请求|提交校验未通过|草稿提交：/)
+  assert(content(offline).includes('最近读取：'))
+})
+
+test('legacy progress and cancelled or completed transport events retain the existing stage fallback', async () => {
+  const render = await progressRenderer()
+  for (const generation of [{}, { step: 'future-step' },
+    ...['request-failed', 'request-completed', 'cancelled', 'future-event'].map(event => ({
+      transport: { event, attempt: 2, attemptLimit: 3, retryCode: 'PRIVATE_CODE' },
+    }))]) {
+    const tree = render(generation)
+    assert.equal(content(find(tree, node => node.props.role === 'status')), '正在撰写文档')
+    assert.doesNotMatch(content(tree), /重试模型请求|PRIVATE_CODE/)
+  }
+  const starting = render({ phase: 'starting' })
+  assert.equal(content(find(starting, node => node.props.role === 'status')), '正在提交任务')
+})
+
+test('disposing during submission cancels polling without starting a fallback request or exposing a retry error', async () => {
+  const entered = Promise.withResolvers()
+  const { wiki, calls } = await client((_url, options) => new Promise((resolve, reject) => {
+    entered.resolve()
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+  }))
+  wiki.setRepositoryUrl(repoUrl)
+  const pending = wiki.generate()
+  await entered.promise
+  wiki.dispose()
+  await pending
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].method, 'POST')
+  assert.equal(wiki.getSnapshot().retryJob, null)
+  assert.equal(wiki.getSnapshot().error, '')
 })

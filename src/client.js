@@ -884,6 +884,52 @@ window.__ModuleLoader__.load({
       return (minutes ? `${minutes} 分 ` : '') + `${seconds % 60} 秒`
     }
 
+    function generationPresentation(generation, stage) {
+      let status = stage?.status ?? '正在提交任务'
+      let detail = stage?.detail ?? '任务开始后会显示当前阶段。'
+      const repair = Number.isSafeInteger(generation.repair) && generation.repair > 0 && generation.repair <= 2
+        ? `（第 ${generation.repair} 轮）` : ''
+      const rejections = Number.isSafeInteger(generation.rejections) && generation.rejections > 0 ? generation.rejections : 0
+      if (generation.phase === 'writing') {
+        if (generation.step === 'revising') {
+          status = '按审核意见修订' + repair
+          detail = '正在修改审核指出的内容，完成后会重新检查全文。'
+        } else if (generation.step === 'submission-retry') {
+          status = rejections ? `提交校验未通过，正在修正（累计 ${rejections} 次）` : '正在重新提交草稿'
+          detail = '正在按校验反馈调整草稿，尚未保存正式文档。'
+        } else if (generation.step === 'validating') {
+          status = '正在校验草稿'
+          detail = '正在检查正文结构、图示和源码引用。'
+        } else if (generation.step === 'agent-finishing') {
+          status = '草稿已收到，等待模型结束当前回复'
+          detail = '草稿已通过提交校验，随后会进行独立审核。'
+        } else if (generation.step === 'drafting') {
+          status = '正在撰写初稿'
+        }
+      } else if (generation.step === 'review-reading' && generation.phase === 'researching') {
+        status = '按审核意见补读源码' + repair
+        detail = '正在补充核对审核指出的实现依据。'
+      } else if (generation.step === 'submission-retry' && generation.phase === 'reviewing') {
+        status = '审核反馈格式未通过，正在重新检查'
+        detail = '正在修正审核反馈的格式，随后继续事实与编辑审核。'
+      }
+      const feedback = generation.step === 'submission-retry' && typeof generation.retryMessage === 'string'
+        ? generation.retryMessage.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180) : ''
+      return { status, detail, feedback }
+    }
+
+    function generationTransportRetry(transport) {
+      if (!transport || !['request-retry', 'request-start', 'request-receiving'].includes(transport.event)) return ''
+      const attempt = transport.attempt + (transport.event === 'request-retry' ? 1 : 0)
+      if (!Number.isSafeInteger(transport.attempt) || !Number.isSafeInteger(transport.attemptLimit)
+        || transport.attempt < 1 || attempt < 2 || attempt > transport.attemptLimit || transport.attemptLimit > 10) return ''
+      const reasons = { TRANSPORT: '连接暂时中断', TIMEOUT: '单次请求等待超时', STREAM_CLOSED: '响应传输中断',
+        RATE_LIMIT: '模型服务请求受限', SERVER: '模型服务暂时异常' }
+      return (Object.hasOwn(reasons, transport.retryCode) ? reasons[transport.retryCode] + '，' : '')
+        + (transport.event === 'request-retry' ? '即将重试模型请求' : '正在重试模型请求')
+        + `（第 ${attempt} / ${transport.attemptLimit} 次尝试）。`
+    }
+
     function GenerationClock({ elapsedMs, receivedAt }) {
       const [now, setNow] = useState(() => performance.now())
       useEffect(() => {
@@ -893,7 +939,7 @@ window.__ModuleLoader__.load({
       const seconds = Math.floor((elapsedMs + Math.max(0, now - receivedAt)) / 1000)
       const minutes = String(Math.floor(seconds / 60)).padStart(2, '0')
       return h('div', { className: 'dsh-code-wiki-clock' },
-        h('span', null, '已耗时'),
+        h('span', null, '整次耗时'),
         h('time', { role: 'timer', 'aria-label': '生成耗时', dateTime: `PT${seconds}S` },
           minutes + ':' + String(seconds % 60).padStart(2, '0')),
       )
@@ -903,6 +949,11 @@ window.__ModuleLoader__.load({
       const titleId = useId()
       const index = generationStages.findIndex(stage => stage.phase === generation.phase)
       const stage = generationStages[index]
+      const presentation = generationPresentation(generation, stage)
+      const transportRetry = !progressOffline && generationTransportRetry(generation.transport)
+      const attempt = Number.isSafeInteger(generation.attempt) && Number.isSafeInteger(generation.attemptLimit)
+        && generation.attempt > 1 && generation.attempt <= generation.attemptLimit && generation.attemptLimit <= 10
+        ? `${generation.phase === 'reviewing' ? '审核反馈' : '草稿提交'}：第 ${generation.attempt} / ${generation.attemptLimit} 次尝试。` : ''
       if (generation.phase === 'completed') {
         return h('div', { className: 'dsh-code-wiki-generation-done' },
           h('p', { role: 'status' }, h(IconCheckOutlineRegular, { size: 16, 'aria-hidden': true }),
@@ -915,7 +966,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-code-wiki-generation-header' },
           h('div', null,
             h('p', { className: 'dsh-code-wiki-generation-repo' }, generation.repository),
-            h('h2', { id: titleId, role: 'status' }, stage?.status ?? '正在提交任务'),
+            h('h2', { id: titleId, role: 'status' }, progressOffline ? '正在重新连接' : presentation.status),
           ),
           h(GenerationClock, { elapsedMs: generation.elapsedMs, receivedAt: generation.receivedAt }),
         ),
@@ -931,9 +982,14 @@ window.__ModuleLoader__.load({
           )),
         ),
         h('p', { className: 'dsh-code-wiki-generation-detail' },
-          progressOffline ? '正在重新连接，稍后会同步进度。' : stage?.detail ?? '任务开始后会显示当前阶段。'),
+          progressOffline ? '正在重新连接，稍后会同步进度。' : presentation.detail),
+        !progressOffline && presentation.feedback && h('p', { className: 'dsh-code-wiki-generation-detail' },
+          '校验反馈：' + presentation.feedback),
+        transportRetry && h('p', { className: 'dsh-code-wiki-generation-detail' }, transportRetry),
+        !progressOffline && attempt && h('p', { className: 'dsh-code-wiki-generation-background' }, attempt),
         generation.filesRead > 0 && h('p', { className: 'dsh-code-wiki-generation-source' },
-          '已读取 ' + generation.filesRead + ' 个文件', h('code', null, generation.currentFile)),
+          '已读取 ' + generation.filesRead + ' 个文件', generation.currentFile && ' · 最近读取：',
+          generation.currentFile && h('code', null, generation.currentFile)),
         h('p', { className: 'dsh-code-wiki-generation-background' }, '可切换面板或关闭页面，生成会继续。'),
       )
     }

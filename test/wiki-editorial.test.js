@@ -695,12 +695,6 @@ function checkpointResumeFixture({ rejectOnce = false, mixedFields = false } = {
         assert.equal(correction.additionalEvidence[0].evidence, 4)
         assert.equal(correction.additionalEvidence[0].start, 2)
         const repaired = wikiDraftFixture({ ...f.spans, core: correction.additionalEvidence[0] })
-        if (mixedFields) for (const extra of [{ plan: checkpoint.plan }, { draft: checkpoint.draft }, { plan: null, draft: null }]) {
-          mixedResults.push((await tools.get('wiki_publish').execute({ kind: 'revise', ...extra, revisions: { blocks: [
-            { chapter: 'execution', action: 'replace', target: 'execution_text',
-              block: { ...structuredClone(raw.chapters[1].blocks[0]), text: '混合字段的候选不得保留。' } },
-          ] } })).status)
-        }
         const incompatiblePlan = wikiPlanFixture()
         incompatiblePlan.views = [{ kind: 'sequence', question: 'Which call happens first?', why: 'Follow interaction order.' }]
         assert.match((await tools.get('wiki_publish').execute({ kind: 'plan', plan: incompatiblePlan })).status,
@@ -713,11 +707,14 @@ function checkpointResumeFixture({ rejectOnce = false, mixedFields = false } = {
           { chapter: 'execution', action: 'replace', target: 'core_code', block: brokenCode },
         ] } })
         assert.match(rejected.status, /提交未通过/)
-        const submitted = await tools.get('wiki_publish').execute({ kind: 'revise', revisions: {
+        const submitted = await tools.get('wiki_publish').execute({ kind: 'revise',
+          ...(mixedFields && { plan: { ...checkpoint.plan, goal: '无关计划不得覆盖已有研究。' },
+            draft: { ...checkpoint.draft, chapters: [] } }), revisions: {
           blocks: repaired.chapters[1].blocks.filter(block => block.id !== 'execution_text')
             .map(block => ({ chapter: 'execution', action: 'replace', target: block.id, block })),
           graph: repaired.graph, coverage: repaired.coverage,
         } })
+        if (mixedFields) mixedResults.push(submitted.status)
         assert.match(submitted.status, /草稿已收到/)
       })()
     }, whenIdle: () => run, cancel() {} }, async dispose() { disposed++ } }
@@ -772,15 +769,16 @@ test('a rejected checkpoint keeps the accepted plan and original evidence IDs th
   assert.equal(f.disposed(), 1)
 })
 
-test('revise rejects additional plan or draft fields before changing the raw checkpoint or entering another review', async () => {
+test('revise ignores unrelated plan and draft payloads while reviewing only the merged revision', async () => {
   const f = checkpointResumeFixture({ rejectOnce: true, mixedFields: true })
   const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture' }, null,
     new AbortController().signal, undefined, undefined, f.options)
-  assert.equal(f.mixedResults.length, 3)
-  assert(f.mixedResults.every(status => /提交未通过/.test(status) && /只提交 revisions/.test(status)))
+  assert.equal(f.mixedResults.length, 1)
+  assert.match(f.mixedResults[0], /草稿已收到/)
   assert.equal(f.messages.length, 1)
   assert.equal(f.reviews.length, 4)
   assert.equal(f.checkpoints.length, 3)
+  assert.deepEqual(f.checkpoints[2].plan, normalizeWikiPlan(f.checkpoint.plan, f.source))
   assert.equal(f.checkpoints[2].draft.chapters[1].blocks[0].text, f.checkpoint.draft.chapters[1].blocks[0].text)
   assert.doesNotMatch(result.markdown, /混合字段的候选/)
   assert.deepEqual(f.sourceReads, ['core.js'])

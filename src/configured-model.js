@@ -54,9 +54,10 @@ function wireMessage(message) {
   return { role: 'assistant', content: content || null, ...(calls.length && { tool_calls: calls }) }
 }
 
-export async function readConfiguredModel(configFile, signal, { toolCallLimit = 28, streamResponses = false, transportRetries = 0 } = {}) {
+export async function readConfiguredModel(configFile, signal, { toolCallLimit = 28, streamResponses = false, transportRetries = 0, onProgress } = {}) {
   if (!Number.isInteger(toolCallLimit) || toolCallLimit < 1 || toolCallLimit > 96 || typeof streamResponses !== 'boolean'
-    || !Number.isInteger(transportRetries) || transportRetries < 0 || transportRetries > 2) throw failure('MODEL_CONFIG')
+    || !Number.isInteger(transportRetries) || transportRetries < 0 || transportRetries > 2
+    || (onProgress !== undefined && typeof onProgress !== 'function')) throw failure('MODEL_CONFIG')
   const wikiTransport = streamResponses || transportRetries > 0
   let config
   let endpoint
@@ -79,7 +80,7 @@ export async function readConfiguredModel(configFile, signal, { toolCallLimit = 
   headers.set('authorization', `Bearer ${key}`)
   if (!headers.has('user-agent')) headers.set('user-agent', 'DSH Code Wiki')
 
-  let calls = 0
+  let calls = 0, requests = 0
   const adapter = {
     model: config.model,
     providerInfo: provider => ({ id: provider, name: 'Code Wiki GPT' }),
@@ -89,102 +90,130 @@ export async function readConfiguredModel(configFile, signal, { toolCallLimit = 
       return { model: { provider, id: model, name: model }, stream: options => adapter.stream(options) }
     },
     async *stream({ system, messages, maxTokens, tools, signal }) {
-      if (tools?.length && ++calls > toolCallLimit) throw wikiTransport ? transportFailure('INVALID_REQUEST', undefined, undefined, 'CALL_LIMIT') : failure('INVALID_REQUEST')
-      const reasoning = config.extra_body?.reasoning_effort
-      const request = {
-        model: config.model,
-        messages: [
-          ...(system ? [{ role: 'system', content: system }] : []),
-          ...messages.map(wireMessage),
-        ],
-        max_tokens: Number.isInteger(config.max_tokens) && config.max_tokens > 0
-          ? Math.min(maxTokens, config.max_tokens) : maxTokens,
-        ...(typeof reasoning === 'string' && reasoning !== 'none' ? { reasoning_effort: reasoning } : {}),
-        ...(streamResponses && { stream: true }),
-        ...(tools?.length && { tools: tools.map(({ name, description, parameters }) => ({
-          type: 'function', function: { name, description, parameters },
-        })) }),
+      const requestId = ++requests, startedAt = Date.now(), attemptLimit = transportRetries + 1
+      let attempt = 1, attemptStartedAt = startedAt, providerStatus, completed = false
+      function progress(event, error, retry = false) {
+        if (!onProgress) return
+        const now = Date.now()
+        const value = Object.freeze({ event, requestId, attempt, attemptLimit,
+          requestElapsedMs: Math.max(0, now - startedAt), attemptElapsedMs: Math.max(0, now - attemptStartedAt),
+          ...(Number.isInteger(providerStatus) && providerStatus >= 100 && providerStatus <= 599 && { providerStatus }),
+          ...([...retryCodes, 'MALFORMED_RESPONSE', 'EMPTY_RESPONSE', 'AUTH', 'INVALID_REQUEST'].includes(error?.code) && { retryCode: error.code }),
+          ...(retry && { retryInMs: 100 }) })
+        try { Promise.resolve(onProgress(value)).catch(() => {}) } catch { /* Observation must not affect the model request. */ }
       }
-      let data
-      if (wikiTransport) {
-        for (let attempt = 0; attempt <= transportRetries; attempt++) {
+      try {
+        if (tools?.length && ++calls > toolCallLimit) throw wikiTransport ? transportFailure('INVALID_REQUEST', undefined, undefined, 'CALL_LIMIT') : failure('INVALID_REQUEST')
+        const reasoning = config.extra_body?.reasoning_effort
+        const request = {
+          model: config.model,
+          messages: [
+            ...(system ? [{ role: 'system', content: system }] : []),
+            ...messages.map(wireMessage),
+          ],
+          max_tokens: Number.isInteger(config.max_tokens) && config.max_tokens > 0
+            ? Math.min(maxTokens, config.max_tokens) : maxTokens,
+          ...(typeof reasoning === 'string' && reasoning !== 'none' ? { reasoning_effort: reasoning } : {}),
+          ...(streamResponses && { stream: true }),
+          ...(tools?.length && { tools: tools.map(({ name, description, parameters }) => ({
+            type: 'function', function: { name, description, parameters },
+          })) }),
+        }
+        let data
+        if (wikiTransport) {
+          for (let index = 0; index <= transportRetries; index++) {
+            attempt = index + 1; attemptStartedAt = Date.now(); providerStatus = undefined
+            let response
+            try {
+              signal?.throwIfAborted()
+              progress('request-start')
+              try { response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(request), redirect: 'error', signal }) }
+              catch (error) { signal?.throwIfAborted(); throw classifyTransport(error) }
+              providerStatus = response.status
+              if (!response.ok) {
+                await response.body?.cancel().catch(() => {})
+                const status = response.status
+                throw transportFailure(status >= 500 ? 'SERVER' : status === 429 ? 'RATE_LIMIT'
+                  : status === 401 || status === 403 ? 'AUTH' : 'INVALID_REQUEST', status, undefined, 'HTTP_STATUS')
+              }
+              progress('request-receiving')
+              try { data = await readModelResponse(response, signal) }
+              catch (error) { signal?.throwIfAborted(); throw classifyTransport(error, true) }
+              break
+            } catch (error) {
+              signal?.throwIfAborted()
+              if (index === transportRetries || !retryCodes.includes(error.code)) throw error
+              progress('request-retry', error, true)
+              await backoff(signal)
+            }
+          }
+        } else {
+          attemptStartedAt = Date.now()
           let response
           try {
-            signal?.throwIfAborted()
-            try { response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(request), redirect: 'error', signal }) }
-            catch (error) { signal?.throwIfAborted(); throw classifyTransport(error) }
-            if (!response.ok) {
-              await response.body?.cancel().catch(() => {})
-              const status = response.status
-              throw transportFailure(status >= 500 ? 'SERVER' : status === 429 ? 'RATE_LIMIT'
-                : status === 401 || status === 403 ? 'AUTH' : 'INVALID_REQUEST', status, undefined, 'HTTP_STATUS')
-            }
-            try { data = await readModelResponse(response, signal) }
-            catch (error) { signal?.throwIfAborted(); throw classifyTransport(error, true) }
-            break
-          } catch (error) {
-            signal?.throwIfAborted()
-            if (attempt === transportRetries || !retryCodes.includes(error.code)) throw error
-            await backoff(signal)
+            progress('request-start')
+            response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(request), redirect: 'error', signal })
+          } catch { throw failure('TRANSPORT') }
+          providerStatus = response.status
+          if (!response.ok) {
+            await response.body?.cancel()
+            const status = response.status
+            const code = status >= 500 ? 'SERVER' : status === 429 ? 'RATE_LIMIT'
+              : status === 401 || status === 403 ? 'AUTH' : 'INVALID_REQUEST'
+            throw Object.assign(failure(code), { status })
           }
+          progress('request-receiving')
+          data = await response.json().catch(() => undefined)
         }
-      } else {
-        let response
-        try {
-          response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(request), redirect: 'error', signal })
-        } catch { throw failure('TRANSPORT') }
-        if (!response.ok) {
-          await response.body?.cancel()
-          const status = response.status
-          const code = status >= 500 ? 'SERVER' : status === 429 ? 'RATE_LIMIT'
-            : status === 401 || status === 403 ? 'AUTH' : 'INVALID_REQUEST'
-          throw Object.assign(failure(code), { status })
+        const choice = data?.choices?.[0]
+        const content = choice?.message?.content
+        const toolCalls = choice?.message?.tool_calls ?? []
+        const limited = wikiTransport && !['stop', 'tool_calls'].includes(choice?.finish_reason)
+        if (wikiTransport) {
+          if (!choice) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_SHAPE')
+          if (typeof choice.finish_reason !== 'string') throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_FINISH')
+          if (!Array.isArray(toolCalls)) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_TOOLS')
+          if (content !== null && content !== undefined && typeof content !== 'string') throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_CONTENT')
         }
-        data = await response.json().catch(() => undefined)
-      }
-      const choice = data?.choices?.[0]
-      const content = choice?.message?.content
-      const toolCalls = choice?.message?.tool_calls ?? []
-      const limited = wikiTransport && !['stop', 'tool_calls'].includes(choice?.finish_reason)
-      if (wikiTransport) {
-        if (!choice) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_SHAPE')
-        if (typeof choice.finish_reason !== 'string') throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_FINISH')
-        if (!Array.isArray(toolCalls)) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_TOOLS')
-        if (content !== null && content !== undefined && typeof content !== 'string') throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'RESPONSE_CONTENT')
-      }
-      if ((typeof content !== 'string' || !content.trim()) && !toolCalls.length && !limited) {
-        throw wikiTransport ? transportFailure('EMPTY_RESPONSE', undefined, undefined, 'RESPONSE_EMPTY') : failure('EMPTY_RESPONSE')
-      }
-      // Validate every call before yielding the first block, and discard token-limited tool fragments.
-      const callIds = new Set()
-      if (wikiTransport && !limited) for (const call of toolCalls) {
-        if (!allowedTools.has(call?.function?.name) || !tools?.some(tool => tool.name === call?.function?.name)) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_NAME')
-        if (typeof call.id !== 'string' || !call.id || callIds.has(call.id)) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ID')
-        if (typeof call.function?.arguments !== 'string') throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ARGUMENTS')
-        callIds.add(call.id)
-        try { const args = JSON.parse(call.function.arguments); if (!args || typeof args !== 'object' || Array.isArray(args)) throw 0 }
-        catch { throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ARGUMENTS') }
-      }
-      let index = 0
-      if (typeof content === 'string' && content.trim()) {
-        yield { type: 'block-start', index, blockType: 'text' }
-        yield { type: 'text-delta', index, text: content }
-        yield { type: 'block-end', index: index++, block: { type: 'text', text: content } }
-      }
-      for (const call of limited ? [] : toolCalls) {
-        const name = call?.function?.name
-        const args = call?.function?.arguments
-        if (!tools?.some(tool => tool.name === name) || !['wiki_list', 'wiki_read', 'wiki_read_batch', 'wiki_find', 'wiki_publish'].includes(name)) {
-          throw wikiTransport ? transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_NAME') : failure('MALFORMED_RESPONSE')
+        if ((typeof content !== 'string' || !content.trim()) && !toolCalls.length && !limited) {
+          throw wikiTransport ? transportFailure('EMPTY_RESPONSE', undefined, undefined, 'RESPONSE_EMPTY') : failure('EMPTY_RESPONSE')
         }
-        if (typeof call.id !== 'string') throw wikiTransport ? transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ID') : failure('MALFORMED_RESPONSE')
-        if (typeof args !== 'string') throw wikiTransport ? transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ARGUMENTS') : failure('MALFORMED_RESPONSE')
-        yield { type: 'block-start', index, blockType: 'tool-call' }
-        yield { type: 'tool-call-delta', index, id: call.id, name, argumentsDelta: args }
-        yield { type: 'block-end', index: index++, block: { type: 'tool-call', id: call.id, name, arguments: args } }
+        // Validate every call before yielding the first block, and discard token-limited tool fragments.
+        const callIds = new Set()
+        if (wikiTransport && !limited) for (const call of toolCalls) {
+          if (!allowedTools.has(call?.function?.name) || !tools?.some(tool => tool.name === call?.function?.name)) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_NAME')
+          if (typeof call.id !== 'string' || !call.id || callIds.has(call.id)) throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ID')
+          if (typeof call.function?.arguments !== 'string') throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ARGUMENTS')
+          callIds.add(call.id)
+          try { const args = JSON.parse(call.function.arguments); if (!args || typeof args !== 'object' || Array.isArray(args)) throw 0 }
+          catch { throw transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ARGUMENTS') }
+        }
+        progress('request-completed')
+        completed = true
+        let index = 0
+        if (typeof content === 'string' && content.trim()) {
+          yield { type: 'block-start', index, blockType: 'text' }
+          yield { type: 'text-delta', index, text: content }
+          yield { type: 'block-end', index: index++, block: { type: 'text', text: content } }
+        }
+        for (const call of limited ? [] : toolCalls) {
+          const name = call?.function?.name
+          const args = call?.function?.arguments
+          if (!tools?.some(tool => tool.name === name) || !['wiki_list', 'wiki_read', 'wiki_read_batch', 'wiki_find', 'wiki_publish'].includes(name)) {
+            throw wikiTransport ? transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_NAME') : failure('MALFORMED_RESPONSE')
+          }
+          if (typeof call.id !== 'string') throw wikiTransport ? transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ID') : failure('MALFORMED_RESPONSE')
+          if (typeof args !== 'string') throw wikiTransport ? transportFailure('MALFORMED_RESPONSE', undefined, undefined, 'TOOL_ARGUMENTS') : failure('MALFORMED_RESPONSE')
+          yield { type: 'block-start', index, blockType: 'tool-call' }
+          yield { type: 'tool-call-delta', index, id: call.id, name, argumentsDelta: args }
+          yield { type: 'block-end', index: index++, block: { type: 'tool-call', id: call.id, name, arguments: args } }
+        }
+        const kind = limited ? 'max-tokens' : toolCalls.length ? 'tool-calls' : choice.finish_reason === 'stop' ? 'stop' : 'max-tokens'
+        yield { type: 'finish', reason: { kind } }
+      } catch (error) {
+        if (!completed) progress('request-failed', error)
+        throw error
       }
-      const kind = limited ? 'max-tokens' : toolCalls.length ? 'tool-calls' : choice.finish_reason === 'stop' ? 'stop' : 'max-tokens'
-      yield { type: 'finish', reason: { kind } }
     },
   }
   return adapter

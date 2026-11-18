@@ -7,6 +7,7 @@ import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.
 import { collectLocalSource, openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
 import { createWikiCheckpoints } from './src/wiki-checkpoint.js'
+import { createWikiProgress } from './src/wiki-progress.js'
 import { registerVideoApi } from './src/video-api.js'
 
 export const name = 'dsh-code-wiki'
@@ -113,18 +114,22 @@ export function apply(ctx, config) {
   const checkpoints = createWikiCheckpoints(join(ctx.profileContext.dir, 'dsh-code-wiki-checkpoints'))
   const videos = registerVideoApi(ctx, config, storage, selectModel, lifetime)
   const jobs = new Map()
+  const diagnostics = new WeakMap()
   let active
 
   function progress(job) {
     if (!job) return null
     const { startedAt, finishedAt, ...status } = job
-    return { ...status, elapsedMs: Math.max(0, (finishedAt ?? Date.now()) - startedAt) }
+    return { ...status, ...diagnostics.get(job)?.status(), elapsedMs: Math.max(0, (finishedAt ?? Date.now()) - startedAt) }
   }
 
   async function runGeneration(job, body, github, architecture, requestSignal) {
+    const tracking = createWikiProgress(job)
+    diagnostics.set(job, tracking)
     const timeout = AbortSignal.timeout(30 * 60_000)
     const signal = AbortSignal.any([lifetime.signal, timeout, ...(requestSignal ? [requestSignal] : [])])
-    function fail(error, status) {
+    function fail(error, status, reason = 'unexpected-error') {
+      tracking.finish('failed', reason)
       Object.assign(job, { phase: 'failed', finishedAt: Date.now(), error })
       return json({ error }, status)
     }
@@ -142,7 +147,7 @@ export function apply(ctx, config) {
       if (checkpoint && checkpoint.commit !== source.commit) return fail('仓库版本已经变化，请重新生成。', 409)
       job.repository = github ? `${source.owner}/${source.repo}` : source.repo
       job.commit = source.commit
-      job.phase = 'writing'
+      tracking.phase('writing')
       if (!github) source.sourceKey = job.id
       let markdown
       let graph
@@ -152,16 +157,17 @@ export function apply(ctx, config) {
       let model
       try {
         const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal,
-          { toolCallLimit: 64, streamResponses: true, transportRetries: 2 })
+          { toolCallLimit: 64, streamResponses: true, transportRetries: 2, onProgress: tracking.model })
         if (architecture) {
           const result = await exploreArchitecture(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
-            signal, (count, path) => { job.filesRead = count; job.currentFile = path },
-            phase => { job.phase = phase }, { checkpoint,
+            signal, (count, path) => { job.filesRead = count; job.currentFile = path; tracking.activity('source-read') },
+            tracking.phase, { checkpoint,
               async onCheckpoint(material) {
                 await checkpoints.save(job.id, { version: 1,
                   ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
                   commit: source.commit, ...material })
                 job.canResume = true
+                tracking.activity('checkpoint', { evidenceCount: material.evidence.length, hasDraft: Boolean(material.draft) })
               },
             })
           markdown = result.markdown
@@ -177,13 +183,13 @@ export function apply(ctx, config) {
         if (architecture) {
           if (error.providerCode) job.failureCode = error.providerCode
           return fail(error.code === 'model-output-invalid' ? '文档内容校验未通过。' + error.message
-            : researchFailure(error, job.canResume), 502)
+            : researchFailure(error, job.canResume), 502, error.code === 'model-output-invalid' ? 'validation-error' : 'model-error')
         }
         markdown = renderSourceWiki(source)
         note = modelNote(error)
       }
       signal.throwIfAborted()
-      job.phase = 'saving'
+      tracking.phase('saving')
       const document = {
         id: job.id,
         createdAt: new Date().toISOString(),
@@ -200,19 +206,21 @@ export function apply(ctx, config) {
       }
       try {
         const result = withoutEvidence(await storage.save(document))
+        tracking.finish('completed', 'completed')
         Object.assign(job, { phase: 'completed', canResume: false, finishedAt: Date.now(), result })
         await Promise.allSettled([checkpoints.remove(job.id), ...(body.resumeFrom ? [checkpoints.remove(body.resumeFrom)] : [])])
         return json(result)
       } catch {
-        return fail('文档已生成，但保存失败。请检查 DSH 数据目录是否可写。', 500)
+        return fail('文档已生成，但保存失败。请检查 DSH 数据目录是否可写。', 500, 'storage-error')
       }
     } catch (error) {
-      if (timeout.aborted) return fail('生成已达到 30 分钟上限，请重试。', 504)
-      if (signal.aborted) return fail('生成已取消。', 503)
+      if (timeout.aborted) return fail('生成已达到 30 分钟上限，请重试。', 504, 'timeout')
+      if (signal.aborted) return fail('生成已取消。', 503, 'cancelled')
       const status = sourceErrors.get(error?.code)
-      if (status !== undefined) return fail(error.message, status)
+      if (status !== undefined) return fail(error.message, status, 'source-error')
       return fail('生成失败，请重试。', 500)
     } finally {
+      tracking.finish('failed')
       active = undefined
     }
   }
