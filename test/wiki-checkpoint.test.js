@@ -18,6 +18,13 @@ const evidence = (path = 'src/main.js') => ({ path, start: 7, end: 8, text: 'con
 const payload = () => ({ version: 1, repositoryUrl: 'https://github.com/example/repo', commit: 'a'.repeat(40),
   plan: { title: 'Accepted research plan' }, draft: { title: 'Accepted draft' }, evidence: [evidence()] })
 
+async function withWindowsPlatform(run) {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+  Object.defineProperty(process, 'platform', { ...descriptor, value: 'win32' })
+  try { return await run() }
+  finally { Object.defineProperty(process, 'platform', descriptor) }
+}
+
 test('accepted checkpoints reopen, overwrite atomically and use private directory and file permissions', async t => {
   const { directory, store, id } = await fixture(t)
   await mkdir(directory, { mode: 0o755 })
@@ -164,5 +171,91 @@ test('a failed atomic publication keeps the accepted checkpoint and cleans its t
   try { await assert.rejects(store.save(id, { ...good, draft: { title: 'New draft' } }), error => error.code === 'EIO') }
   finally { rename.mock.restore(); syncBuiltinESMExports() }
   assert.deepEqual(await store.get(id), good)
+  assert.deepEqual(await readdir(directory), [id + '.json'])
+})
+
+test('checkpoint saves serialize one destination across store instances while other records remain writable', async t => {
+  const { directory, store, id } = await fixture(t)
+  const first = { ...payload(), draft: { title: 'First snapshot' } }
+  const second = { ...payload(), draft: { title: 'Second snapshot' } }
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(), order = []
+  const originalRename = fs.rename
+  const rename = t.mock.method(fs, 'rename', async (temporary, target) => {
+    if (target === join(directory, id + '.json')) {
+      order.push(JSON.parse(await readFile(temporary, 'utf8')).draft.title)
+      if (order.length === 1) { entered.resolve(); await release.promise }
+    }
+    return originalRename(temporary, target)
+  })
+  syncBuiltinESMExports()
+  let firstSave, secondSave
+  try {
+    firstSave = store.save(id, first)
+    await entered.promise
+    secondSave = createWikiCheckpoints(directory).save(id, second)
+    second.draft.title = 'Changed after submission'
+    const other = randomUUID()
+    await store.save(other, payload())
+    assert(await store.get(other), 'an unrelated checkpoint must not wait for the held destination')
+    assert.deepEqual(order, ['First snapshot'])
+    release.resolve()
+    await Promise.all([firstSave, secondSave])
+    assert.deepEqual(order, ['First snapshot', 'Second snapshot'])
+    assert.equal((await store.get(id)).draft.title, 'Second snapshot')
+  } finally {
+    release.resolve()
+    await Promise.allSettled([firstSave, secondSave])
+    rename.mock.restore(); syncBuiltinESMExports()
+  }
+  assert((await readdir(directory)).every(name => name.endsWith('.json')))
+})
+
+test('transient Windows replacement contention retries the same atomic rename without removing the accepted checkpoint', async t => {
+  const { directory, store, id } = await fixture(t)
+  const good = payload(), updated = { ...good, draft: { title: 'Replacement after contention' } }
+  await store.save(id, good)
+  const originalRename = fs.rename, originalUnlink = fs.unlink, attempts = [], removed = []
+  const codes = ['EPERM', 'EACCES', 'EBUSY']
+  const rename = t.mock.method(fs, 'rename', async (temporary, target) => {
+    attempts.push([temporary, target])
+    assert.deepEqual(await store.get(id), good, 'the accepted JSON remains readable between rename attempts')
+    if (attempts.length <= codes.length) throw Object.assign(new Error('fixture contention'), { code: codes[attempts.length - 1] })
+    return originalRename(temporary, target)
+  })
+  const unlink = t.mock.method(fs, 'unlink', async target => { removed.push(target); return originalUnlink(target) })
+  syncBuiltinESMExports()
+  try { await withWindowsPlatform(() => store.save(id, updated)) }
+  finally { rename.mock.restore(); unlink.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(attempts.length, 4)
+  assert(attempts.every(([temporary, target]) => temporary === attempts[0][0] && target === join(directory, id + '.json')))
+  assert(!removed.includes(join(directory, id + '.json')), 'replacement must never unlink the accepted target')
+  assert.deepEqual(await store.get(id), updated)
+  assert.deepEqual(await readdir(directory), [id + '.json'])
+})
+
+test('persistent Windows replacement contention is bounded, cleans the temporary file and does not poison later saves', async t => {
+  const { directory, store, id } = await fixture(t)
+  const good = payload(), originalRename = fs.rename
+  await store.save(id, good)
+  const denied = Object.assign(new Error('fixture sharing violation'), { code: 'EPERM' })
+  let locked = true, attempts = 0
+  const rename = t.mock.method(fs, 'rename', async (temporary, target) => {
+    attempts++
+    if (locked) throw denied
+    return originalRename(temporary, target)
+  })
+  syncBuiltinESMExports()
+  try {
+    await withWindowsPlatform(async () => {
+      await assert.rejects(store.save(id, { ...good, draft: { title: 'Cannot publish' } }), error => error === denied)
+      assert.equal(attempts, 6)
+      assert.deepEqual(await store.get(id), good)
+      assert.deepEqual(await readdir(directory), [id + '.json'])
+      locked = false
+      await store.save(id, { ...good, draft: { title: 'Later valid snapshot' } })
+    })
+  } finally { rename.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(attempts, 7)
+  assert.equal((await store.get(id)).draft.title, 'Later valid snapshot')
   assert.deepEqual(await readdir(directory), [id + '.json'])
 })

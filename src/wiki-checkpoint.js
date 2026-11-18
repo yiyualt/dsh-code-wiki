@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const maxBytes = 8 * 1024 * 1024
 const validId = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value)
@@ -9,6 +10,18 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const nonempty = (value, limit) => typeof value === 'string' && value.trim().length > 0 && value.length <= limit && !value.includes('\0')
 const fields = new Set(['version', 'repositoryUrl', 'repositoryPath', 'commit', 'plan', 'draft', 'evidence'])
 const kinds = new Set(['source', 'documentation', 'config'])
+const pendingWrites = new Map()
+
+async function replaceCheckpoint(temporary, target) {
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(temporary, target); return }
+    catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= 5) throw error
+      // Windows readers or scanners can briefly deny replacement of an otherwise writable file.
+      await delay(10 * 2 ** attempt)
+    }
+  }
+}
 
 function validPayload(value) {
   if (!object(value) || Object.keys(value).some(key => !fields.has(key)) || value.version !== 1
@@ -60,21 +73,27 @@ export function createWikiCheckpoints(directory) {
       const serialized = JSON.stringify(payload)
       if (Buffer.byteLength(serialized) > maxBytes) throw new RangeError('Wiki checkpoint exceeds 8 MiB')
       if (!validPayload(JSON.parse(serialized))) throw new TypeError('Invalid Wiki checkpoint payload')
-      await mkdir(directory, { recursive: true, mode: 0o700 })
-      await chmod(directory, 0o700)
-      const temporary = join(directory, '.' + randomUUID() + '.tmp')
-      let file
-      try {
-        file = await open(temporary, 'wx', 0o600)
-        await file.writeFile(serialized, 'utf8')
-        await file.sync()
-        await file.close()
-        file = undefined
-        await rename(temporary, join(directory, id + '.json'))
-      } finally {
-        await file?.close()
-        await unlink(temporary).catch(error => { if (error?.code !== 'ENOENT') throw error })
-      }
+      const target = resolve(directory, id + '.json')
+      const writing = (pendingWrites.get(target) ?? Promise.resolve()).catch(() => {}).then(async () => {
+        await mkdir(directory, { recursive: true, mode: 0o700 })
+        await chmod(directory, 0o700)
+        const temporary = join(directory, '.' + randomUUID() + '.tmp')
+        let file
+        try {
+          file = await open(temporary, 'wx', 0o600)
+          await file.writeFile(serialized, 'utf8')
+          await file.sync()
+          await file.close()
+          file = undefined
+          await replaceCheckpoint(temporary, target)
+        } finally {
+          await file?.close()
+          await unlink(temporary).catch(error => { if (error?.code !== 'ENOENT') throw error })
+        }
+      })
+      pendingWrites.set(target, writing)
+      try { await writing }
+      finally { if (pendingWrites.get(target) === writing) pendingWrites.delete(target) }
     },
     async get(id) {
       if (!validId(id)) return null
