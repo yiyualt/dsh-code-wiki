@@ -11,6 +11,7 @@ window.__ModuleLoader__.load({
     } = primitives
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const VideoPanel = createCodeWikiVideo(React, primitives)
+    const WikiView = createWikiViewRenderer(React)
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
     const generationError = '生成失败，请稍后重试。'
@@ -18,7 +19,10 @@ window.__ModuleLoader__.load({
     const documentLoadError = '无法打开这篇文档，请重试。'
     const generationStages = [
       { phase: 'reading', label: '读取仓库', status: '正在读取仓库', detail: '正在定位当前提交并读取生成文档所需的源码。' },
-      { phase: 'writing', label: '生成文档', status: '正在生成文档', detail: '正在根据源码组织章节和引用。这一步通常耗时最长。' },
+      { phase: 'planning', label: '规划内容', status: '正在确定文档重点', detail: '正在根据项目资料确定用途、主要能力和需要解释的问题。' },
+      { phase: 'researching', label: '核对源码', status: '正在核对源码', detail: '正在读取关键实现，核对组件关系和实际运行过程。' },
+      { phase: 'writing', label: '撰写正文', status: '正在撰写文档', detail: '正在组织章节、示例和源码引用。' },
+      { phase: 'reviewing', label: '检查文档', status: '正在检查文档', detail: '正在检查事实依据、内容覆盖和说明是否清楚。' },
       { phase: 'saving', label: '保存文档', status: '正在保存文档', detail: '正在把文档写入已保存文档列表。' },
     ]
     const terminalPhases = new Set(['completed', 'failed'])
@@ -31,11 +35,13 @@ window.__ModuleLoader__.load({
     }
 
     function resolveLocalReferences(markdown) {
-      const reference = /\]\(https:\/\/dsh-code-wiki\.invalid\/source(\?key=[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}&file=\d+&start=\d+&end=\d+)\)/gi
-      return markdown.replace(reference, (_, search) => {
+      const reference = /^https:\/\/dsh-code-wiki\.invalid\/source(\?key=[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}&file=\d+&start=\d+&end=\d+)$/i
+      return sourceLinks(markdown, (match, label, href, title) => {
+        const local = reference.exec(href)
+        if (!local) return match
         const url = new URL('api/dsh-code-wiki/source', document.baseURI)
-        url.search = search
-        return '](' + url.href + ')'
+        url.search = local[1]
+        return '[' + label + '](' + url.href + title + ')'
       })
     }
 
@@ -99,6 +105,169 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    function sourceLink(url, metadata) {
+      const parsed = URL.parse(url)
+      if (!parsed) return false
+      if (metadata.source === 'github') return parsed.href.startsWith(metadata.repoUrl + '/blob/' + metadata.commit + '/')
+        && /^#L\d+(?:-L\d+)?$/.test(parsed.hash)
+      return parsed.origin === 'https://dsh-code-wiki.invalid' && parsed.pathname === '/source'
+        && new RegExp('^\\?key=' + metadata.id + '&file=\\d+&start=\\d+&end=\\d+$').test(parsed.search)
+    }
+
+    function readViews(views, metadata) {
+      if (!Array.isArray(views)) return []
+      const ids = new Set(), kinds = new Set()
+      const validId = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,43}$/.test(value)
+      const text = (value, maximum) => typeof value === 'string' && value.trim() && value.length <= maximum
+        && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)
+      function references(refs) {
+        if (!Array.isArray(refs) || !refs.length || refs.length > 4) return null
+        const resolved = refs.map(ref => {
+          if (!text(ref?.label, 600) || typeof ref.url !== 'string' || !sourceLink(ref.url, metadata)) return null
+          const href = metadata.source === 'local' ? new URL('api/dsh-code-wiki/source' + new URL(ref.url).search, document.baseURI).href : ref.url
+          return { label: ref.label, url: ref.url, href }
+        })
+        return resolved.every(Boolean) ? resolved : null
+      }
+      return views.slice(0, 3).flatMap(view => {
+        if (!validId(view?.id) || ids.has(view.id) || kinds.has(view.kind)
+          || !['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment'].includes(view.kind)
+          || !text(view.title, 100) || !text(view.purpose, 450) || !text(view.mermaid, 16_000)
+          || !Array.isArray(view.nodes) || view.nodes.length < 2 || view.nodes.length > 8
+          || !Array.isArray(view.edges) || !view.edges.length || view.edges.length > 10) return []
+        const nodeIds = new Set(), connected = new Set()
+        const nodes = view.nodes.map(node => {
+          const refs = references(node?.refs)
+          if (!validId(node?.id) || nodeIds.has(node.id) || !text(node.label, 60)
+            || !['actor', 'component', 'process', 'data', 'store'].includes(node.role) || !refs) return null
+          nodeIds.add(node.id)
+          return { id: node.id, label: node.label, role: node.role, refs }
+        })
+        if (!nodes.every(Boolean)) return []
+        const edges = view.edges.map(edge => {
+          const refs = references(edge?.refs)
+          if (!nodeIds.has(edge?.from) || !nodeIds.has(edge?.to) || edge.from === edge.to || !text(edge.label, 60) || !refs) return null
+          connected.add(edge.from); connected.add(edge.to)
+          return { from: edge.from, to: edge.to, label: edge.label, refs }
+        })
+        if (!edges.every(Boolean) || connected.size !== nodeIds.size || view.kind === 'scenario' && !nodes.some(node => node.role === 'actor')) return []
+        ids.add(view.id); kinds.add(view.kind)
+        return [{ id: view.id, kind: view.kind, title: view.title, purpose: view.purpose, nodes, edges,
+          mermaid: view.mermaid.replace(/\r\n?/g, '\n') }]
+      })
+    }
+
+    function approvedViewBlocks(markdown, views) {
+      const approved = new Map(views.map(view => [view.mermaid, view]))
+      const lines = markdown.split(/\r?\n/), blocks = [], pending = []
+      for (let i = 0; i < lines.length; i++) {
+        const marker = markdownFence(lines[i])
+        if (!marker) { pending.push(lines[i]); continue }
+        let end = i + 1
+        for (; end < lines.length; end++) {
+          const close = markdownFence(lines[end])
+          if (close && close[1][0] === marker[1][0] && close[1].length >= marker[1].length && !close[2].trim()) break
+        }
+        const mermaid = marker[2].trim().toLowerCase() === 'mermaid'
+        const view = mermaid && end < lines.length && /^ {0,3}(`{3,}|~{3,})/.test(lines[i])
+          && approved.get(lines.slice(i + 1, end).join('\n'))
+        if (view) {
+          if (pending.length) blocks.push({ markdown: pending.splice(0).join('\n') })
+          blocks.push({ view })
+        } else {
+          pending.push(mermaid ? lines[i].replace(/(`{3,}|~{3,})[ \t]*mermaid[ \t]*$/i, '$1text') : lines[i],
+            ...lines.slice(i + 1, Math.min(end + 1, lines.length)))
+        }
+        i = end
+      }
+      if (pending.length) blocks.push({ markdown: pending.join('\n') })
+      return blocks
+    }
+
+    function markdownFence(line) {
+      for (;;) {
+        const container = /^ {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)
+        if (!container) return /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+        line = line.slice(container[0].length)
+      }
+    }
+
+    function outsideCode(markdown, transform) {
+      let fence = null
+      return markdown.split(/\r?\n/).map((line, index) => {
+        const marker = markdownFence(line)
+        if (fence) {
+          if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null
+          return line
+        }
+        if (marker) { fence = marker[1]; return line }
+        const content = line.replace(/^(?: {0,3}>[ \t]?)+/, '')
+        return /^(?: {4}|\t)/.test(content) ? line : transform(line, index)
+      }).join('\n')
+    }
+
+    function sourceLinks(markdown, transform) {
+      return outsideCode(markdown, line => {
+        const code = [...line.matchAll(/(`+).*?\1/g)].map(match => [match.index, match.index + match[0].length])
+        return line.replace(/(?<!!)\[((?:\\.|[^\]\\])*)\]\((https:\/\/[^)\s]+)([ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'))?[ \t]*\)/g,
+          (match, label, url, title, index) => code.some(([start, end]) => index >= start && index < end)
+            ? match : transform(match, label, url, title ?? ''))
+      })
+    }
+
+    function compactSources(markdown, metadata) {
+      const sources = new Map()
+      const compact = sourceLinks(markdown, (match, label, url, title) => {
+        const plain = label.replace(/\\([\\`*_{}\[\]()<>#!|:.@])/g, '$1')
+        if (!sourceLink(url, metadata) || !/^.+:\d+(?:[–-]\d+)?$/.test(plain)) return match
+        if (!sources.has(url)) sources.set(url, { label, url, number: sources.size + 1 })
+        return '[' + sources.get(url).number + '](' + url + title + ')'
+      })
+      return { markdown: compact, sources }
+    }
+
+    function chapterSources(chapter, sources, metadata) {
+      let lastHeading
+      outsideCode(chapter.markdown, (line, index) => {
+        const heading = /^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line)
+        if (heading) lastHeading = { title: heading[1], index }
+        return line
+      })
+      const lines = chapter.markdown.split('\n')
+      if (lastHeading?.title === '本章引用') {
+        const references = lines.slice(lastHeading.index + 1).join('\n').trim()
+        const urls = new Set()
+        sourceLinks(references, (match, label, url) => {
+          if (/^\d+$/.test(label) && sourceLink(url, metadata)) urls.add(url)
+          return match
+        })
+        if (urls.size && references.split('\n').every(line => !line.trim() || /^[-*] \[\d+\]\(/.test(line))) {
+          return { ...chapter, markdown: lines.slice(0, lastHeading.index).join('\n').trimEnd(),
+            references, referenceCount: urls.size }
+        }
+      }
+      const present = new Map()
+      sourceLinks(chapter.markdown, (match, _label, url) => {
+        if (sources.has(url)) present.set(url, sources.get(url))
+        return match
+      })
+      return { ...chapter, references: [...present.values()].map(source =>
+        '- [' + source.number + '](' + source.url + ') ' + source.label).join('\n'), referenceCount: present.size }
+    }
+
+    function introductionBeforeGraph(markdown) {
+      const sections = []
+      outsideCode(markdown, (line, index) => {
+        if (/^ {0,3}##[ \t]+/.test(line)) sections.push(index)
+        return line
+      })
+      const lines = markdown.split('\n')
+      const boundary = sections[0] > 0 && lines.slice(0, sections[0]).some(line => line.trim())
+        ? sections[0] : sections[1]
+      return boundary === undefined ? { introduction: markdown, remaining: '' }
+        : { introduction: lines.slice(0, boundary).join('\n'), remaining: lines.slice(boundary).join('\n') }
+    }
+
     function splitChapters(markdown) {
       const lines = markdown.split(/\r?\n/)
       const firstLine = lines.findIndex(line => line.trim())
@@ -107,7 +276,7 @@ window.__ModuleLoader__.load({
       const headings = []
       let fence = null
       for (const [index, line] of lines.entries()) {
-        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+        const marker = markdownFence(line)
         if (fence) {
           if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null
           continue
@@ -128,7 +297,7 @@ window.__ModuleLoader__.load({
       const preamble = lines.slice(start, headings[0].index).join('\n').trimEnd()
       const chapters = headings.map(({ title, index }, i) => {
         const chapter = lines.slice(index + 1, headings[i + 1]?.index).join('\n')
-        return { title, markdown: preamble ? preamble + '\n\n' + chapter : chapter }
+        return { title, markdown: i === 0 && preamble ? preamble + '\n\n' + chapter : chapter }
       })
       return { documentTitle, chapters }
     }
@@ -136,10 +305,17 @@ window.__ModuleLoader__.load({
     function readDocument(data) {
       const metadata = documentMetadata(data)
       if (!metadata || typeof data.markdown !== 'string' || !data.markdown.trim()) return null
-      const markdown = metadata.source === 'local' ? resolveLocalReferences(data.markdown) : data.markdown
+      const compact = compactSources(data.markdown, metadata)
+      const content = splitChapters(compact.markdown)
+      const chapters = content.chapters.map(chapter => {
+        const readable = chapterSources(chapter, compact.sources, metadata)
+        return metadata.source === 'local' ? { ...readable,
+          markdown: resolveLocalReferences(readable.markdown), references: resolveLocalReferences(readable.references) } : readable
+      })
       return {
         ...metadata,
-        ...splitChapters(markdown),
+        ...content, chapters,
+        views: readViews(data.views, metadata),
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
         durationMs: Number.isSafeInteger(data.durationMs) && data.durationMs >= 0 ? data.durationMs : undefined,
@@ -160,6 +336,23 @@ window.__ModuleLoader__.load({
     function validGeneration(job) {
       return typeof job?.id === 'string' && generationPhases.has(job.phase)
         && typeof job.repository === 'string' && Number.isSafeInteger(job.elapsedMs) && job.elapsedMs >= 0
+    }
+
+    function retryTarget(job) {
+      if (typeof job?.repositoryUrl === 'string' && !job.repositoryPath) return { source: 'github', repositoryUrl: job.repositoryUrl.trim() }
+      if (typeof job?.repositoryPath === 'string' && !job.repositoryUrl) return { source: 'local', repositoryPath: job.repositoryPath.trim() }
+      return null
+    }
+
+    function matchingRetry(job, source, repositoryUrl, repositoryPath) {
+      const target = retryTarget(job)
+      if (!target || job.phase !== 'failed' || target.source !== source) return null
+      const same = source === 'local' ? target.repositoryPath === repositoryPath.trim()
+        : target.repositoryUrl.replace(/\/+$/, '') === repositoryUrl.trim().replace(/\/+$/, '')
+      if (!same) return null
+      const canResume = job.canResume === true && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(job.id)
+        && (source === 'local' || /^[a-f\d]{40}$/i.test(job.commit))
+      return { ...target, id: job.id, commit: job.commit, canResume }
     }
 
     async function readGeneration(signal, id) {
@@ -186,6 +379,7 @@ window.__ModuleLoader__.load({
         error: '',
         loading: false,
         generation: null,
+        retryJob: null,
         progressOffline: false,
         picking: false,
         browserOpen: false,
@@ -233,8 +427,9 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function loadHistory() {
-        if (disposed || listRequest) return
+      async function loadHistory(refresh = false) {
+        if (disposed || listRequest && !refresh) return
+        if (refresh) listRequest?.abort()
         const controller = new AbortController()
         listRequest = controller
         const existingIds = new Set(snapshot.documents.map(item => item.id))
@@ -245,13 +440,14 @@ window.__ModuleLoader__.load({
           })
           const data = await response.json()
           if (!response.ok || !Array.isArray(data?.documents)) throw new Error(historyLoadError)
+          if (controller.signal.aborted) return
           const incoming = data.documents.map(documentMetadata).filter(item => item && !deletedIds.has(item.id))
           const recent = snapshot.documents.filter(item => !existingIds.has(item.id))
           update({ documents: mergeDocuments(incoming, recent), historyStatus: 'ready' })
         } catch {
           if (!controller.signal.aborted) update({ historyStatus: 'error' })
         } finally {
-          listRequest = undefined
+          if (listRequest === controller) listRequest = undefined
         }
       }
 
@@ -261,7 +457,7 @@ window.__ModuleLoader__.load({
         const revision = ++readerRevision
         if (snapshot.result?.id === id) {
           openRequest = undefined
-          update({ openingId: null, historyError: '' })
+          update({ openingId: null, historyError: '', retryJob: null })
           return
         }
         const controller = new AbortController()
@@ -275,7 +471,7 @@ window.__ModuleLoader__.load({
           const result = response.ok && readDocument(data)
           if (!result || result.id !== id) throw new Error(documentLoadError)
           if (revision === readerRevision && !controller.signal.aborted) update({
-            result, chapterIndex: 0, formOpen: false,
+            result, chapterIndex: 0, formOpen: false, retryJob: null,
             ...(snapshot.generation?.id === id && snapshot.generation.phase === 'completed' && { generation: null }),
           })
         } catch {
@@ -359,20 +555,33 @@ window.__ModuleLoader__.load({
         update({
           documents: mergeDocuments(snapshot.documents, [documentMetadata(result)]),
           generation: finished,
+          retryJob: null,
           formOpen: false,
           ...(showResult && { result, chapterIndex: 0 }),
         })
       }
 
-      async function followGeneration(job, signal, revision) {
+      function rememberFailure(job, request) {
+        const target = retryTarget(job) ?? retryTarget(request)
+        if (!target) return
+        const retryJob = { ...target, id: job.id, phase: 'failed', commit: job.commit, canResume: job.canResume === true }
+        const location = snapshot.source === 'local' ? snapshot.repositoryPath : snapshot.repositoryUrl.trim()
+        const matches = matchingRetry(retryJob, snapshot.source, snapshot.repositoryUrl, snapshot.repositoryPath)
+        update({ retryJob, ...(!location ? { ...target, formOpen: true } : matches ? { formOpen: true } : {}) })
+      }
+
+      async function followGeneration(job, signal, revision, request) {
         while (job && !signal.aborted) {
           const { result, ...status } = job
           if (job.phase === 'completed') {
             saveGenerationResult(result, revision, status)
             return
           }
-          if (job.phase === 'failed') throw new Error(job.error || generationError)
-          update({ loading: true, generation: { ...status, receivedAt: performance.now() }, progressOffline: false })
+          if (job.phase === 'failed') {
+            rememberFailure(job, request)
+            throw new Error(job.error || generationError)
+          }
+          update({ retryJob: null, loading: true, generation: { ...status, receivedAt: performance.now() }, progressOffline: false })
 
           while (!signal.aborted) {
             await new Promise(resolve => setTimeout(resolve, 1600))
@@ -386,7 +595,6 @@ window.__ModuleLoader__.load({
           }
         }
         if (!signal.aborted) {
-          void loadHistory()
           throw new Error('生成任务已结束或 DSH 已重启，请查看已保存文档。')
         }
       }
@@ -422,7 +630,7 @@ window.__ModuleLoader__.load({
         if (request) {
           openRequest?.abort()
           update({
-            error: '', historyError: '', loading: true, progressOffline: false,
+            error: '', historyError: '', retryJob: null, loading: true, progressOffline: false,
             generation: { phase: 'starting', elapsedMs: 0, receivedAt: performance.now(), repository },
           })
         }
@@ -431,11 +639,13 @@ window.__ModuleLoader__.load({
             ? await submitGeneration(request, controller.signal)
             : await readGeneration(controller.signal).catch(() => null)
           if (controller.signal.aborted) return
-          if (job) await followGeneration(job, controller.signal, revision)
+          if (job) await followGeneration(job, controller.signal, revision, request)
         } catch (error) {
-          if (!controller.signal.aborted) update({
-            generation: null, error: error.message || generationError,
-          })
+          if (!controller.signal.aborted) {
+            if (!snapshot.retryJob && request) rememberFailure({ phase: 'failed', canResume: false }, request)
+            update({ generation: null, error: error.message || generationError })
+            void loadHistory(true)
+          }
         } finally {
           if (activeRequest === controller) {
             activeRequest = undefined
@@ -447,9 +657,11 @@ window.__ModuleLoader__.load({
       function generate() {
         if (snapshot.picking || snapshot.browserOpen) return
         const local = snapshot.source === 'local'
-        const location = local ? snapshot.repositoryPath : snapshot.repositoryUrl.trim()
+        const location = local ? snapshot.repositoryPath.trim() : snapshot.repositoryUrl.trim()
         if (!location) return
-        const request = local ? { repositoryPath: location } : { repositoryUrl: location }
+        const retry = matchingRetry(snapshot.retryJob, snapshot.source, snapshot.repositoryUrl, snapshot.repositoryPath)
+        const request = local ? { repositoryPath: location } : { repositoryUrl: retry?.canResume ? retry.repositoryUrl : location }
+        if (retry?.canResume) Object.assign(request, { resumeFrom: retry.id, ...(!local && { commit: retry.commit }) })
         const repository = local ? location.split(/[\\/]/).filter(Boolean).at(-1) || '本地仓库'
           : location.replace(/^https:\/\/github\.com\//i, '').replace(/\/$/, '')
         return trackGeneration(request, repository)
@@ -464,7 +676,7 @@ window.__ModuleLoader__.load({
         changeSource(source) {
           if (!snapshot.loading && !snapshot.picking && !snapshot.browserOpen) update({ source, error: '' })
         },
-        setRepositoryUrl: repositoryUrl => update({ repositoryUrl }),
+        setRepositoryUrl: repositoryUrl => update({ repositoryUrl, error: '' }),
         setFormOpen(formOpen) {
           update({ formOpen, error: '' })
         },
@@ -594,13 +806,14 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function GenerationForm({ wiki, formId, source, repositoryUrl, repositoryPath, loading, picking, browserOpen, error }) {
+    function GenerationForm({ wiki, formId, source, repositoryUrl, repositoryPath, loading, picking, browserOpen, retryJob, error }) {
       const sourceId = useId()
       const titleId = useId()
       const heading = useRef(null)
       const local = source === 'local'
       const busy = loading || picking || browserOpen
-      const ready = local ? Boolean(repositoryPath) : Boolean(repositoryUrl.trim())
+      const ready = local ? Boolean(repositoryPath.trim()) : Boolean(repositoryUrl.trim())
+      const retry = matchingRetry(retryJob, source, repositoryUrl, repositoryPath)
       useEffect(() => { heading.current?.focus() }, [])
 
       return h('section', {
@@ -652,7 +865,8 @@ window.__ModuleLoader__.load({
       ),
       h(Button, {
         type: 'submit', variant: 'primary', disabled: !ready || busy,
-      }, '生成文档'),
+      }, retry ? retry.canResume ? '继续生成' : '重新尝试' : '生成文档'),
+      retry?.canResume && h('p', { className: 'dsh-code-wiki-hint' }, '已保存研究进度，将继续完成这篇文档。'),
       local && h('p', { className: 'dsh-code-wiki-hint' },
         '只读取当前 HEAD 提交中的 Git 跟踪文件。选中的源码片段会发送给已配置的模型。')),
       local && browserOpen && h(FolderBrowser, {
@@ -1003,6 +1217,11 @@ window.__ModuleLoader__.load({
       const isDocumentTitle = title && title !== chapter.title
         && ![repository + ' Wiki', repository + ' 架构 Wiki'].includes(title)
       const shortCommit = result.commit.slice(0, 12)
+      const overview = chapterIndex === 0 && result.architecture ? introductionBeforeGraph(chapter.markdown) : null
+      const prose = markdown => markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
+        approvedViewBlocks(markdown, result.views ?? []).map((block, i) => block.view
+          ? h(WikiView, { key: block.view.id + '-' + i, view: block.view })
+          : block.markdown.trim() && h(MarkdownText, { key: i, text: block.markdown, labels, omitHtml: true })))
       const revision = h(React.Fragment, null,
         h('span', { 'aria-hidden': true }, h(IconBranchOutlineRegular, { size: 14 })),
         h('code', null, shortCommit),
@@ -1028,9 +1247,13 @@ window.__ModuleLoader__.load({
           ),
           result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
         ),
+        prose(overview ? overview.introduction : chapter.markdown),
         chapterIndex === 0 && result.architecture && h(ArchitectureGraph, { key: result.id, graph: result.architecture }),
-        chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
-          h(MarkdownText, { text: chapter.markdown, labels, omitHtml: true })),
+        overview && prose(overview.remaining),
+        chapter.references && h('details', { className: 'dsh-code-wiki-sources' },
+          h('summary', null, '本章引用', h('span', null, chapter.referenceCount)),
+          h('div', { className: 'dsh-code-wiki-prose' },
+            h(MarkdownText, { text: chapter.references, labels, omitHtml: true }))),
       )
     }
 

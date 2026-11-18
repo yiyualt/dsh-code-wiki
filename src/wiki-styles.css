@@ -910,6 +910,115 @@ a.dsh-code-wiki-revision:hover {
   text-underline-offset: 2px;
 }
 
+.dsh-code-wiki-sources {
+  margin: 0 var(--wiki-reading-pad) 26px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--wiki-line);
+  color: var(--wiki-muted);
+}
+
+.dsh-code-wiki-sources > summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.7;
+}
+
+.dsh-code-wiki-sources > summary > span {
+  margin-inline-start: 8px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--wiki-accent-fill);
+  color: var(--wiki-accent-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-code-wiki-sources > summary:focus-visible {
+  outline: 2px solid var(--wiki-accent);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+
+.dsh-code-wiki-sources .dsh-code-wiki-prose {
+  padding: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-sources .dsh-code-wiki-prose > div {
+  color: var(--wiki-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.dsh-code-wiki-view {
+  --view-fill: color-mix(in srgb, var(--wiki-accent) 7%, var(--wiki-paper));
+  margin: 22px 0;
+  max-inline-size: 100%;
+  border: 1px solid var(--wiki-line);
+  border-radius: 10px;
+  background: var(--wiki-paper);
+  overflow: hidden;
+}
+
+.dsh-code-wiki-view[data-kind='dataflow'] { --view-fill: color-mix(in srgb, #23806b 8%, var(--wiki-paper)); }
+.dsh-code-wiki-view[data-kind='deployment'] { --view-fill: color-mix(in srgb, #3877ad 8%, var(--wiki-paper)); }
+
+.dsh-code-wiki-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 12px 16px;
+  border-block-end: 1px solid var(--wiki-line);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dsh-code-wiki-view-header > strong { color: var(--wiki-ink); font-weight: 650; }
+.dsh-code-wiki-view-header > span { color: var(--wiki-muted); }
+
+.dsh-code-wiki-view-scroll {
+  max-inline-size: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.dsh-code-wiki-view-scroll:focus-visible {
+  outline: 2px solid var(--wiki-accent);
+  outline-offset: -3px;
+}
+
+.dsh-code-wiki-view-svg { display: block; width: 100%; height: auto; font-family: var(--dsw-font-family); }
+.dsh-wiki-view-edge { fill: none; stroke: var(--wiki-accent-ink); stroke-width: 1.7; stroke-linejoin: round; }
+.dsh-wiki-view-arrowhead { fill: var(--wiki-accent-ink); }
+.dsh-wiki-view-lifeline { stroke: var(--wiki-muted); stroke-width: 1.2; stroke-dasharray: 5 5; opacity: .65; }
+.dsh-wiki-view-node { cursor: pointer; text-decoration: none; }
+.dsh-wiki-view-node :is(rect, ellipse, polygon, path, circle) { fill: var(--view-fill); stroke: var(--wiki-accent-ink); stroke-width: 1.4; }
+.dsh-wiki-view-node:hover :is(rect, ellipse, polygon, path, circle),
+.dsh-wiki-view-node:focus-visible :is(rect, ellipse, polygon, path, circle) { stroke-width: 2.6; }
+.dsh-wiki-view-actor path { fill: none; }
+.dsh-wiki-view-node-label { fill: var(--wiki-ink); font-weight: 600; }
+.dsh-wiki-view-message { fill: var(--wiki-ink); }
+.dsh-wiki-view-edge-label rect { fill: var(--wiki-paper); opacity: .97; }
+.dsh-wiki-view-edge-label text { fill: var(--wiki-ink); }
+
+.dsh-code-wiki-view-relations { padding: 14px 22px 14px 40px; margin: 0; border-block-start: 1px solid var(--wiki-line); }
+.dsh-code-wiki-view-relations li { padding-inline-start: 3px; color: var(--wiki-ink); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.dsh-code-wiki-view-relations li + li { margin-block-start: 10px; }
+.dsh-code-wiki-view-relations strong, .dsh-code-wiki-view-relations span { display: block; }
+.dsh-code-wiki-view-relations strong { font-size: 12px; font-weight: 600; }
+
+.dsh-code-wiki-view-sources { padding: 12px 16px; border-block-start: 1px solid var(--wiki-line); }
+.dsh-code-wiki-view-sources > summary { cursor: pointer; color: var(--wiki-muted); font-size: 12px; }
+.dsh-code-wiki-view-sources ul { padding-inline-start: 18px; margin-block: 12px 2px; }
+.dsh-code-wiki-view-sources li { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.dsh-code-wiki-view-sources li + li { margin-block-start: 10px; }
+.dsh-code-wiki-view-sources li > span { display: block; color: var(--wiki-ink); }
+.dsh-code-wiki-view-sources a { margin-inline-end: 10px; color: var(--wiki-accent-ink); }
+
 @container dsh-code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {
     grid-template-columns: minmax(165px, 210px) minmax(0, 1fr);

@@ -13,6 +13,8 @@ const maxExcerptCharacters = 2_500
 const maxExcerptLines = 120
 const requestTimeout = 30_000
 const batchSize = 5
+const maxTreeRequests = 64
+const maxTreeEntries = 100_000
 
 const objectId = /^[0-9a-f]{40}$/i
 const manifestNames = /^(?:package\.json|Cargo\.toml|pyproject\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|mix\.exs|Gemfile|composer\.json|deno\.jsonc?|pubspec\.yaml|Package\.swift|.+\.slnx?)$/i
@@ -46,7 +48,7 @@ function requestFailed() {
   return sourceError('github-request-failed', '无法完成 GitHub 仓库读取，请稍后重试。')
 }
 
-async function readGitHub(url, signal, { bytes, raw = false }) {
+async function readGitHub(url, signal, { bytes, raw = false, metadata = false }) {
   try {
     const response = await fetch(url, {
       signal,
@@ -79,13 +81,14 @@ async function readGitHub(url, signal, { bytes, raw = false }) {
         if (!raw) throw requestFailed()
         chunks.push(chunk.subarray(0, bytes - received))
         const prefix = Buffer.concat(chunks, bytes)
-        return prefix.subarray(0, prefix.lastIndexOf(10) + 1)
+        const complete = prefix.subarray(0, prefix.lastIndexOf(10) + 1)
+        return metadata ? { bytes: complete, truncated: true } : complete
       }
       received += chunk.byteLength
       chunks.push(chunk)
     }
     const buffer = Buffer.concat(chunks, received)
-    if (raw) return buffer
+    if (raw) return metadata ? { bytes: buffer, truncated: false } : buffer
     return JSON.parse(buffer.toString('utf8'))
   } catch (error) {
     if (typeof error?.code === 'string' && (error.code.startsWith('github-') || error.code.startsWith('repository-'))) throw error
@@ -214,36 +217,54 @@ async function readTree(base, treeId, signal) {
   const params = { bytes: maxTreeBytes }
   const result = await readGitHub(`${base}/git/trees/${treeId}?recursive=1`, signal, params)
   if (!Array.isArray(result.tree)) throw requestFailed()
-  if (!result.truncated) return result.tree
+  if (!result.truncated) return { tree: result.tree, treeComplete: true, unvisitedDirectories: [] }
 
-  // Recover the root and workflow entries when GitHub caps the recursive listing.
+  // A truncated recursive listing may omit entire application directories.
+  // Rebuild breadth first from shallow trees, rather than only recovering .github.
+  // Bound API work and disclose any directories not reached within that budget.
   const entries = new Map(result.tree.map(entry => [entry.path, entry]))
-  const root = await readGitHub(`${base}/git/trees/${treeId}`, signal, params)
-  if (!Array.isArray(root.tree)) throw requestFailed()
-  for (const entry of root.tree) entries.set(entry.path, entry)
-  const github = root.tree.find(entry => entry.path === '.github' && entry.type === 'tree')
-  if (!github || !objectId.test(github.sha)) return [...entries.values()]
-  const subtree = await readGitHub(`${base}/git/trees/${github.sha}?recursive=1`, signal, params)
-  if (!Array.isArray(subtree.tree)) throw requestFailed()
-  for (const entry of subtree.tree) {
-    const path = `.github/${entry.path}`
-    entries.set(path, { ...entry, path })
+  const queue = [{ sha: treeId, path: '' }]
+  const incomplete = new Set()
+  let requests = 1
+  while (queue.length && requests < maxTreeRequests && entries.size < maxTreeEntries) {
+    const batch = queue.splice(0, Math.min(3, maxTreeRequests - requests))
+    requests += batch.length
+    const loaded = await Promise.all(batch.map(async item => ({ ...item,
+      result: await readGitHub(`${base}/git/trees/${item.sha}`, signal, params) })))
+    for (const item of loaded) {
+      if (!Array.isArray(item.result.tree)) throw requestFailed()
+      if (item.result.truncated) incomplete.add(item.path || '.')
+      for (const entry of [...item.result.tree].sort((a, b) => String(a.path).localeCompare(String(b.path)))) {
+        if (typeof entry.path !== 'string' || !entry.path || entry.path.includes('/') || /[\\\u0000-\u001f\u007f]/.test(entry.path)
+          || entry.path === '.' || entry.path === '..') continue
+        const path = item.path ? `${item.path}/${entry.path}` : entry.path
+        if (path.length > 300) continue
+        if (entries.size >= maxTreeEntries && !entries.has(path)) { incomplete.add(item.path || '.'); continue }
+        entries.set(path, { ...entry, path })
+        if (entry.type === 'tree') {
+          if (objectId.test(entry.sha)) queue.push({ path, sha: entry.sha })
+          else incomplete.add(path)
+        }
+      }
+    }
   }
-  return [...entries.values()]
+  for (const item of queue) incomplete.add(item.path || '.')
+  return { tree: [...entries.values()], treeComplete: incomplete.size === 0,
+    unvisitedDirectories: [...incomplete].sort() }
 }
 
-async function readApiSnapshot(owner, repo, signal) {
+async function readApiSnapshot(owner, repo, signal, pinnedCommit) {
   const base = `${apiBase}/repos/${owner}/${repo}`
-  // Without a branch argument GitHub lists commits from the default branch.
-  const commits = await readGitHub(`${base}/commits?per_page=1`, signal, { bytes: 256 * 1024 })
-  const head = Array.isArray(commits) ? commits[0] : undefined
+  const commits = await readGitHub(pinnedCommit ? `${base}/commits/${pinnedCommit}` : `${base}/commits?per_page=1`, signal, { bytes: 256 * 1024 })
+  const head = pinnedCommit ? commits : Array.isArray(commits) ? commits[0] : undefined
   const commit = head?.sha
   const treeId = head?.commit?.tree?.sha
   if (typeof commit !== 'string' || typeof treeId !== 'string' || !objectId.test(commit) || !objectId.test(treeId)) throw requestFailed()
-  return { commit, tree: await readTree(base, treeId, signal) }
+  if (pinnedCommit && commit.toLowerCase() !== pinnedCommit.toLowerCase()) throw requestFailed()
+  return { commit, ...await readTree(base, treeId, signal) }
 }
 
-async function readGitSnapshot(owner, repo, signal) {
+async function readGitSnapshot(owner, repo, signal, pinnedCommit) {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-code-wiki-'))
   try {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|SSH_ASKPASS$)/i.test(key)))
@@ -267,8 +288,13 @@ async function readGitSnapshot(owner, repo, signal) {
     const git = (...args) => runGit('git', [...config, ...args], options)
     await git('clone', '--quiet', '--no-checkout', '--depth=1', '--no-tags', '--filter=blob:none',
       '--single-branch', '--template=', '--', `https://github.com/${owner}/${repo}.git`, 'repo')
-    const commit = (await git('-C', 'repo', 'rev-parse', '--verify', 'HEAD^{commit}')).stdout.trim()
+    let commit = (await git('-C', 'repo', 'rev-parse', '--verify', 'HEAD^{commit}')).stdout.trim()
+    if (pinnedCommit && commit.toLowerCase() !== pinnedCommit.toLowerCase()) {
+      await git('-C', 'repo', 'fetch', '--quiet', '--depth=1', '--no-tags', 'origin', pinnedCommit)
+      commit = (await git('-C', 'repo', 'rev-parse', '--verify', 'FETCH_HEAD^{commit}')).stdout.trim()
+    }
     if (!objectId.test(commit)) throw requestFailed()
+    if (pinnedCommit && commit.toLowerCase() !== pinnedCommit.toLowerCase()) throw requestFailed()
     // Avoid the long format in the partial clone because it needs blob sizes.
     const { stdout } = await git('-C', 'repo', 'ls-tree', '-r', '-z', commit)
     const tree = []
@@ -278,7 +304,7 @@ async function readGitSnapshot(owner, repo, signal) {
       const [mode, type] = entry.slice(0, separator).split(' ')
       tree.push({ mode, type, path: entry.slice(separator + 1) })
     }
-    return { commit, tree }
+    return { commit, tree, treeComplete: true, unvisitedDirectories: [] }
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
@@ -292,24 +318,27 @@ export function readPinnedGithubFile(repositoryUrl, commit, path, bytes, signal)
   return readGithubBlob(owner, repo, commit, parts, bytes, signal)
 }
 
-function readGithubBlob(owner, repo, commit, parts, bytes, signal) {
+function readGithubBlob(owner, repo, commit, parts, bytes, signal, metadata = false) {
   const encodedPath = parts.map(encodeURIComponent).join('/')
   const timeout = AbortSignal.timeout(requestTimeout)
   return readGitHub(`${rawBase}/${owner}/${repo}/${commit}/${encodedPath}`,
-    signal ? AbortSignal.any([signal, timeout]) : timeout, { raw: true, bytes })
+    signal ? AbortSignal.any([signal, timeout]) : timeout, { raw: true, bytes, metadata })
 }
 
-export async function openGithubRepository(repositoryUrl, { signal } = {}) {
+export async function openGithubRepository(repositoryUrl, { signal, commit: pinnedCommit } = {}) {
   const { owner, repo } = parseRepository(repositoryUrl)
+  if (pinnedCommit !== undefined && (typeof pinnedCommit !== 'string' || !objectId.test(pinnedCommit))) {
+    throw sourceError('invalid-repository-commit', '固定提交必须是 40 位 Git 提交编号。')
+  }
   const deadline = AbortSignal.timeout(requestTimeout)
   const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline
   let snapshot
   try {
-    snapshot = await readApiSnapshot(owner, repo, requestSignal)
+    snapshot = await readApiSnapshot(owner, repo, requestSignal, pinnedCommit)
   } catch (error) {
     if (error.code !== 'github-rate-limited' || requestSignal.aborted) throw error
     try {
-      snapshot = await readGitSnapshot(owner, repo, requestSignal)
+      snapshot = await readGitSnapshot(owner, repo, requestSignal, pinnedCommit)
     } catch {
       throw error
     }
@@ -317,15 +346,18 @@ export async function openGithubRepository(repositoryUrl, { signal } = {}) {
 
   const { commit, tree } = snapshot
   return {
-    owner, repo, commit, tree,
+    owner, repo, commit, tree, treeComplete: snapshot.treeComplete, unvisitedDirectories: snapshot.unvisitedDirectories,
     read(path, bytes, readSignal = signal) {
       return readGithubBlob(owner, repo, commit, path.split('/'), bytes, readSignal)
+    },
+    readWithMetadata(path, bytes, readSignal = signal) {
+      return readGithubBlob(owner, repo, commit, path.split('/'), bytes, readSignal, true)
     },
   }
 }
 
-export async function collectGithubSource(repositoryUrl, { signal } = {}) {
-  const source = await openGithubRepository(repositoryUrl, { signal })
+export async function collectGithubSource(repositoryUrl, { signal, commit } = {}) {
+  const source = await openGithubRepository(repositoryUrl, { signal, commit })
   const candidates = selectFiles(source.tree)
   const files = []
   for (let index = 0; index < candidates.length; index += batchSize) {

@@ -10,9 +10,17 @@ import { promisify } from 'node:util'
 
 import { apply } from '../index.js'
 import { createWikiStorage } from '../src/wiki-storage.js'
+import { createWikiCheckpoints } from '../src/wiki-checkpoint.js'
 
 const git = promisify(execFile)
 const apiRoot = '/api/dsh-code-wiki/'
+
+const approvedReviews = {
+  async *stream() {
+    yield { type: 'text-delta', text: JSON.stringify({ approved: true, issues: [] }) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  },
+}
 
 async function fixture(t, services = {}, config) {
   const profileDirectory = await mkdtemp(join(tmpdir(), 'dsh-wiki-api-test-'))
@@ -24,6 +32,7 @@ async function fixture(t, services = {}, config) {
   })
   apply({
     profileContext: { dir: profileDirectory },
+    llm: approvedReviews,
     connection: { fetch: { register(route) { routes.set(route.path, route) } } },
     effect(install) { cleanup.push(install()) },
     ...services,
@@ -79,11 +88,24 @@ test('deletion rejects malformed IDs, bodies, and content types', async t => {
   })).status, 400)
 })
 
+test('a pinned revision requires a full GitHub commit and is rejected before any generation starts', async t => {
+  const { post, request } = await fixture(t, {
+    agents: { create() { assert.fail('Invalid pinned requests must not start research') } },
+  })
+  for (const body of [
+    { repositoryUrl: 'https://github.com/example/repo', commit: 'main' },
+    { repositoryUrl: 'https://github.com/example/repo', commit: 'a'.repeat(39) },
+    { repositoryPath: tmpdir(), commit: 'a'.repeat(40) },
+  ]) assert.equal((await post('generation', body)).status, 400)
+  assert.equal((await post('generate', { repositoryUrl: 'https://github.com/example/repo', commit: 'main' })).status, 400)
+  assert.deepEqual(await (await request('generation')).json(), { job: null })
+})
+
 async function initRepository(directory) {
   await mkdir(directory)
   await writeFile(join(directory, 'main.js'), '// entry point\nimport { run } from "./core.js"\nexport const value = run()\n')
   await writeFile(join(directory, 'core.js'), 'export const run = () => 42\n')
-  await writeFile(join(directory, 'README.md'), 'Outdated behavior\n')
+  await writeFile(join(directory, 'README.md'), 'A small command runner.\n')
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name)))
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' })
   const runGit = args => git('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: directory, env })
@@ -112,25 +134,34 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
         ] }, { signal })
         const { results: [entry, core, readme] } = JSON.parse(batch.data)
         const cite = span => [{ evidence: span.evidence, start: span.start, end: span.end }]
-        const point = (text, span) => ({ text, refs: cite(span) })
-        const node = (id, span) => ({ id, title: id, summary: id,
-          ...(id === 'entry' && { technology: 'JavaScript', boundary: '进程内模块' }), refs: cite(span) })
-        const chapter = (title, points) => ({ title, sections: [{ title, points }] })
-        const published = await tools.get('wiki_publish').execute({
+        const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: {
+          audience: 'Developers inspecting this runner', goal: 'Understand the committed entry and returned value',
+          views: [], viewOmission: 'The existing overall component diagram fully explains this small example.',
+          chapters: [{ id: 'entry', title: 'Entry', question: 'What runs?' },
+            { id: 'core', title: 'Core', question: 'What is returned?' }],
+          research: [{ id: 'purpose', question: 'What does the project claim to do?', evidenceType: 'documentation', paths: ['README.md'] },
+            { id: 'behavior', question: 'How does the entry invoke the implementation?', evidenceType: 'implementation', paths: ['main.js', 'core.js'] }],
+        } })
+        assert.match(planned.status, /研究计划已接受/)
+        const paragraph = (id, text, span, claimType = 'implementation') => ({ id, type: 'paragraph', claimType, text, refs: cite(span) })
+        const node = (id, span) => ({ id, title: id, summary: id, technology: 'JavaScript', boundary: '进程内模块', refs: cite(span) })
+        const published = await tools.get('wiki_publish').execute({ kind: 'draft', draft: {
           chapters: [
-            chapter('Entry', [point('Uses committed source', entry), point('Reject this obsolete claim', readme)]),
-            chapter('Core', [point('Returns a value', core)]),
+            { id: 'entry', title: 'Entry', blocks: [paragraph('purpose', 'A small command runner.', readme, 'purpose'),
+              paragraph('entry-call', 'Uses committed source to call run.', entry)] },
+            { id: 'core', title: 'Core', blocks: [paragraph('core-return', 'Returns a value.', core),
+              { id: 'core-code', type: 'code', claimType: 'implementation', caption: 'The committed implementation.', refs: cite(core) }] },
           ],
+          coverage: [{ area: 'purpose', refs: cite(readme) }, { area: 'behavior', refs: [...cite(entry), ...cite(core)] }],
           graph: {
             layers: [{ title: 'Entry', nodes: [node('entry', entry)] },
-              { title: 'Core', nodes: [node('core', core), node('output', entry), node('third', core),
-                node('fourth', core), node('fifth', core)] }],
+              { title: 'Core', nodes: [node('core', core), node('value', core)] }],
             edges: [{ from: 'entry', to: 'core', label: 'Calls', refs: cite(entry) },
-              { from: 'core', to: 'fifth', label: 'Returns', refs: cite(core) },
-              { from: 'output', to: 'entry', label: 'Obsolete relation', refs: cite(readme) }],
+              { from: 'core', to: 'value', label: 'Returns', refs: cite(core) }],
           },
-        })
-        assert.match(published.status, /已通过校验/)
+        } })
+        assert.match(published.status, /草稿已收到/)
+
       })()
     },
     whenIdle: () => run,
@@ -138,6 +169,128 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
   }
   return { agent, dispose: () => run }
 }
+
+test('a failed review keeps a private draft and resumes only the matching pinned repository without repeating research', async t => {
+  let failure = true, research = 0, reviews = 0
+  const services = {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    llm: { async *stream() {
+      reviews++
+      if (failure) throw Object.assign(new Error('fixture'), { code: 'AUTH' })
+      yield* approvedReviews.stream()
+    } },
+    agents: { async create(options) {
+      if (research++ === 0) return publishingAgent(options)
+      return { agent: { followup() { assert.fail('Resuming an approved draft must not repeat research') }, cancel() {} }, dispose() {} }
+    } },
+  }
+  const { post, request, profileDirectory, storage } = await fixture(t, services)
+  const repositoryPath = join(profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const failed = await post('generate', { repositoryPath })
+  assert.equal(failed.status, 502)
+  assert.equal((await failed.json()).error, '无法使用当前模型配置，请检查后重试。')
+  assert.deepEqual(await storage.list(), [])
+  const { readdir } = await import('node:fs/promises')
+  const dir = join(profileDirectory, 'dsh-code-wiki-checkpoints')
+  const [name] = await readdir(dir)
+  const resumeFrom = name.slice(0, -5)
+  const failedJob = (await (await request('generation?id=' + resumeFrom)).json()).job
+  assert.equal(failedJob.phase, 'failed')
+  assert.equal(failedJob.canResume, true)
+  assert.equal(failedJob.repositoryPath, repositoryPath)
+  assert.match(failedJob.commit, /^[a-f0-9]{40}$/)
+  assert.equal(failedJob.failureCode, 'AUTH')
+  const checkpoints = createWikiCheckpoints(dir)
+  assert((await checkpoints.get(resumeFrom)).draft.chapters.length === 2)
+  assert.equal((await post('generate', { repositoryPath: repositoryPath + '-other', resumeFrom })).status, 400)
+  assert.equal((await post('generate', { repositoryPath, resumeFrom: '../bad' })).status, 400)
+  failure = false
+  const before = reviews
+  const completed = await post('generate', { repositoryPath, resumeFrom })
+  assert.equal(completed.status, 200)
+  const document = await completed.json()
+  assert.equal((await (await request('generation?id=' + document.id)).json()).job.canResume, false)
+  assert.equal(reviews - before, 2)
+  assert.notEqual(document.id, resumeFrom)
+  assert(document.markdown.includes('key=' + document.id))
+  assert.equal(await checkpoints.get(resumeFrom), null)
+  assert.equal(await checkpoints.get(document.id), null)
+  assert.equal((await storage.list()).length, 1)
+})
+
+test('failed research resumes from private evidence and publishes only after a new draft passes both reviews', async t => {
+  const reviewStarted = Promise.withResolvers(), allowReview = Promise.withResolvers()
+  t.after(() => allowReview.resolve())
+  let agents = 0, reviews = 0, candidate
+  const services = {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    llm: { async *stream() {
+      reviews++
+      if (reviews === 2) reviewStarted.resolve()
+      await allowReview.promise
+      yield* approvedReviews.stream()
+    } },
+    agents: { async create(options) {
+      if (agents++ === 0) {
+        const handle = await publishingAgent({ ...options, setup(context) {
+        options.setup({ tools: { ...context.tools, register(tool) {
+          if (tool.name !== 'wiki_publish') return context.tools.register(tool)
+          context.tools.register({ ...tool, async execute(args) {
+            if (args.kind === 'draft') {
+              candidate = structuredClone(args.draft)
+              throw Object.assign(new Error('fixture connection failure'), { code: 'TRANSPORT' })
+            }
+            return tool.execute(args)
+          } })
+        } } })
+        } })
+        return { ...handle, dispose() {} }
+      }
+      const tools = new Map()
+      options.setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
+      let run
+      return { agent: { followup(message) {
+        run = (async () => {
+          const prompt = message.content[0].text
+          assert.match(prompt, /plan已被接受，但尚无草稿/)
+          const research = JSON.parse(prompt.split('\n').at(-1))
+          assert.deepEqual(research.evidence.map(file => file.id), [1, 2, 3])
+          assert.deepEqual(new Set(research.evidence.map(file => file.path)), new Set(['main.js', 'core.js', 'README.md']))
+          assert.match((await tools.get('wiki_publish').execute({ kind: 'draft', draft: candidate })).status, /草稿已收到/)
+        })()
+      }, whenIdle: () => run, cancel() {} }, dispose() {} }
+    } },
+  }
+  const { post, request, profileDirectory, storage } = await fixture(t, services)
+  const repositoryPath = join(profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  assert.equal((await post('generate', { repositoryPath })).status, 502)
+  const { readdir } = await import('node:fs/promises')
+  const checkpointDirectory = join(profileDirectory, 'dsh-code-wiki-checkpoints')
+  const [name] = await readdir(checkpointDirectory)
+  const failed = (await (await request('generation?id=' + name.slice(0, -5))).json()).job
+  assert.equal(failed.canResume, true)
+  assert.equal(failed.failureCode, 'TRANSPORT')
+  assert.deepEqual(await storage.list(), [])
+  const checkpoints = createWikiCheckpoints(checkpointDirectory)
+  const research = await checkpoints.get(failed.id)
+  assert.equal(Object.hasOwn(research, 'draft'), false)
+  assert.equal(research.evidence.length, 3)
+  assert.equal(reviews, 0)
+  const resumed = post('generate', { repositoryPath, resumeFrom: failed.id })
+  await reviewStarted.promise
+  assert.deepEqual(await storage.list(), [], 'neither research nor a draft awaiting reviews is a published document')
+  allowReview.resolve()
+  const completed = await resumed
+  assert.equal(completed.status, 200)
+  const document = await completed.json()
+  assert.equal(reviews, 2)
+  assert.equal((await storage.list()).length, 1)
+  assert.equal(document.commit, research.commit)
+  assert.equal(await checkpoints.get(failed.id), null)
+  assert.equal(await checkpoints.get(document.id), null)
+})
 
 test('running generation rejects deletion, then deleting its archive also removes completed-job data', async t => {
   const release = Promise.withResolvers()
@@ -157,6 +310,8 @@ test('running generation rejects deletion, then deleting its archive also remove
   const accepted = await post('generation', { repositoryPath })
   assert.equal(accepted.status, 202)
   const { job } = await accepted.json()
+  assert.equal(job.canResume, false)
+  assert.equal(job.repositoryPath, repositoryPath)
   assert.equal((await post('documents/delete', { id: job.id })).status, 409)
   const duplicate = await post('generation', { repositoryPath })
   assert.equal(duplicate.status, 409)
@@ -173,14 +328,13 @@ test('running generation rejects deletion, then deleting its archive also remove
   assert.equal(finished?.phase, 'completed', finished?.error)
   assert.deepEqual(restrictions, [{ allow: [] }])
   assert.equal(finished.result.architecture.edges.length, 2)
-  assert.equal(finished.result.architecture.layers[1].nodes.length, 5)
-  assert.equal(finished.result.architecture.edges[1].to, 'fifth')
-  assert.match(finished.result.markdown, /\| fifth \|/)
+  assert.equal(finished.result.architecture.layers[1].nodes.length, 2)
+  assert.equal(finished.result.architecture.edges[1].to, 'value')
   assert.equal(finished.result.architecture.layers[0].nodes[0].technology, 'JavaScript')
-  assert.match(finished.result.markdown, /## Entry[\s\S]*## 技术沙盘[\s\S]*## Core/)
-  assert.match(finished.result.markdown, /\| entry \| entry \| JavaScript \| 进程内模块 \|/)
-  assert.match(finished.result.markdown, /\| core \| core \| 未确认 \| 未确认 \|/)
-  assert.doesNotMatch(finished.result.markdown, /Reject this obsolete claim/)
+  assert.match(finished.result.markdown, /## Entry[\s\S]*## Core/)
+  assert.match(finished.result.markdown, /```javascript\nexport const run = \(\) => 42/)
+  assert.match(finished.result.markdown, /A small command runner/)
+  assert.doesNotMatch(finished.result.markdown, /^- Uses committed source/m)
   const source = new URL(finished.result.architecture.layers[0].nodes[0].refs[0].url)
   const code = await (await request('source' + source.search)).text()
   assert.match(code, /2 \| import \{ run \}/)
@@ -203,12 +357,50 @@ async function generateDocument(api, repositoryPath) {
   assert.fail('Generation did not finish')
 }
 
+test('a research connection failure without a draft offers a fresh retry without exposing provider internals', async t => {
+  const api = await fixture(t, {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    agents: { async create() {
+      return { agent: { followup() {}, cancel() {}, async whenIdle() {
+        throw Object.assign(new Error('TRANSPORT'), { code: 'TRANSPORT' })
+      } }, dispose() {} }
+    } },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const job = await generateDocument(api, repositoryPath)
+  assert.equal(job.phase, 'failed')
+  assert.equal(job.canResume, false)
+  assert.equal(job.repositoryPath, repositoryPath)
+  assert.match(job.commit, /^[a-f0-9]{40}$/)
+  assert.equal(job.error, '与模型服务的连接中断。请重新尝试。')
+  assert.equal(job.failureCode, 'TRANSPORT')
+  assert.deepEqual(await api.storage.list(), [])
+})
+
+test('the synchronous generate endpoint uses the same reviewed Wiki pipeline', async t => {
+  let reviews = 0
+  const api = await fixture(t, {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    agents: { create: options => publishingAgent(options) },
+    llm: { async *stream() { reviews++; yield* approvedReviews.stream() } },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const response = await api.post('generate', { repositoryPath })
+  assert.equal(response.status, 200)
+  const document = await response.json()
+  assert.equal(reviews, 2, 'facts and writing must both be reviewed before the old endpoint publishes')
+  assert.match(document.markdown, /```javascript/)
+  assert.equal(document.architecture.edges.length, 2)
+})
+
 test('a fresh installation follows the current DSH provider, model and reasoning setting on each generation', async t => {
   let selection = { provider: 'dsh-provider', model: 'dsh-model', reasoningEffort: 'medium' }
   const calls = []
   const api = await fixture(t, {
     agentDefaultModel: { currentSelection: () => ({ ...selection }) },
-    llm: { registerAdapter() { assert.fail('A default installation must use the DSH adapter') } },
+    llm: { ...approvedReviews, registerAdapter() { assert.fail('A default installation must use the DSH adapter') } },
     agents: { create(options) {
       calls.push(options.agentOptions)
       return publishingAgent(options)
@@ -219,13 +411,13 @@ test('a fresh installation follows the current DSH provider, model and reasoning
   const first = await generateDocument(api, repositoryPath)
   assert.equal(first.phase, 'completed', first.error)
   assert.equal(first.result.model, selection.model)
-  assert.deepEqual(calls[0], { ...selection, maxTokens: 9000 })
+  assert.deepEqual(calls[0], { ...selection, maxTokens: 20_000 })
 
   selection = { provider: 'another-provider', model: 'another-model', reasoningEffort: 'high' }
   const second = await generateDocument(api, repositoryPath)
   assert.equal(second.phase, 'completed', second.error)
   assert.equal(second.result.model, selection.model)
-  assert.deepEqual(calls[1], { ...selection, maxTokens: 9000 })
+  assert.deepEqual(calls[1], { ...selection, maxTokens: 20_000 })
 })
 
 test('a local model override takes precedence over DSH and reports configuration failures', async t => {
@@ -234,7 +426,7 @@ test('a local model override takes precedence over DSH and reports configuration
   let registrations = 0
   const api = await fixture(t, {
     agentDefaultModel: { currentSelection() { assert.fail('An explicit local override takes precedence') } },
-    llm: { registerAdapter([provider], adapter) {
+    llm: { ...approvedReviews, registerAdapter([provider], adapter) {
       registrations++
       adapters.set(provider, adapter)
       return () => adapters.delete(provider)
@@ -247,6 +439,13 @@ test('a local model override takes precedence over DSH and reports configuration
       return publishingAgent(options)
     } },
   }, config)
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(String(url), 'https://example.invalid/v1/chat/completions')
+    const body = JSON.parse(options.body)
+    assert.equal(body.model, 'personal-gpt')
+    assert.equal(body.tools, undefined, 'only independent review calls reach this mock')
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ approved: true, issues: [] }) }, finish_reason: 'stop' }] })
+  })
   config.modelConfigFile = join(api.profileDirectory, 'personal-model.json')
   await writeFile(config.modelConfigFile, JSON.stringify({ judge: {
     url: 'https://example.invalid/v1/chat/completions', model: 'personal-gpt', api_key: 'test-only-key',
@@ -262,6 +461,6 @@ test('a local model override takes precedence over DSH and reports configuration
   await rm(config.modelConfigFile)
   const failed = await generateDocument(api, repositoryPath)
   assert.equal(failed.phase, 'failed')
-  assert.match(failed.error, /无法读取本地模型配置/)
+  assert.equal(failed.error, '无法使用当前模型配置，请检查后重试。')
   assert.equal(registrations, 1)
 })

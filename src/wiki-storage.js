@@ -10,10 +10,31 @@ const githubRepo = /^https:\/\/github\.com\/[a-z\d-]+\/[\w.-]+$/i
 
 const timestamp = value => new Date(value).getTime()
 const nonempty = value => typeof value === 'string' && Boolean(value.trim())
+const viewKinds = new Set(['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment'])
+
+function validViews(views) {
+  if (!Array.isArray(views) || views.length > 3 || JSON.stringify(views).length > 120_000) return false
+  const ids = new Set()
+  return views.every(view => {
+    if (!view || !/^[a-z][a-z0-9_-]{0,43}$/.test(view.id) || ids.has(view.id) || !viewKinds.has(view.kind)
+      || !nonempty(view.title) || !nonempty(view.purpose) || !nonempty(view.mermaid)
+      || !Array.isArray(view.nodes) || view.nodes.length < 2 || view.nodes.length > 8
+      || !Array.isArray(view.edges) || view.edges.length < 1 || view.edges.length > 10) return false
+    ids.add(view.id)
+    const nodes = new Set()
+    const refs = value => Array.isArray(value) && value.length > 0 && value.length <= 4
+      && value.every(ref => nonempty(ref?.label) && nonempty(ref?.url))
+    if (!view.nodes.every(node => {
+      if (!/^[a-z][a-z0-9_-]{0,43}$/.test(node?.id) || nodes.has(node.id) || !nonempty(node.label) || !refs(node.refs)) return false
+      nodes.add(node.id); return true
+    })) return false
+    return view.edges.every(edge => nodes.has(edge?.from) && nodes.has(edge?.to) && nonempty(edge.label) && refs(edge.refs))
+  })
+}
 
 function documentRecord(document, id) {
   if (document?.id !== id || !uuid.test(id)) return
-  const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs, architecture } = document
+  const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs, architecture, views } = document
   if ((typeof createdAt !== 'string' && typeof createdAt !== 'number')
     || !Number.isFinite(timestamp(createdAt))
     || typeof commit !== 'string' || !commitHash.test(commit)
@@ -21,12 +42,14 @@ function documentRecord(document, id) {
   if (model !== undefined && typeof model !== 'string') return
   if (note !== undefined && typeof note !== 'string') return
   if (repoName !== undefined && !nonempty(repoName)) return
+  if (views !== undefined && !validViews(views)) return
 
   const metadata = { id, createdAt, source, commit, ...(repoName !== undefined && { repoName }) }
   const content = {
     markdown, ...(model !== undefined && { model }), ...(note !== undefined && { note }),
     ...(Number.isSafeInteger(durationMs) && durationMs >= 0 && { durationMs }),
     ...(Array.isArray(architecture?.layers) && Array.isArray(architecture?.edges) && { architecture }),
+    ...(views !== undefined && { views }),
   }
   if (source === 'github' && typeof repoUrl === 'string' && githubRepo.test(repoUrl)) {
     return { ...metadata, repoUrl, ...content }

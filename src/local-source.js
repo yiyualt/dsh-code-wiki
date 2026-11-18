@@ -102,7 +102,7 @@ function parseTree(output) {
   return tree
 }
 
-async function readBlob(root, git, sha, maxBytes) {
+async function readBlob(root, git, sha, maxBytes, metadata = false) {
   let size
   try {
     size = Number(await git(root, ['cat-file', '-s', sha]))
@@ -122,7 +122,7 @@ async function readBlob(root, git, sha, maxBytes) {
       || !Buffer.isBuffer(error.stdout) || error.stdout.length !== maxBytes) throw error
     content = error.stdout.subarray(0, error.stdout.lastIndexOf(10) + 1)
   }
-  return content
+  return metadata ? { bytes: content, truncated: content.length < size, totalBytes: size } : content
 }
 
 export async function openLocalRepository(repositoryPath, { signal } = {}) {
@@ -138,6 +138,10 @@ export async function openLocalRepository(repositoryPath, { signal } = {}) {
       read(entry, maxBytes, readSignal = signal) {
         const timeout = AbortSignal.timeout(readTimeout)
         return readBlob(root, createGit(readSignal ? AbortSignal.any([readSignal, timeout]) : timeout), entry.sha, maxBytes)
+      },
+      readWithMetadata(entry, maxBytes, readSignal = signal) {
+        const timeout = AbortSignal.timeout(readTimeout)
+        return readBlob(root, createGit(readSignal ? AbortSignal.any([readSignal, timeout]) : timeout), entry.sha, maxBytes, true)
       },
     }
   } catch {

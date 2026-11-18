@@ -6,6 +6,7 @@ import { collectGithubSource, openGithubRepository } from './src/github-source.j
 import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
 import { collectLocalSource, openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
+import { createWikiCheckpoints } from './src/wiki-checkpoint.js'
 import { registerVideoApi } from './src/video-api.js'
 
 export const name = 'dsh-code-wiki'
@@ -18,6 +19,7 @@ const documentsRoute = '/api/dsh-code-wiki/documents'
 const deleteDocumentRoute = '/api/dsh-code-wiki/documents/delete'
 const sourceErrors = new Map([
   ['invalid-repository-url', 400],
+  ['invalid-repository-commit', 400],
   ['repository-unavailable', 404],
   ['github-rate-limited', 429],
   ['github-request-failed', 502],
@@ -66,10 +68,20 @@ function modelNote(error) {
   return `模型调用失败${suffix}，以下为源码摘录。`
 }
 
-async function selectModel(ctx, configFile, signal) {
+function researchFailure(error, resumable) {
+  const next = resumable ? '研究记录已保存，可以继续生成。' : '请重新尝试。'
+  if (['TRANSPORT', 'TIMEOUT', 'STREAM_CLOSED'].includes(error.providerCode)) return '与模型服务的连接中断。' + next
+  if (['SERVER', 'RATE_LIMIT'].includes(error.providerCode)) return '模型服务暂时不可用。' + next
+  if (['AUTH', 'MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'MODEL_CONFIG'].includes(error.providerCode)) {
+    return '无法使用当前模型配置，请检查后重试。'
+  }
+  return '模型未能完成这次研究。' + next
+}
+
+async function selectModel(ctx, configFile, signal, options) {
   if (configFile === undefined) return { llm: ctx.llm, selection: ctx.agentDefaultModel.currentSelection() }
   try {
-    const llm = await readConfiguredModel(configFile, signal)
+    const llm = await readConfiguredModel(configFile, signal, options)
     return { llm, selection: { model: llm.model } }
   } catch (error) {
     throw modelError(error)
@@ -98,6 +110,7 @@ async function documentsResponse(request, storage) {
 export function apply(ctx, config) {
   const lifetime = new AbortController()
   const storage = createWikiStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'documents'))
+  const checkpoints = createWikiCheckpoints(join(ctx.profileContext.dir, 'dsh-code-wiki-checkpoints'))
   const videos = registerVideoApi(ctx, config, storage, selectModel, lifetime)
   const jobs = new Map()
   let active
@@ -109,31 +122,51 @@ export function apply(ctx, config) {
   }
 
   async function runGeneration(job, body, github, architecture, requestSignal) {
-    const timeout = AbortSignal.timeout(15 * 60_000)
+    const timeout = AbortSignal.timeout(30 * 60_000)
     const signal = AbortSignal.any([lifetime.signal, timeout, ...(requestSignal ? [requestSignal] : [])])
     function fail(error, status) {
       Object.assign(job, { phase: 'failed', finishedAt: Date.now(), error })
       return json({ error }, status)
     }
     try {
+      const checkpoint = body.resumeFrom ? await checkpoints.get(body.resumeFrom) : null
+      if (body.resumeFrom && (!checkpoint
+        || (github ? checkpoint.repositoryUrl !== body.repositoryUrl.trim() : checkpoint.repositoryPath !== body.repositoryPath.trim())
+        || (body.commit !== undefined && checkpoint.commit !== body.commit))) {
+        return fail('找不到这个仓库版本的研究记录，请重新生成。', 400)
+      }
       const readRepository = github ? architecture ? openGithubRepository : collectGithubSource
         : architecture ? openLocalRepository : collectLocalSource
-      const source = await readRepository(github ? body.repositoryUrl : body.repositoryPath, { signal })
+      const source = await readRepository(github ? body.repositoryUrl : body.repositoryPath,
+        { signal, ...((body.commit || (github && checkpoint?.commit)) && { commit: body.commit || checkpoint.commit }) })
+      if (checkpoint && checkpoint.commit !== source.commit) return fail('仓库版本已经变化，请重新生成。', 409)
       job.repository = github ? `${source.owner}/${source.repo}` : source.repo
+      job.commit = source.commit
       job.phase = 'writing'
       if (!github) source.sourceKey = job.id
       let markdown
       let graph
+      let views
       let files = source.files
       let note
       let model
       try {
-        const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal)
+        const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal,
+          { toolCallLimit: 64, streamResponses: true, transportRetries: 2 })
         if (architecture) {
           const result = await exploreArchitecture(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
-            signal, (count, path) => { job.filesRead = count; job.currentFile = path })
+            signal, (count, path) => { job.filesRead = count; job.currentFile = path },
+            phase => { job.phase = phase }, { checkpoint,
+              async onCheckpoint(material) {
+                await checkpoints.save(job.id, { version: 1,
+                  ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
+                  commit: source.commit, ...material })
+                job.canResume = true
+              },
+            })
           markdown = result.markdown
           graph = result.architecture
+          views = result.views
           files = result.files.map(file => ({ path: file.path, text: file.text, startLine: file.start }))
         } else {
           markdown = await generateWiki(llm, selection, source, signal)
@@ -142,8 +175,9 @@ export function apply(ctx, config) {
       } catch (error) {
         if (signal.aborted || !['model-unavailable', 'model-output-invalid'].includes(error?.code)) throw error
         if (architecture) {
-          return fail(error.code === 'model-output-invalid' ? '架构说明校验未通过。' + error.message
-            : '架构分析 ' + modelNote(error).replace('，以下为源码摘录。', '。请重试。'), 502)
+          if (error.providerCode) job.failureCode = error.providerCode
+          return fail(error.code === 'model-output-invalid' ? '文档内容校验未通过。' + error.message
+            : researchFailure(error, job.canResume), 502)
         }
         markdown = renderSourceWiki(source)
         note = modelNote(error)
@@ -160,18 +194,20 @@ export function apply(ctx, config) {
         commit: source.commit,
         markdown,
         ...(graph && { architecture: graph }),
+        ...(views?.length && { views }),
         model,
         note,
       }
       try {
         const result = withoutEvidence(await storage.save(document))
-        Object.assign(job, { phase: 'completed', finishedAt: Date.now(), result })
+        Object.assign(job, { phase: 'completed', canResume: false, finishedAt: Date.now(), result })
+        await Promise.allSettled([checkpoints.remove(job.id), ...(body.resumeFrom ? [checkpoints.remove(body.resumeFrom)] : [])])
         return json(result)
       } catch {
         return fail('文档已生成，但保存失败。请检查 DSH 数据目录是否可写。', 500)
       }
     } catch (error) {
-      if (timeout.aborted) return fail('生成已达到 15 分钟上限，请重试。', 504)
+      if (timeout.aborted) return fail('生成已达到 30 分钟上限，请重试。', 504)
       if (signal.aborted) return fail('生成已取消。', 503)
       const status = sourceErrors.get(error?.code)
       if (status !== undefined) return fail(error.message, status)
@@ -192,11 +228,20 @@ export function apply(ctx, config) {
     if (local === github) {
       return json({ error: '请提供一个 GitHub 仓库地址或本地 Git 仓库路径。' }, 400)
     }
+    if (body.commit !== undefined && (!github || !architecture || typeof body.commit !== 'string'
+      || !/^[a-f0-9]{40}$/.test(body.commit))) {
+      return json({ error: '固定版本需要 GitHub 仓库和完整的 40 位提交编号。' }, 400)
+    }
+    if (body.resumeFrom !== undefined && (!architecture || typeof body.resumeFrom !== 'string'
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(body.resumeFrom))) {
+      return json({ error: '研究记录编号无效。' }, 400)
+    }
 
     if (active) return json({ error: '已有文档正在生成。', job: progress(active) }, 409)
     const githubName = github && /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/i.exec(body.repositoryUrl.trim())?.[1]
     const repository = github ? (githubName || 'GitHub 仓库') : (basename(body.repositoryPath) || '本地仓库')
-    const job = { id: randomUUID(), phase: 'reading', startedAt: Date.now(), repository }
+    const job = { id: randomUUID(), phase: 'reading', startedAt: Date.now(), repository, canResume: false,
+      ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }) }
     jobs.set(job.id, job)
     if (jobs.size > 8) jobs.delete(jobs.keys().next().value)
     active = job
@@ -256,6 +301,6 @@ export function apply(ctx, config) {
     path: generateRoute,
     methods: ['POST'],
     requestBody: 'buffered',
-    fetch: request => startGeneration(request, request.headers.get('prefer') === 'respond-async'),
+    fetch: request => startGeneration(request, request.headers.get('prefer') === 'respond-async', true),
   })
 }

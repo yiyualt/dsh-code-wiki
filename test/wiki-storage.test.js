@@ -64,6 +64,21 @@ test('concurrent saves for the same ID publish a single complete archive', async
   assert.deepEqual(await readdir(directory), [original.id + '.json'])
 })
 
+test('architectural views reopen without changing existing document or video input fields', async t => {
+  const { directory, storage } = await fixture(t)
+  const ref = { label: 'main.js:1', url: 'https://github.com/example/wiki/blob/' + 'a'.repeat(40) + '/main.js#L1' }
+  const view = { id: 'data-path', kind: 'dataflow', title: '数据处理', purpose: '说明输入如何变成输出。',
+    nodes: [{ id: 'input', label: '输入', role: 'data', refs: [ref] }, { id: 'output', label: '输出', role: 'data', refs: [ref] }],
+    edges: [{ from: 'input', to: 'output', label: '处理', refs: [ref] }], mermaid: 'flowchart LR\ninput --> output' }
+  const record = document({ views: [view], architecture: { layers: [], edges: [] } })
+  await storage.save(record)
+  assert.deepEqual(await createWikiStorage(directory).get(record.id), record)
+  const invalid = document({ views: [{ ...view, edges: [{ from: 'input', to: 'missing', label: '处理', refs: [ref] }] }] })
+  await assert.rejects(storage.save(invalid), /Invalid wiki document/)
+  assert.equal(await storage.get(invalid.id), undefined)
+  assert.equal((await storage.list())[0].views, undefined, 'document history stays a compact summary')
+})
+
 test('invalid IDs cannot remove files outside the archive and retries are safe', async t => {
   const { root, directory, storage } = await fixture(t)
   const keep = document()
