@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { devNull, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -249,14 +249,15 @@ async function readGitSnapshot(owner, repo, signal) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|SSH_ASKPASS$)/i.test(key)))
     Object.assign(env, {
       GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_GLOBAL: devNull,
+      // Git for Windows recognizes /dev/null, not Node's Windows device path.
+      GIT_CONFIG_GLOBAL: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
       GIT_ASKPASS: '',
       GIT_NO_LAZY_FETCH: '1',
     })
     const config = [
       '-c', 'credential.helper=',
-      '-c', `core.hooksPath=${devNull}`,
+      '-c', 'core.hooksPath=/dev/null',
       '-c', 'http.followRedirects=false',
       '-c', 'protocol.allow=never',
       '-c', 'protocol.https.allow=always',

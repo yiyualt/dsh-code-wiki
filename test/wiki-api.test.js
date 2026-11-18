@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { devNull, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -85,8 +85,8 @@ async function initRepository(directory) {
   await writeFile(join(directory, 'core.js'), 'export const run = () => 42\n')
   await writeFile(join(directory, 'README.md'), 'Outdated behavior\n')
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name)))
-  Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull })
-  const runGit = args => git('git', ['-c', `core.hooksPath=${devNull}`, ...args], { cwd: directory, env })
+  Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' })
+  const runGit = args => git('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: directory, env })
   await runGit(['init', '-q'])
   await runGit(['add', 'main.js', 'core.js', 'README.md'])
   await runGit([

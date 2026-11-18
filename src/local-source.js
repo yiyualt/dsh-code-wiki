@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process'
 import { realpath, stat } from 'node:fs/promises'
-import { devNull } from 'node:os'
 import { basename, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -33,7 +32,8 @@ function createGit(signal) {
   Object.assign(env, {
     GIT_ALLOW_PROTOCOL: '',
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: devNull,
+    // Git for Windows recognizes /dev/null, not Node's Windows device path.
+    GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_NO_LAZY_FETCH: '1',
     GIT_NO_REPLACE_OBJECTS: '1',
     GIT_OPTIONAL_LOCKS: '0',
@@ -42,7 +42,7 @@ function createGit(signal) {
   const config = [
     '--no-pager',
     '-c', 'core.fsmonitor=false',
-    '-c', `core.hooksPath=${devNull}`,
+    '-c', 'core.hooksPath=/dev/null',
   ]
   return async (cwd, args, { maxBuffer = maxTreeBytes, encoding = 'utf8' } = {}) => {
     const { stdout } = await runGit('git', [...config, ...args], {
