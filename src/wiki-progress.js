@@ -37,7 +37,7 @@ export function createWikiProgress(job) {
   function record(event, extra = {}) {
     const { retryMessage, transport: request, ...state } = status()
     const entry = { timestamp: new Date(finishedAt ?? Date.now()).toISOString(), event, jobId: job.id,
-      phase: job.phase, elapsedMs: elapsed(finishedAt ?? Date.now(), job.startedAt), timeoutMs: 30 * 60_000,
+      phase: job.phase, elapsedMs: elapsed(finishedAt ?? Date.now(), job.startedAt), timeoutMs: null,
       ...state, ...(integer(job.filesRead, 90) && { filesRead: job.filesRead }),
       ...(request && { transport: request }), ...extra }
     try { console.info('[dsh-code-wiki:wiki] ' + JSON.stringify(entry)) } catch { /* Diagnostics must not interrupt generation. */ }
@@ -66,8 +66,8 @@ export function createWikiProgress(job) {
     const value = { event: event.event, requestId: event.requestId,
       attempt: integer(event.attempt, 3) && event.attempt > 0 ? event.attempt : 1,
       attemptLimit: integer(event.attemptLimit, 3) && event.attemptLimit > 0 ? event.attemptLimit : 1,
-      requestElapsedMs: integer(event.requestElapsedMs, 3_600_000) ? event.requestElapsedMs : 0,
-      attemptElapsedMs: integer(event.attemptElapsedMs, 3_600_000) ? event.attemptElapsedMs : 0,
+      requestElapsedMs: integer(event.requestElapsedMs, Number.MAX_SAFE_INTEGER) ? event.requestElapsedMs : 0,
+      attemptElapsedMs: integer(event.attemptElapsedMs, Number.MAX_SAFE_INTEGER) ? event.attemptElapsedMs : 0,
       ...(retryCodes.has(event.retryCode) && { retryCode: event.retryCode }),
       ...(integer(event.providerStatus, 599) && event.providerStatus >= 100 && { providerStatus: event.providerStatus }),
       ...(integer(event.retryInMs, 10_000) && { retryInMs: event.retryInMs }), receivedAt: now }

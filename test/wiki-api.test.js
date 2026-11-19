@@ -45,12 +45,144 @@ async function fixture(t, services = {}, config) {
   }
   return {
     profileDirectory, request,
+    shutdown() { for (const dispose of cleanup) dispose() },
     post: (path, data) => request(path, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data),
     }),
     storage: createWikiStorage(join(profileDirectory, 'dsh-code-wiki', 'documents')),
   }
 }
+
+function virtualWikiClock(t) {
+  let now = Date.now()
+  const intervals = new Map(), deadlines = [], logs = []
+  t.mock.method(Date, 'now', () => now)
+  t.mock.method(globalThis, 'setInterval', (callback, milliseconds) => {
+    const handle = { unref() {} }
+    intervals.set(handle, { callback, milliseconds })
+    return handle
+  })
+  t.mock.method(globalThis, 'clearInterval', handle => intervals.delete(handle))
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    const controller = new AbortController()
+    deadlines.push({ at: now + milliseconds, controller })
+    return controller.signal
+  })
+  t.mock.method(console, 'info', line => {
+    if (line.startsWith('[dsh-code-wiki:wiki] ')) logs.push(JSON.parse(line.slice('[dsh-code-wiki:wiki] '.length)))
+  })
+  return { intervals, logs, advance(milliseconds) {
+    now += milliseconds
+    for (const { at, controller } of deadlines) {
+      if (at <= now && !controller.signal.aborted) controller.abort(new DOMException('Virtual timeout', 'TimeoutError'))
+    }
+    for (const { callback } of intervals.values()) callback()
+  } }
+}
+
+function heldWikiReview() {
+  const started = Promise.withResolvers(), signals = []
+  return { started, signals, llm: { async *stream({ signal }) {
+    signals.push(signal)
+    if (signals.length === 2) started.resolve()
+    await new Promise((_resolve, reject) => {
+      signal.throwIfAborted()
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })
+    assert.fail('held reviews must end through explicit cancellation')
+  } } }
+}
+
+async function settledJob(api, id) {
+  for (let attempt = 0; attempt < 250; attempt++) {
+    const { job } = await (await api.request('generation?id=' + id)).json()
+    if (job.phase === 'completed' || job.phase === 'failed') return job
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  assert.fail('Wiki did not settle after explicit cancellation')
+}
+
+test('background Wiki remains active beyond an hour and retains its checkpoint when the service shuts down', async t => {
+  const clock = virtualWikiClock(t), held = heldWikiReview()
+  const api = await fixture(t, {
+    llm: held.llm,
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    agents: { create: options => publishingAgent(options) },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const connection = new AbortController()
+  const accepted = await api.request('generation', { method: 'POST', signal: connection.signal,
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repositoryPath }) })
+  assert.equal(accepted.status, 202)
+  const { job: initial } = await accepted.json()
+  connection.abort()
+  await held.started.promise
+  assert(held.signals.every(signal => !signal.aborted), 'the background task outlives its initiating HTTP connection')
+  assert.equal(clock.intervals.size, 1)
+  assert.equal([...clock.intervals.values()][0].milliseconds, 30_000)
+  for (const minutes of [31, 62]) {
+    clock.advance(31 * 60_000)
+    assert(held.signals.every(signal => !signal.aborted), 'advancing the old total deadline must not cancel the Wiki')
+    const { job } = await (await api.request('generation?id=' + initial.id)).json()
+    assert.equal(job.phase, 'reviewing')
+    assert.equal(job.step, 'reviewing')
+    assert.equal(job.elapsedMs, minutes * 60_000)
+    assert.equal(job.phaseElapsedMs, minutes * 60_000)
+    assert.equal(job.stepElapsedMs, minutes * 60_000)
+    assert.equal(job.canResume, true)
+    assert.equal(clock.logs.at(-1).event, 'heartbeat')
+    assert.equal(clock.logs.at(-1).elapsedMs, minutes * 60_000)
+    assert.equal(clock.logs.at(-1).timeoutMs, null)
+    assert.equal(clock.intervals.size, 1)
+  }
+  api.shutdown()
+  const cancelled = await settledJob(api, initial.id)
+  assert.equal(cancelled.phase, 'failed')
+  assert.equal(cancelled.error, '生成已取消。')
+  assert(held.signals.every(signal => signal.aborted))
+  assert.equal(clock.intervals.size, 0)
+  assert.equal(clock.logs.at(-1).event, 'finish')
+  assert.equal(clock.logs.at(-1).reason, 'cancelled')
+  assert(clock.logs.every(log => log.timeoutMs === null), 'diagnostics must not advertise a Wiki total deadline')
+  assert.deepEqual(await (await api.request('generation')).json(), { job: null })
+  const checkpoint = await createWikiCheckpoints(join(api.profileDirectory, 'dsh-code-wiki-checkpoints')).get(initial.id)
+  assert(checkpoint.plan && checkpoint.draft)
+  assert.equal(checkpoint.evidence.length, 3)
+  assert.deepEqual(await api.storage.list(), [])
+  const count = clock.logs.length
+  clock.advance(31 * 60_000)
+  assert.equal(clock.logs.length, count, 'shutdown releases the heartbeat rather than leaving a stale live job')
+})
+
+test('disconnecting a synchronous Wiki request still cancels generation and releases its heartbeat', async t => {
+  const clock = virtualWikiClock(t), held = heldWikiReview()
+  const api = await fixture(t, {
+    llm: held.llm,
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    agents: { create: options => publishingAgent(options) },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const connection = new AbortController()
+  const pending = api.request('generate', { method: 'POST', signal: connection.signal,
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repositoryPath }) })
+  await held.started.promise
+  const { job } = await (await api.request('generation')).json()
+  assert.equal(job.phase, 'reviewing')
+  connection.abort()
+  const cancelled = await pending
+  assert.equal(cancelled.status, 503)
+  assert.equal((await cancelled.json()).error, '生成已取消。')
+  assert(held.signals.every(signal => signal.aborted))
+  assert.equal(clock.intervals.size, 0)
+  assert.equal(clock.logs.at(-1).reason, 'cancelled')
+  assert(clock.logs.every(log => log.timeoutMs === null))
+  const checkpoint = await createWikiCheckpoints(join(api.profileDirectory, 'dsh-code-wiki-checkpoints')).get(job.id)
+  assert(checkpoint.plan && checkpoint.draft)
+  assert.deepEqual(await (await api.request('generation')).json(), { job: null })
+  assert.deepEqual(await api.storage.list(), [])
+})
 
 test('deleting a saved Wiki removes it from history, document reads and local source lookups', async t => {
   const { post, request, storage } = await fixture(t)

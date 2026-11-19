@@ -125,3 +125,45 @@ test('a broken stdout observer cannot fail a Wiki job', t => {
     progress.finish('failed', 'validation-error')
   })
 })
+
+test('Wiki heartbeat and reported transport durations continue beyond an hour without advertising a total deadline', t => {
+  const { progress, logs, advance, timers } = fixture(t)
+  progress.phase('writing', { step: 'revising', repair: 1 })
+  progress.model({ event: 'request-start', requestId: 1, attempt: 1, attemptLimit: 3,
+    requestElapsedMs: 0, attemptElapsedMs: 0 })
+  for (const minutes of [31, 62]) {
+    advance(31 * 60_000)
+    progress.model({ event: 'request-receiving', requestId: 1, attempt: 1, attemptLimit: 3,
+      requestElapsedMs: minutes * 60_000, attemptElapsedMs: minutes * 60_000 })
+    for (const timer of timers.values()) timer.callback()
+    const status = progress.status(), log = logs.at(-1)
+    assert.equal(log.event, 'heartbeat')
+    assert.equal(log.timeoutMs, null)
+    assert.equal(log.elapsedMs, minutes * 60_000)
+    assert.equal(status.phaseElapsedMs, minutes * 60_000)
+    assert.equal(status.stepElapsedMs, minutes * 60_000)
+    assert.equal(status.transport.requestElapsedMs, minutes * 60_000)
+    assert.equal(status.transport.attemptElapsedMs, minutes * 60_000)
+    assert.equal(log.transport.requestElapsedMs, minutes * 60_000)
+    assert.equal(timers.size, 1)
+  }
+  progress.model({ event: 'request-completed', requestId: 1, requestElapsedMs: 62 * 60_000,
+    attemptElapsedMs: 62 * 60_000 })
+  progress.finish('completed', 'completed')
+  assert.equal(timers.size, 0)
+  assert(logs.every(log => log.timeoutMs === null))
+})
+
+test('Wiki transport timing retains safe long durations while rejecting unsafe numeric input', t => {
+  const { progress } = fixture(t)
+  progress.model({ event: 'request-receiving', requestId: 1,
+    requestElapsedMs: Number.MAX_SAFE_INTEGER, attemptElapsedMs: Number.MAX_SAFE_INTEGER })
+  assert.equal(progress.status().transport.requestElapsedMs, Number.MAX_SAFE_INTEGER)
+  assert.equal(progress.status().transport.attemptElapsedMs, Number.MAX_SAFE_INTEGER)
+  for (const value of [-1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    progress.model({ event: 'request-receiving', requestId: 1,
+      requestElapsedMs: value, attemptElapsedMs: value })
+    assert.equal(progress.status().transport.requestElapsedMs, 0)
+    assert.equal(progress.status().transport.attemptElapsedMs, 0)
+  }
+})

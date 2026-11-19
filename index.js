@@ -126,8 +126,7 @@ export function apply(ctx, config) {
   async function runGeneration(job, body, github, architecture, requestSignal) {
     const tracking = createWikiProgress(job)
     diagnostics.set(job, tracking)
-    const timeout = AbortSignal.timeout(30 * 60_000)
-    const signal = AbortSignal.any([lifetime.signal, timeout, ...(requestSignal ? [requestSignal] : [])])
+    const signal = AbortSignal.any([lifetime.signal, ...(requestSignal ? [requestSignal] : [])])
     function fail(error, status, reason = 'unexpected-error') {
       tracking.finish('failed', reason)
       Object.assign(job, { phase: 'failed', finishedAt: Date.now(), error })
@@ -214,7 +213,6 @@ export function apply(ctx, config) {
         return fail('文档已生成，但保存失败。请检查 DSH 数据目录是否可写。', 500, 'storage-error')
       }
     } catch (error) {
-      if (timeout.aborted) return fail('生成已达到 30 分钟上限，请重试。', 504, 'timeout')
       if (signal.aborted) return fail('生成已取消。', 503, 'cancelled')
       const status = sourceErrors.get(error?.code)
       if (status !== undefined) return fail(error.message, status, 'source-error')
