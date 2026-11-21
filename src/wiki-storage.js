@@ -58,6 +58,17 @@ function storedWalkthrough(raw, architecture, { id, source, repoUrl, commit }) {
   return readWikiWalkthrough(raw, { nodeIds, chapterCount: 8, readRefs })
 }
 
+function storedReview(review) {
+  if (!['approved', 'findings', 'unavailable'].includes(review?.status)) return undefined
+  if (review.status === 'approved') return { status: 'approved' }
+  const issues = Array.isArray(review.issues) ? review.issues.slice(0, 12).flatMap(issue => {
+    if (!['semantic', 'editorial'].includes(issue?.reviewer) || typeof issue.reason !== 'string') return []
+    const reason = issue.reason.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 1200)
+    return reason ? [{ reviewer: issue.reviewer, reason }] : []
+  }) : []
+  return issues.length ? { status: review.status, issues } : { status: 'unavailable' }
+}
+
 function documentRecord(document, id) {
   if (document?.id !== id || !uuid.test(id)) return
   const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs, architecture, views } = document
@@ -71,6 +82,7 @@ function documentRecord(document, id) {
   if (views !== undefined && !validViews(views)) return
   const walkthrough = document.walkthrough === undefined ? undefined : storedWalkthrough(document.walkthrough, architecture, document)
   if (document.walkthrough !== undefined && !walkthrough) return
+  const review = storedReview(document.review)
 
   const metadata = { id, createdAt, source, commit, ...(repoName !== undefined && { repoName }) }
   const content = {
@@ -79,6 +91,7 @@ function documentRecord(document, id) {
     ...(Array.isArray(architecture?.layers) && Array.isArray(architecture?.edges) && { architecture }),
     ...(views !== undefined && { views }),
     ...(walkthrough && { walkthrough }),
+    ...(review && { review }),
   }
   if (source === 'github' && typeof repoUrl === 'string' && githubRepo.test(repoUrl)) {
     return { ...metadata, repoUrl, ...content }

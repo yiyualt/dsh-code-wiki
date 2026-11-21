@@ -104,11 +104,29 @@ async function settledJob(api, id) {
 }
 
 test('background Wiki remains active beyond an hour and retains its checkpoint when the service shuts down', async t => {
-  const clock = virtualWikiClock(t), held = heldWikiReview()
+  const clock = virtualWikiClock(t)
+  const acceptedDraft = Promise.withResolvers(), finishWriter = Promise.withResolvers()
+  t.after(() => finishWriter.resolve())
+  let writerSignal
   const api = await fixture(t, {
-    llm: held.llm,
     agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
-    agents: { create: options => publishingAgent(options) },
+    agents: { async create(options) {
+      writerSignal = options.signal
+      const handle = await publishingAgent({ ...options, setup(context) {
+        options.setup({ tools: { ...context.tools, register(tool) {
+          if (tool.name !== 'wiki_publish') return context.tools.register(tool)
+          context.tools.register({ ...tool, async execute(args) {
+            const result = await tool.execute(args)
+            if (args.kind === 'draft' && result.status.includes('草稿已收到')) {
+              acceptedDraft.resolve()
+              await finishWriter.promise
+            }
+            return result
+          } })
+        } } })
+      } })
+      return { ...handle, agent: { ...handle.agent, cancel: () => finishWriter.resolve() } }
+    } },
   })
   const repositoryPath = join(api.profileDirectory, 'sample')
   await initRepository(repositoryPath)
@@ -118,16 +136,16 @@ test('background Wiki remains active beyond an hour and retains its checkpoint w
   assert.equal(accepted.status, 202)
   const { job: initial } = await accepted.json()
   connection.abort()
-  await held.started.promise
-  assert(held.signals.every(signal => !signal.aborted), 'the background task outlives its initiating HTTP connection')
+  await acceptedDraft.promise
+  assert.equal(writerSignal.aborted, false, 'the background task outlives its initiating HTTP connection')
   assert.equal(clock.intervals.size, 1)
   assert.equal([...clock.intervals.values()][0].milliseconds, 30_000)
   for (const minutes of [31, 62]) {
     clock.advance(31 * 60_000)
-    assert(held.signals.every(signal => !signal.aborted), 'advancing the old total deadline must not cancel the Wiki')
+    assert.equal(writerSignal.aborted, false, 'advancing the old total deadline must not cancel the Wiki')
     const { job } = await (await api.request('generation?id=' + initial.id)).json()
-    assert.equal(job.phase, 'reviewing')
-    assert.equal(job.step, 'reviewing')
+    assert.equal(job.phase, 'writing')
+    assert.equal(job.step, 'agent-finishing')
     assert.equal(job.elapsedMs, minutes * 60_000)
     assert.equal(job.phaseElapsedMs, minutes * 60_000)
     assert.equal(job.stepElapsedMs, minutes * 60_000)
@@ -141,7 +159,7 @@ test('background Wiki remains active beyond an hour and retains its checkpoint w
   const cancelled = await settledJob(api, initial.id)
   assert.equal(cancelled.phase, 'failed')
   assert.equal(cancelled.error, '生成已取消。')
-  assert(held.signals.every(signal => signal.aborted))
+  assert(writerSignal.aborted)
   assert.equal(clock.intervals.size, 0)
   assert.equal(clock.logs.at(-1).event, 'finish')
   assert.equal(clock.logs.at(-1).reason, 'cancelled')
@@ -334,53 +352,65 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
   return { agent, dispose: () => run }
 }
 
-test('a failed review keeps a private draft and resumes only the matching pinned repository without repeating research', async t => {
-  let failure = true, research = 0, reviews = 0
-  const services = {
+test('a model review error saves a valid Wiki with an unavailable review status', async t => {
+  const api = await fixture(t, {
     agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
-    llm: { async *stream() {
-      reviews++
-      if (failure) throw Object.assign(new Error('fixture'), { code: 'AUTH' })
-      yield* approvedReviews.stream()
-    } },
-    agents: { async create(options) {
-      if (research++ === 0) return publishingAgent(options)
-      return { agent: { followup() { assert.fail('Resuming an approved draft must not repeat research') }, cancel() {} }, dispose() {} }
-    } },
-  }
-  const { post, request, profileDirectory, storage } = await fixture(t, services)
-  const repositoryPath = join(profileDirectory, 'sample')
+    agents: { create: options => publishingAgent(options) },
+    llm: { async *stream() { throw Object.assign(new Error('private fixture error'), { code: 'AUTH' }) } },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
   await initRepository(repositoryPath)
-  const failed = await post('generate', { repositoryPath })
-  assert.equal(failed.status, 502)
-  assert.equal((await failed.json()).error, '无法使用当前模型配置，请检查后重试。')
-  assert.deepEqual(await storage.list(), [])
-  const { readdir } = await import('node:fs/promises')
-  const dir = join(profileDirectory, 'dsh-code-wiki-checkpoints')
-  const [name] = await readdir(dir)
-  const resumeFrom = name.slice(0, -5)
-  const failedJob = (await (await request('generation?id=' + resumeFrom)).json()).job
-  assert.equal(failedJob.phase, 'failed')
-  assert.equal(failedJob.canResume, true)
-  assert.equal(failedJob.repositoryPath, repositoryPath)
-  assert.match(failedJob.commit, /^[a-f0-9]{40}$/)
-  assert.equal(failedJob.failureCode, 'AUTH')
-  const checkpoints = createWikiCheckpoints(dir)
-  assert((await checkpoints.get(resumeFrom)).draft.chapters.length === 4)
-  assert.equal((await post('generate', { repositoryPath: repositoryPath + '-other', resumeFrom })).status, 400)
-  assert.equal((await post('generate', { repositoryPath, resumeFrom: '../bad' })).status, 400)
-  failure = false
-  const before = reviews
-  const completed = await post('generate', { repositoryPath, resumeFrom })
-  assert.equal(completed.status, 200)
-  const document = await completed.json()
-  assert.equal((await (await request('generation?id=' + document.id)).json()).job.canResume, false)
-  assert.equal(reviews - before, 2)
+  const response = await api.post('generate', { repositoryPath })
+  assert.equal(response.status, 200)
+  const document = await response.json()
+  assert.deepEqual(document.review, { status: 'unavailable' })
+  assert.equal((await api.storage.get(document.id)).review.status, 'unavailable')
+  assert.equal((await (await api.request('generation?id=' + document.id)).json()).job.phase, 'completed')
+})
+
+test('resuming a matching valid draft saves review findings without another writing turn', async t => {
+  const reason = '请核对这一段的项目用途。'
+  let reviews = 0
+  const api = await fixture(t, {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    llm: { async *stream({ system }) {
+      reviews++
+      const result = system.includes('事实审核员')
+        ? { approved: false, issues: [{ target: 'purpose_text', reason, reads: [] }] }
+        : { approved: true, issues: [] }
+      yield { type: 'text-delta', text: JSON.stringify(result) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } },
+    agents: { async create() { assert.fail('A validated saved draft can proceed without a writing agent') } },
+  })
+  const repositoryPath = join(api.profileDirectory, 'sample')
+  await initRepository(repositoryPath)
+  const commit = (await git('git', ['rev-parse', 'HEAD'], { cwd: repositoryPath })).stdout.trim()
+  const evidence = [
+    { path: 'README.md', text: 'A small command runner.', primary: false, kind: 'documentation', start: 1, end: 1 },
+    { path: 'main.js', text: 'import { run } from "./core.js"\nexport const value = run()', primary: true, kind: 'source', start: 2, end: 3 },
+    { path: 'core.js', text: 'export const run = () => 42', primary: true, kind: 'source', start: 1, end: 1 },
+  ]
+  const [docs, entry, core] = evidence.map((file, index) => ({ evidence: index + 1, start: file.start, end: file.end }))
+  const checkpoints = createWikiCheckpoints(join(api.profileDirectory, 'dsh-code-wiki-checkpoints'))
+  const resumeFrom = randomUUID()
+  await checkpoints.save(resumeFrom, { version: 1, repositoryPath, commit,
+    plan: wikiPlanFixture(), draft: wikiDraftFixture({ docs, entry, core }), evidence })
+  assert.equal((await api.post('generate', { repositoryPath: repositoryPath + '-other', resumeFrom })).status, 400)
+  assert.equal((await api.post('generate', { repositoryPath, resumeFrom: '../bad' })).status, 400)
+  const response = await api.post('generate', { repositoryPath, resumeFrom })
+  assert.equal(response.status, 200)
+  const document = await response.json()
+  assert.deepEqual(document.review, { status: 'findings', issues: [{ reviewer: 'semantic', reason }] })
+  assert.deepEqual((await api.storage.get(document.id)).review, document.review)
+  assert.deepEqual((await (await api.request('documents?id=' + document.id)).json()).review, document.review)
+  assert.equal((await (await api.request('generation?id=' + document.id)).json()).job.canResume, false)
+  assert.equal(reviews, 2)
   assert.notEqual(document.id, resumeFrom)
   assert(document.markdown.includes('key=' + document.id))
   assert.equal(await checkpoints.get(resumeFrom), null)
   assert.equal(await checkpoints.get(document.id), null)
-  assert.equal((await storage.list()).length, 1)
+  assert.equal((await api.storage.list()).length, 1)
 })
 
 test('a GitHub checkpoint survives restart and can replan with the same numbered source evidence', async t => {
@@ -446,7 +476,7 @@ test('a GitHub checkpoint survives restart and can replan with the same numbered
   assert.deepEqual(await (await request('generation')).json(), { job: null })
 })
 
-test('failed research resumes from private evidence and publishes only after a new draft passes both reviews', async t => {
+test('failed research resumes from private evidence and submits a new draft for review', async t => {
   const reviewStarted = Promise.withResolvers(), allowReview = Promise.withResolvers()
   t.after(() => allowReview.resolve())
   let agents = 0, reviews = 0, candidate

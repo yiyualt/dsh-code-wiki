@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
       { phase: 'planning', label: '规划内容', status: '正在确定文档重点', detail: '正在根据项目资料确定用途、主要能力和需要解释的问题。' },
       { phase: 'researching', label: '核对源码', status: '正在核对源码', detail: '正在读取关键实现，核对组件关系和实际运行过程。' },
       { phase: 'writing', label: '撰写正文', status: '正在撰写文档', detail: '正在组织章节、示例和源码引用。' },
-      { phase: 'reviewing', label: '检查文档', status: '正在检查文档', detail: '正在检查事实依据、内容覆盖和说明是否清楚。' },
+      { phase: 'reviewing', label: '检查文档', status: '正在检查文档', detail: '审核结束后将保存文档，并附上待核对的审核意见。' },
       { phase: 'saving', label: '保存文档', status: '正在保存文档', detail: '正在把文档写入已保存文档列表。' },
     ]
     const terminalPhases = new Set(['completed', 'failed'])
@@ -312,6 +312,18 @@ window.__ModuleLoader__.load({
       return { documentTitle, chapters }
     }
 
+    function readReview(review) {
+      if (!['approved', 'findings', 'unavailable'].includes(review?.status)) return undefined
+      const { status } = review
+      const issues = status !== 'approved' && Array.isArray(review.issues) ? review.issues.slice(0, 12).flatMap(issue => {
+        if (!['semantic', 'editorial'].includes(issue?.reviewer) || typeof issue.reason !== 'string'
+          || issue.reason.length > 1200) return []
+        const reason = issue.reason.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+        return reason ? [{ reviewer: issue.reviewer, reason }] : []
+      }) : []
+      return { status, ...(issues.length && { issues }) }
+    }
+
     function readDocument(data) {
       const metadata = documentMetadata(data)
       if (!metadata || typeof data.markdown !== 'string' || !data.markdown.trim()) return null
@@ -323,6 +335,7 @@ window.__ModuleLoader__.load({
           markdown: resolveLocalReferences(readable.markdown), references: resolveLocalReferences(readable.references) } : readable
       })
       const architecture = readArchitecture(data.architecture, metadata)
+      const review = readReview(data.review)
       const walkthrough = architecture && data.walkthrough && readWikiWalkthrough(data.walkthrough, {
         nodeIds: new Set(architecture.layers.flatMap(layer => layer.nodes.map(node => node.id))),
         chapterCount: chapters.length,
@@ -346,6 +359,7 @@ window.__ModuleLoader__.load({
         durationMs: Number.isSafeInteger(data.durationMs) && data.durationMs >= 0 ? data.durationMs : undefined,
         architecture,
         ...(walkthrough && { walkthrough }),
+        ...(review && { review }),
       }
     }
 
@@ -1314,6 +1328,18 @@ window.__ModuleLoader__.load({
       return [...new Set(titles.filter(Boolean))].slice(0, 10)
     }
 
+    function wikiReviewNotice(review) {
+      if (!review || review.status === 'approved') return null
+      const title = review.status === 'findings' ? '审核意见待核对' : '内容审核未完成'
+      if (!review.issues?.length) {
+        return h('p', { className: 'dsh-code-wiki-review' }, h('strong', null, title), ' · 可按正文引用核对。')
+      }
+      return h('details', { className: 'dsh-code-wiki-review' },
+        h('summary', null, title, h('span', null, ' · ' + review.issues.length + ' 条')),
+        h('ul', null, review.issues.map(({ reviewer, reason }, index) => h('li', { key: index },
+          h('strong', null, reviewer === 'semantic' ? '事实核对' : '编辑检查'), ' ', reason))))
+    }
+
     function WikiArticle({ result, chapterIndex, headingRef, walkthroughControls }) {
       const chapter = result.chapters[chapterIndex]
       const repository = repositoryLabel(result)
@@ -1355,6 +1381,7 @@ window.__ModuleLoader__.load({
             result.durationMs !== undefined && h('span', null, '生成用时 ' + durationLabel(result.durationMs)),
           ),
           result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
+          wikiReviewNotice(result.review),
         ),
         sections.length > 1 && h('nav', { className: 'dsh-code-wiki-sections', 'aria-label': '本章小节' },
           sections.map(section => h('button', { key: section, type: 'button', onClick: event => {

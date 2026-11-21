@@ -121,7 +121,7 @@ function references(raw, source, evidence, primary, field) {
     const object = ref !== null && typeof ref === 'object' && !Array.isArray(ref)
     const integers = object && [ref.evidence, ref.start, ref.end].every(Number.isSafeInteger)
     const file = integers ? evidence[ref.evidence - 1] : undefined
-    check(file && (!primary || file.primary)
+    check(file && (!primary || file.primary || file.kind === 'config')
       && ref.start >= file.start && ref.end <= file.end && ref.end >= ref.start,
     `${field}[${index}] 必须引用已读取范围内的有效${primary ? '实现' : ''}证据。请补读或修改引用，不能丢弃该结论后直接发布。`)
     return { evidence: ref.evidence, start: ref.start, end: ref.end }

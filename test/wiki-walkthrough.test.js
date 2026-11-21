@@ -79,6 +79,15 @@ test('walkthrough validation rejects invalid module, step, example and task refe
   }
 })
 
+test('a case can cite committed configuration declarations alongside code that uses them', () => {
+  const { source, evidence, plan, raw } = fixture()
+  evidence.push({ path: 'defaults.yaml', text: 'step: 1', primary: false, kind: 'config', start: 1, end: 1 })
+  const step = raw.walkthrough.steps[1]
+  step.refs.push({ evidence: evidence.length, start: 1, end: 1 })
+  const rendered = renderWikiDocument(normalizeWikiDraft(raw, source, evidence, plan), source)
+  assert(rendered.walkthrough.steps[1].refs.some(ref => ref.label === 'defaults.yaml:1'))
+})
+
 test('independent reviewers receive case-only evidence and recheck changed case targets', async () => {
   const { source, evidence, plan, raw } = fixture()
   const draft = normalizeWikiDraft(raw, source, evidence, plan)

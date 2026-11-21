@@ -94,32 +94,18 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
     }
   }
   visit(wikiPublicationSchema)
-  assert.equal(refLocations, 22)
+  assert.equal(refLocations, 11)
   assert.match(wikiResearchInstructions, /超过 25 行会按 25 行拆分且拆分后总数仍不能超过 6 项/)
   const { raw, source, evidence, plan: acceptedPlan, spans } = fixture()
   raw.chapters[0].blocks[0].refs = Array(7).fill(spans.docs)
   assert.throws(() => normalizeWikiDraft(raw, source, evidence, acceptedPlan), /引用 需要 1–6 项/)
 })
 
-test('Wiki revise submissions reuse complete block, graph and coverage constraints while bounding only the changed operations', () => {
+test('the author publication schema asks only for a plan and draft', () => {
   const schema = wikiPublicationSchema.properties
-  assert.deepEqual(schema.kind.enum, ['plan', 'draft', 'revise'])
-  const revisions = schema.revisions
-  assert.deepEqual(revisions.required, ['blocks'])
-  assert.equal(revisions.additionalProperties, false)
-  assert.deepEqual([revisions.properties.blocks.minItems, revisions.properties.blocks.maxItems], [0, 16])
-  const operation = revisions.properties.blocks.items
-  assert.deepEqual(operation.required, ['chapter', 'action', 'target'])
-  assert.equal(operation.additionalProperties, false)
-  assert.deepEqual(operation.properties.action.enum, ['replace', 'insert_after', 'delete'])
-  assert.equal(operation.properties.chapter.pattern, schema.draft.properties.chapters.items.properties.id.pattern)
-  assert.equal(operation.properties.target.pattern, schema.draft.properties.chapters.items.properties.blocks.items.properties.id.pattern)
-  assert.equal(operation.properties.block, schema.draft.properties.chapters.items.properties.blocks.items)
-  assert.equal(revisions.properties.graph, schema.draft.properties.graph)
-  assert.equal(revisions.properties.coverage, schema.draft.properties.coverage)
-  assert.match(wikiResearchInstructions, /kind=revise/)
-  assert.match(wikiResearchInstructions, /只提交改动/)
-  assert.doesNotMatch(wikiResearchInstructions, /提交完整修订稿/)
+  assert.deepEqual(schema.kind.enum, ['plan', 'draft'])
+  assert.equal(schema.revisions, undefined)
+  assert.doesNotMatch(wikiResearchInstructions, /kind=revise/)
 })
 
 test('targeted Wiki revisions replace, insert and delete blocks without mutating the original or their supplied replacements', () => {
@@ -417,32 +403,22 @@ test('revision review retains unresolved targets while excluding unrelated accep
   assert.deepEqual(result.issues, [{ ...issue, reviewer: 'semantic' }])
 })
 
-test('a resumed draft may revise a heading that has no source references', async () => {
+test('a resumed document retains a heading without references and reports the editorial finding', async () => {
   const { source, evidence, plan, raw } = fixture()
   raw.chapters[0].blocks.splice(1, 0, { id: 'navigation', type: 'heading', text: '目录' })
-  let initial = true
   const llm = { async *stream(options) {
     const editorial = options.system.includes('中文技术文档编辑')
-    const response = editorial && initial ? { approved: false, issues: [
+    const response = editorial ? { approved: false, issues: [
       { target: 'navigation', reason: '标题需要指出导航的范围。', reads: [] },
     ] } : approvedWikiReview()
-    if (editorial) initial = false
     yield { type: 'text-delta', text: JSON.stringify(response) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   } }
-  const ctx = { llm, agents: { async create({ setup }) {
-    const tools = new Map()
-    setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
-    let round
-    return { agent: { followup() {
-      round = tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [
-        { chapter: 'overview', action: 'replace', target: 'navigation', block: { id: 'navigation', type: 'heading', text: '仓库导航' } },
-      ] } })
-    }, whenIdle: () => round, cancel() {} }, dispose() {} }
-  } } }
+  const ctx = { llm, agents: { create() { assert.fail('advisory review does not need the author') } } }
   const result = await exploreArchitecture(ctx, source, { provider: 'fixture' }, null, new AbortController().signal,
     undefined, undefined, { checkpoint: { plan, draft: raw, evidence } })
-  assert.match(result.markdown, /^### 仓库导航$/m)
+  assert.match(result.markdown, /^### 目录$/m)
+  assert.deepEqual(result.review, { status: 'findings', issues: [{ reviewer: 'editorial', reason: '标题需要指出导航的范围。' }] })
 })
 
 test('a malformed reviewer range receives one precise format retry without discarding its factual issue or rerunning its sibling', async () => {
@@ -567,79 +543,78 @@ test('a terminal Wiki reviewer failure aborts and drains its concurrent sibling'
   assert.equal(drained, true)
 })
 
-function pipelineFixture(t, { rejectAlways = false, badRead = false } = {}) {
+function pipelineFixture({ reviewerFailure } = {}) {
   const { source } = fixture()
-  let run, rounds = 0, disposed = 0, firstReview = true
-  const messages = [], reviews = [], phases = [], statuses = []
+  let run, rounds = 0, disposed = 0
+  const reviews = [], phases = [], statuses = [], reads = []
   const tools = new Map()
   const llm = { async *stream(options) {
-    const material = JSON.parse(options.messages[0].content[0].text)
-    reviews.push(material)
-    let result = approvedWikiReview()
-    if (options.system.includes('事实审核员') && (firstReview || rejectAlways)) {
-      firstReview = false
-      result = { approved: false, issues: [{ target: 'execution_text', reason: '读取核心函数实现再证明运行行为。',
-        reads: [{ path: 'core.js', start: badRead ? 99 : 2, count: 1 }] }] }
-    }
-    yield { type: 'text-delta', text: JSON.stringify(result) }; yield { type: 'finish', reason: { kind: 'stop' } }
+    const semantic = options.system.includes('事实审核员')
+    reviews.push({ semantic, material: JSON.parse(options.messages[0].content[0].text) })
+    if (semantic && reviewerFailure === 'transport') throw Object.assign(new Error('private provider message'), { code: 'TRANSPORT' })
+    const issue = semantic
+      ? { target: 'execution_text', reason: '核对核心函数的调用与返回值。', reads: [{ path: 'core.js', start: 99, count: 1 }] }
+      : { target: 'purpose_text', reason: '补充项目适用的读者。', reads: [] }
+    const text = semantic && reviewerFailure === 'format' ? 'malformed private response' : JSON.stringify({ approved: false, issues: [issue] })
+    yield { type: 'text-delta', text }
+    yield { type: 'finish', reason: { kind: 'stop' } }
   } }
   const ctx = { llm, agents: { async create(options) {
     options.setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
-    return { agent: { followup(message) {
-      messages.push(message); const round = ++rounds
+    return { agent: { followup() {
+      assert.equal(++rounds, 1, 'the author only runs to produce a structurally valid Wiki')
       run = (async () => {
-        const read = async args => JSON.parse((await tools.get('wiki_read').execute(args, { signal: options.signal })).data)
-        const docs = await read({ path: 'README.md' }), entry = await read({ path: 'main.js' })
-        const core = await read({ path: 'core.js', start: round === 1 ? 1 : 2, count: 1 })
-        const draft = draftWithWalkthrough({ docs, entry, core })
-        if (round === 1) {
-          statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
-          statuses.push((await tools.get('wiki_publish').execute({ kind: 'plan', plan: wikiPlanFixture() })).status)
-          statuses.push((await tools.get('wiki_publish').execute({ kind: 'plan', plan: planWithWalkthrough() })).status)
-          statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
-        } else {
-          const blocks = draft.chapters[2].blocks.map(block => ({ chapter: 'execution', action: 'replace', target: block.id, block }))
-          blocks[0].block.text += ' 版本 ' + round
-          statuses.push((await tools.get('wiki_publish').execute({ kind: 'revise',
-            revisions: { blocks, graph: draft.graph, coverage: draft.coverage } })).status)
+        const read = async args => {
+          reads.push(args.path)
+          return JSON.parse((await tools.get('wiki_read').execute(args, { signal: options.signal })).data)
         }
+        const docs = await read({ path: 'README.md' }), entry = await read({ path: 'main.js' })
+        const core = await read({ path: 'core.js', start: 2, count: 1 })
+        const draft = draftWithWalkthrough({ docs, entry, core })
+        const publish = tools.get('wiki_publish')
+        statuses.push((await publish.execute({ kind: 'draft', draft })).status)
+        statuses.push((await publish.execute({ kind: 'plan', plan: wikiPlanFixture() })).status)
+        statuses.push((await publish.execute({ kind: 'plan', plan: planWithWalkthrough() })).status)
+        statuses.push((await publish.execute({ kind: 'draft', draft })).status)
       })()
     }, whenIdle: () => run, cancel() {} }, async dispose() { disposed++ } }
   } } }
-  return { source, ctx, phases, messages, reviews, statuses, rounds: () => rounds, disposed: () => disposed }
+  return { source, ctx, phases, reads, reviews, statuses, rounds: () => rounds, disposed: () => disposed }
 }
 
-test('Wiki publication requires a plan, real independent reviews, and targeted evidence repair before returning', async t => {
-  const f = pipelineFixture(t)
+test('Wiki publication requires structural validation and preserves both advisory findings', async () => {
+  const f = pipelineFixture()
   const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture', model: 'fixture' }, null,
     new AbortController().signal, undefined, phase => f.phases.push(phase))
   assert.match(f.statuses[0], /先提交研究计划/)
   assert.match(f.statuses[1], /新研究计划需要 walkthrough/)
   assert.match(f.statuses[2], /研究计划已接受/)
-  assert.equal(f.rounds(), 2)
-  assert.equal(f.reviews.length, 4)
-  assert(f.reviews[2].excerpts.some(item => item.path === 'core.js' && item.start === 2))
-  assert.match(f.messages[1].content[0].text, /additionalEvidence/)
+  assert.match(f.statuses[3], /草稿已收到/)
+  assert.equal(f.rounds(), 1)
+  assert.deepEqual(f.reads, ['README.md', 'main.js', 'core.js'])
+  assert.deepEqual(f.reviews.map(review => review.semantic).sort(), [false, true])
+  assert(f.reviews.every(review => review.material.excerpts.some(item => item.path === 'core.js' && item.start === 2)))
+  assert.equal(result.files.length, 3, 'a requested supplemental read does not alter the accepted evidence')
+  assert.deepEqual(result.review, { status: 'findings', issues: [
+    { reviewer: 'semantic', reason: '核对核心函数的调用与返回值。' },
+    { reviewer: 'editorial', reason: '补充项目适用的读者。' },
+  ] })
   assert.match(result.markdown, /export const run/)
   assert.equal(result.walkthrough.steps.length, 3)
   assert.equal(f.disposed(), 1)
   assert(f.phases.includes('planning') && f.phases.includes('researching') && f.phases.includes('writing') && f.phases.includes('reviewing'))
 })
 
-test('an unavailable requested read reaches the author and persistent review rejection blocks publication', async t => {
-  const unreadable = pipelineFixture(t, { badRead: true })
-  const result = await exploreArchitecture(unreadable.ctx, unreadable.source, { provider: 'fixture' }, null,
-    new AbortController().signal)
-  assert.equal(unreadable.rounds(), 2)
-  const repair = JSON.parse(unreadable.messages[1].content[0].text.split('\n').at(-1))
-  assert.deepEqual(repair.additionalEvidence, [])
-  assert.deepEqual(repair.incompleteReads.map(({ path, start }) => ({ path, start })), [{ path: 'core.js', start: 99 }])
-  assert.match(result.markdown, /export const run/)
-  const rejected = pipelineFixture(t, { rejectAlways: true })
-  await assert.rejects(exploreArchitecture(rejected.ctx, rejected.source, { provider: 'fixture' }, null,
-    new AbortController().signal), /三次定向修订/)
-  assert.equal(rejected.rounds(), 4)
-  assert.equal(rejected.disposed(), 1)
+test('review transport and format failures leave a validated Wiki available', async () => {
+  for (const reviewerFailure of ['transport', 'format']) {
+    const f = pipelineFixture({ reviewerFailure })
+    const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture' }, null, new AbortController().signal)
+    assert.deepEqual(result.review, { status: 'unavailable' })
+    assert.equal(f.rounds(), 1)
+    assert.equal(f.disposed(), 1)
+    assert.match(result.markdown, /export const run/)
+    assert.doesNotMatch(JSON.stringify(result), /private provider|private response/)
+  }
 })
 
 test('research failures and timeouts retain accepted evidence for a fresh draft and both reviews without rereading', async () => {
@@ -690,8 +665,6 @@ test('research failures and timeouts retain accepted evidence for a fresh draft 
           assert.deepEqual(restored.plan, normalizeWikiPlan(planWithWalkthrough(), f.source))
           assert.deepEqual(restored.evidence, f.evidence.map((file, index) => ({ id: index + 1, ...file })))
           assert.equal(reviews, 0)
-          const rejected = await tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [] } })
-          assert.match(rejected.status, /需要已有草稿/)
           assert.match((await tools.get('wiki_publish').execute({ kind: 'draft', draft: draftWithWalkthrough(f.spans) })).status, /草稿已收到/)
         })()
       }, whenIdle: () => run, cancel() {} }, dispose() {} }
@@ -783,136 +756,46 @@ test('a read completing during draft checkpointing cannot replace the accepted d
   assert.equal(result.files.length, 4)
 })
 
-function checkpointResumeFixture({ rejectOnce = false, mixedFields = false } = {}) {
+function checkpointResumeFixture({ findings = false } = {}) {
   const f = fixture()
-  const seed = structuredClone(f.evidence)
-  seed[2] = { ...seed[2], end: 1, text: seed[2].text.split('\n')[0] }
-  const raw = wikiDraftFixture({ ...f.spans, core: { evidence: 3, start: 1, end: 1 } })
-  const checkpoint = { plan: wikiPlanFixture(), draft: raw, evidence: seed }
-  const messages = [], reviews = [], checkpoints = [], sourceReads = [], mixedResults = [], tools = new Map()
-  let run, disposed = 0, semanticReviews = 0
-  const originalRead = f.source.read
-  f.source.read = async (...args) => { sourceReads.push(args[0]); return originalRead(...args) }
+  const evidence = structuredClone(f.evidence)
+  evidence[2] = { ...evidence[2], end: 1, text: evidence[2].text.split('\n')[0] }
+  const draft = wikiDraftFixture({ ...f.spans, core: { evidence: 3, start: 1, end: 1 } })
+  const checkpoint = { plan: wikiPlanFixture(), draft, evidence }
+  const reviews = [], checkpoints = []
+  f.source.read = () => assert.fail('a validated checkpoint does not need new source reads for advisory review')
   const llm = { async *stream(options) {
     const context = JSON.parse(options.messages[0].content[0].text)
     const semantic = options.system.includes('事实审核员')
     reviews.push({ semantic, context })
-    if (semantic) semanticReviews++
-    const result = semantic && rejectOnce && semanticReviews === 1
-      ? { approved: false, issues: [{ target: 'execution_text', reason: '导出语句不足以证明运行行为，请读取实现并修正引用。',
+    const result = findings && semantic
+      ? { approved: false, issues: [{ target: 'execution_text', reason: '导出语句不足以证明运行行为。',
         reads: [{ path: 'core.js', start: 2, count: 1 }] }] }
       : approvedWikiReview()
-    yield { type: 'text-delta', text: JSON.stringify(result) }; yield { type: 'finish', reason: { kind: 'stop' } }
+    yield { type: 'text-delta', text: JSON.stringify(result) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
   } }
-  const ctx = { llm, agents: { async create(options) {
-    options.setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
-    return { agent: { followup(message) {
-      messages.push(message)
-      run = (async () => {
-        const prompt = message.content[0].text
-        assert.match(prompt, /此前研究已完成/)
-        assert.match(prompt, /plan已被接受/)
-        assert.match(prompt, /kind=revise/)
-        assert.match(prompt, /证据目录id与工具evidence编号一致/)
-        const [seedText, correctionText] = prompt.split('\n').slice(-2)
-        const restored = JSON.parse(seedText), correction = JSON.parse(correctionText)
-        assert.deepEqual(restored.plan, normalizeWikiPlan(checkpoint.plan, f.source))
-        assert.deepEqual(restored.draft, checkpoint.draft)
-        assert.deepEqual(restored.evidence, checkpoint.evidence.map((item, index) => ({ id: index + 1, path: item.path,
-          start: item.start, end: item.end, primary: item.primary, kind: item.kind })))
-        assert(restored.evidence.every(item => !Object.hasOwn(item, 'text')))
-        assert.deepEqual(restored.excerpts.map(item => item.id), [2], 'repair includes only the cited original range of its target block')
-        assert.equal(restored.excerpts[0].text, checkpoint.evidence[1].text)
-        assert.equal(correction.additionalEvidence[0].evidence, 4)
-        assert.equal(correction.additionalEvidence[0].start, 2)
-        const repaired = wikiDraftFixture({ ...f.spans, core: correction.additionalEvidence[0] })
-        const incompatiblePlan = wikiPlanFixture()
-        incompatiblePlan.views = [{ kind: 'sequence', question: 'Which call happens first?', why: 'Follow interaction order.' }]
-        assert.match((await tools.get('wiki_publish').execute({ kind: 'plan', plan: incompatiblePlan })).status,
-          /已有草稿后保留已接受的研究计划/)
-        const brokenCode = structuredClone(repaired.chapters[2].blocks.find(block => block.id === 'core_code'))
-        brokenCode.refs[0].end = 99
-        const rejected = await tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [
-          { chapter: 'execution', action: 'replace', target: 'execution_text',
-            block: { ...structuredClone(raw.chapters[2].blocks[0]), text: '此处不应保留失败候选的文字。' } },
-          { chapter: 'execution', action: 'replace', target: 'core_code', block: brokenCode },
-        ] } })
-        assert.match(rejected.status, /提交未通过/)
-        const submitted = await tools.get('wiki_publish').execute({ kind: 'revise',
-          ...(mixedFields && { plan: { ...checkpoint.plan, goal: '无关计划不得覆盖已有研究。' },
-            draft: { ...checkpoint.draft, chapters: [] } }), revisions: {
-          blocks: repaired.chapters[2].blocks.filter(block => block.id !== 'execution_text')
-            .map(block => ({ chapter: 'execution', action: 'replace', target: block.id, block })),
-          graph: repaired.graph, coverage: repaired.coverage,
-        } })
-        if (mixedFields) mixedResults.push(submitted.status)
-        assert.match(submitted.status, /草稿已收到/)
-      })()
-    }, whenIdle: () => run, cancel() {} }, async dispose() { disposed++ } }
-  } } }
-  return { source: f.source, ctx, checkpoint, messages, reviews, checkpoints, sourceReads, mixedResults,
-    options: { checkpoint, onCheckpoint(value) { checkpoints.push(structuredClone(value)) } }, disposed: () => disposed }
+  const ctx = { llm, agents: { create() { assert.fail('a validated checkpoint does not need the author again') } } }
+  return { source: f.source, ctx, checkpoint, reviews, checkpoints,
+    options: { checkpoint, onCheckpoint(value) { checkpoints.push(structuredClone(value)) } } }
 }
 
-test('an accepted research checkpoint enters both independent reviews without new research and checkpoints the raw draft', async () => {
-  const f = checkpointResumeFixture()
-  const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture' }, null,
-    new AbortController().signal, undefined, undefined, f.options)
-  assert.deepEqual(f.sourceReads, [])
-  assert.deepEqual(f.messages, [])
-  assert.equal(f.reviews.length, 2)
-  assert.deepEqual(f.reviews.map(item => item.semantic).sort(), [false, true])
-  assert.equal(f.checkpoints.length, 1)
-  assert.deepEqual(f.checkpoints[0].draft, f.checkpoint.draft)
-  assert.equal(f.checkpoints[0].draft.chapters[2].blocks.find(block => block.type === 'code').lines, undefined)
-  assert.deepEqual(f.checkpoint.draft, wikiDraftFixture({ ...fixture().spans, core: { evidence: 3, start: 1, end: 1 } }))
-  assert.deepEqual(result.files, f.checkpoint.evidence)
-  assert.match(result.markdown, /export \{ helper \}/)
-  assert.equal(f.disposed(), 1)
-})
-
-test('a rejected checkpoint keeps the accepted plan and original evidence IDs through actual supplemental reading and reviewed repair', async () => {
-  const f = checkpointResumeFixture({ rejectOnce: true })
-  const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture' }, null,
-    new AbortController().signal, undefined, undefined, f.options)
-  assert.deepEqual(f.sourceReads, ['core.js'])
-  assert.equal(f.messages.length, 1)
-  assert.equal(f.reviews.length, 4)
-  assert(f.reviews.slice(0, 2).every(item => item.context.excerpts.some(excerpt => excerpt.id === 3)),
-    'independent reviewers still receive all cited evidence before the smaller repair context is constructed')
-  assert.deepEqual(result.files.slice(0, 3), f.checkpoint.evidence)
-  assert.equal(result.files.length, 4)
-  assert.deepEqual(result.files[3], { path: 'core.js', start: 2, end: 2,
-    text: 'export const run = () => 42', primary: true, kind: 'source' })
-  assert(f.reviews.slice(2).every(item => item.context.excerpts.some(excerpt => excerpt.id === 4 && excerpt.start === 2)))
-  assert.equal(f.checkpoints.length, 3)
-  assert.deepEqual(f.checkpoints[1].draft, f.checkpoint.draft, 'supplemental research keeps the last accepted draft')
-  assert.equal(f.checkpoints[1].evidence.length, 4)
-  const finalCheckpoint = f.checkpoints[2]
-  assert.deepEqual(finalCheckpoint.plan, normalizeWikiPlan(f.checkpoint.plan, f.source))
-  assert.deepEqual(finalCheckpoint.evidence, result.files)
-  const code = finalCheckpoint.draft.chapters[2].blocks.find(block => block.type === 'code')
-  assert.equal(code.refs[0].evidence, 4)
-  assert.equal(code.lines, undefined, 'checkpoint stores the raw submission, not hydrated display code')
-  assert.equal(finalCheckpoint.draft.chapters[2].blocks[0].text, f.checkpoint.draft.chapters[2].blocks[0].text,
-    'a failed multi-block candidate must not leak any changes into the next valid revision')
-  assert.match(result.markdown, /export const run = \(\) => 42/)
-  assert.equal(f.disposed(), 1)
-})
-
-test('revise ignores unrelated plan and draft payloads while reviewing only the merged revision', async () => {
-  const f = checkpointResumeFixture({ rejectOnce: true, mixedFields: true })
-  const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture' }, null,
-    new AbortController().signal, undefined, undefined, f.options)
-  assert.equal(f.mixedResults.length, 1)
-  assert.match(f.mixedResults[0], /草稿已收到/)
-  assert.equal(f.messages.length, 1)
-  assert.equal(f.reviews.length, 4)
-  assert.equal(f.checkpoints.length, 3)
-  assert.deepEqual(f.checkpoints[2].plan, normalizeWikiPlan(f.checkpoint.plan, f.source))
-  assert.equal(f.checkpoints[2].draft.chapters[2].blocks[0].text, f.checkpoint.draft.chapters[2].blocks[0].text)
-  assert.doesNotMatch(result.markdown, /混合字段的候选/)
-  assert.deepEqual(f.sourceReads, ['core.js'])
+test('a valid checkpoint is published with both review statuses and its raw draft and evidence intact', async () => {
+  for (const findings of [false, true]) {
+    const f = checkpointResumeFixture({ findings })
+    const before = structuredClone(f.checkpoint)
+    const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture' }, null,
+      new AbortController().signal, undefined, undefined, f.options)
+    assert.deepEqual(f.reviews.map(item => item.semantic).sort(), [false, true])
+    assert(f.reviews.every(item => item.context.excerpts.some(excerpt => excerpt.id === 3 && excerpt.start === 1)))
+    assert.deepEqual(f.checkpoints, [{ plan: normalizeWikiPlan(before.plan, f.source), draft: before.draft, evidence: before.evidence }])
+    assert.deepEqual(f.checkpoint, before)
+    assert.deepEqual(result.files, before.evidence)
+    assert.match(result.markdown, /export \{ helper \}/)
+    assert.deepEqual(result.review, findings
+      ? { status: 'findings', issues: [{ reviewer: 'semantic', reason: '导出语句不足以证明运行行为。' }] }
+      : { status: 'approved' })
+  }
 })
 
 function structuralResumeFixture(outcomes) {

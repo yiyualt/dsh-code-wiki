@@ -110,44 +110,29 @@ test('a citation whose original text lacks its declared lines is rejected before
   assert.throws(() => wikiReviewMaterial(draft, f.plan, f.evidence), /审核引用 4:11–20 超出实际证据原文/)
 })
 
-test('resumed targeted repairs find merged source through the original citation alias', async () => {
+test('advisory review of a resumed Wiki retains the original aliases for merged citations', async () => {
   const f = fixture()
   f.raw.coverage[1].refs[0] = { evidence: 2, start: 5, end: 20 }
   f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 15, end: 25 }]
-  let semantic = 0, repairs = 0, reviews = 0
+  let reviews = 0
   const ctx = { llm: { async *stream(options) {
     reviews++
-    const facts = options.system.includes('事实审核员')
-    if (facts) semantic++
-    const result = facts && semantic === 1 ? { approved: false, issues: [
-      { target: 'execution_text', reason: 'Clarify the existing implementation explanation.', reads: [] },
+    const material = JSON.parse(options.messages[0].content[0].text)
+    const excerpt = material.excerpts.find(item => item.citations?.some(ref => ref.id === 4 && ref.start === 15 && ref.end === 25))
+    assert(excerpt, 'merged excerpts retain the original citation ID and span')
+    assert.equal(excerpt.id, 2)
+    assert.equal(excerpt.text, f.body.slice(4, 25).join('\n'))
+    assert.match(material.citationInstructions, /原始引用范围/)
+    const result = options.system.includes('事实审核员') ? { approved: false, issues: [
+      { target: 'execution_text', reason: '核对入口说明与实现是否一致。', reads: [] },
     ] } : approvedWikiReview()
     yield { type: 'text-delta', text: JSON.stringify(result) }
     yield { type: 'finish', reason: { kind: 'stop' } }
-  } }, agents: { async create({ setup }) {
-    const tools = new Map()
-    setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
-    let run
-    return { agent: { followup(message) {
-      repairs++
-      run = (async () => {
-        const [seedText] = message.content[0].text.split('\n').slice(-2)
-        const restored = JSON.parse(seedText)
-        const excerpt = restored.excerpts.find(item => item.citations?.some(ref => ref.id === 4 && ref.start === 15 && ref.end === 25))
-        assert(excerpt, 'the repair must retain source even when its representative ID and range differ')
-        assert.equal(excerpt.id, 2)
-        assert.equal(excerpt.text, f.body.slice(4, 25).join('\n'))
-        assert.match(restored.citationInstructions, /原始引用范围/)
-        const block = { ...structuredClone(f.raw.chapters[2].blocks[0]), text: '澄清后的入口实现说明。' }
-        assert.match((await tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [
-          { chapter: 'execution', action: 'replace', target: block.id, block },
-        ] } })).status, /草稿已收到/)
-      })()
-    }, whenIdle: () => run, cancel() {} }, dispose() {} }
-  } } }
+  } }, agents: { create() { assert.fail('a validated checkpoint does not restart the author') } } }
   const result = await exploreArchitecture(ctx, f.source, { provider: 'fixture' }, null, new AbortController().signal,
     undefined, undefined, { checkpoint: { plan: f.plan, draft: f.raw, evidence: f.evidence } })
-  assert.equal(repairs, 1)
-  assert.equal(reviews, 4)
-  assert.match(result.markdown, /澄清后的入口实现说明/)
+  assert.equal(reviews, 2)
+  assert.deepEqual(result.review, { status: 'findings',
+    issues: [{ reviewer: 'semantic', reason: '核对入口说明与实现是否一致。' }] })
+  assert.deepEqual(result.files, f.evidence)
 })

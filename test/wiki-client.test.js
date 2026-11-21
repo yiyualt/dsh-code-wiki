@@ -374,6 +374,39 @@ function content(node) {
   return (node?.children ?? []).map(content).join('')
 }
 
+test('archived AI review is advisory and displays validated issue text in a collapsed list', async () => {
+  async function notice(review) {
+    const { wiki, Page } = await reader({ ...record('# A saved Wiki'), review })
+    const article = find(Page({ wiki }), node => node.type?.name === 'WikiArticle')
+    return find(article.type(article.props), node => node.props.className === 'dsh-code-wiki-review')
+  }
+
+  assert.equal(await notice(undefined), undefined)
+  assert.equal(await notice({ status: 'approved' }), undefined)
+  assert.equal(await notice({ status: 'invalid' }), undefined)
+
+  const literal = '<script>alert(1)</script>'
+  const findings = await notice({ status: 'findings', issues: [
+    { reviewer: 'semantic', reason: '核对返回值。' },
+    { reviewer: 'editorial', reason: literal },
+    { reviewer: 'unknown', reason: '隐藏无效意见。' },
+  ] })
+  assert.equal(findings.type, 'details')
+  assert.equal(findings.props.open, undefined)
+  assert.equal(content(find(findings, node => node.type === 'summary')), '审核意见待核对 · 2 条')
+  assert.deepEqual(find(findings, node => node.type === 'ul').children.map(content), [
+    '事实核对 核对返回值。', '编辑检查 ' + literal,
+  ])
+  assert.equal(find(findings, node => node.type === 'script' || node.props.dangerouslySetInnerHTML), undefined)
+
+  const unavailable = await notice({ status: 'unavailable' })
+  assert.equal(unavailable.type, 'p')
+  assert.match(content(unavailable), /^内容审核未完成/)
+  const partial = await notice({ status: 'unavailable', issues: [{ reviewer: 'semantic', reason: '核对返回值。' }] })
+  assert.equal(partial.type, 'details')
+  assert.match(content(partial), /^内容审核未完成 · 1 条/)
+})
+
 async function progressRenderer() {
   const { wiki, Page } = await client(() => Response.json({ job: null }))
   return (generation = {}, progressOffline = false) => {
@@ -418,6 +451,7 @@ test('Wiki progress distinguishes revision, rejected submissions and waiting for
   assert(content(reviewerRetry).includes('审核反馈：第 2 / 2 次尝试。'))
   assert(content(reviewerRetry).includes('校验反馈：审核补读范围需要调整。'))
   assert.doesNotMatch(content(reviewerRetry), /草稿提交/)
+  assert.match(content(render({ phase: 'reviewing', step: 'reviewing' })), /审核结束后将保存文档，并附上待核对的审核意见。/)
 })
 
 test('Wiki transport retries show the upcoming or current attempt and only translated safe reasons', async () => {
