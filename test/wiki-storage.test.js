@@ -70,7 +70,11 @@ test('architectural views reopen without changing existing document or video inp
   const view = { id: 'data-path', kind: 'dataflow', title: '数据处理', purpose: '说明输入如何变成输出。',
     nodes: [{ id: 'input', label: '输入', role: 'data', refs: [ref] }, { id: 'output', label: '输出', role: 'data', refs: [ref] }],
     edges: [{ from: 'input', to: 'output', label: '处理', refs: [ref] }], mermaid: 'flowchart LR\ninput --> output' }
-  const record = document({ views: [view], architecture: { layers: [], edges: [] } })
+  const refs = Array.from({ length: 6 }, (_, index) => ({ label: `main.js:${index + 1}`, url: ref.url.replace(/#L1$/, `#L${index + 1}`) }))
+  const sequence = { ...view, id: 'call-order', kind: 'sequence',
+    edges: Array.from({ length: 13 }, (_, index) => ({ ...view.edges[0], label: `消息 ${index + 1}`, refs })),
+    mermaid: 'sequenceDiagram\ninput->>output: 消息' }
+  const record = document({ views: [view, sequence], architecture: { layers: [], edges: [] } })
   await storage.save(record)
   assert.deepEqual(await createWikiStorage(directory).get(record.id), record)
   const invalid = document({ views: [{ ...view, edges: [{ from: 'input', to: 'missing', label: '处理', refs: [ref] }] }] })

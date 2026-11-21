@@ -16,6 +16,14 @@ const list = (value, minimum, maximum, field) => {
 const escape = value => value.replace(/[\\`*_{}\[\]()<>#!|]/g, '\\$&')
 const publicRefs = refs => refs.map(({ label, url }) => ({ label, url }))
 export const wikiViewKinds = ['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment']
+export const wikiViewEdgeLimits = { sequence: 16, other: 10 }
+export const wikiCitationLimit = 6
+export const wikiChapterRoles = ['overview', 'quickstart', 'architecture', 'module', 'flow', 'extension']
+export const wikiNodeKinds = ['entry', 'core', 'data', 'external']
+export const wikiEdgeKinds = ['call', 'data', 'dependency']
+const roleRank = { overview: 0, quickstart: 1, architecture: 2, module: 3, flow: 4, extension: 5 }
+const roleLabel = { overview: '项目概览', quickstart: '快速开始', architecture: '系统架构', module: '核心模块', flow: '关键流程', extension: '扩展指南' }
+const architectureMarker = '```dsh-architecture\n```'
 const viewRoles = new Set(['actor', 'component', 'process', 'data', 'store'])
 function inline(value, terms = []) {
   if (!terms.length) return escape(value)
@@ -32,28 +40,65 @@ export function normalizeWikiPlan(raw, source) {
     for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join('/'))
   }
   const invalidPaths = new Map()
-  const chapterIds = new Set(), areaIds = new Set()
-  const chapters = list(raw?.chapters, 2, 8, '研究提纲章节').map(chapter => {
+  function file(path, field) {
+    if (!paths.has(path)) {
+      const display = typeof path === 'string' ? path : String(path)
+      const directory = typeof path === 'string' && directories.has(path.replace(/\/$/, ''))
+      invalidPaths.set(display, `${directory ? '目录' : '不存在文件'}：${display.slice(0, 300)}`)
+    }
+    return path
+  }
+
+  const moduleIds = new Set()
+  const modules = list(raw?.modules, 2, 5, '模块清单').map(module => {
+    check(id(module?.id) && !moduleIds.has(module.id), '模块编号必须唯一，且只能使用简短英文小写标识符。')
+    moduleIds.add(module.id)
+    return { id: module.id, name: prose(module.name, 40, `模块 ${module.id} 的名称`),
+      responsibility: prose(module.responsibility, 160, `模块 ${module.id} 的职责`),
+      entry: prose(module.entry, 200, `模块 ${module.id} 的入口`),
+      paths: list(module.paths, 1, 6, `模块 ${module.id} 的主要文件`).map(path => file(path, '模块文件')) }
+  })
+
+  const chapterIds = new Set()
+  const chapters = list(raw?.chapters, 4, 8, '研究提纲章节').map((chapter, index) => {
     check(id(chapter?.id) && !chapterIds.has(chapter.id), '研究提纲章节编号必须唯一。')
     chapterIds.add(chapter.id)
-    return { id: chapter.id, title: prose(chapter.title, 80, '章节标题'), question: prose(chapter.question, 300, '章节要回答的问题') }
+    check(wikiChapterRoles.includes(chapter?.role),
+      `研究提纲第 ${index + 1} 章需要 role，取值为 ${wikiChapterRoles.join('、')}。`)
+    return { id: chapter.id, role: chapter.role,
+      ...(chapter.role === 'module' && { module: chapter.module }),
+      title: prose(chapter.title, 40, '章节标题'), question: prose(chapter.question, 300, '章节要回答的问题') }
   })
+
+  const count = role => chapters.filter(chapter => chapter.role === role).length
+  check(chapters[0].role === 'overview', '第一章必须是 role=overview 的项目概览。')
+  check(count('overview') === 1, '项目概览只能有一章。')
+  check(count('architecture') === 1, '需要恰好一章 role=architecture 的系统架构。')
+  check(count('quickstart') <= 1 && count('flow') <= 1 && count('extension') <= 1, '快速开始、关键流程、扩展指南各最多一章。')
+  for (let i = 1; i < chapters.length; i++) {
+    check(roleRank[chapters[i].role] >= roleRank[chapters[i - 1].role],
+      '章节顺序应为：项目概览、快速开始、系统架构、核心模块、关键流程、扩展指南。')
+  }
+  const bound = new Map()
+  for (const chapter of chapters.filter(item => item.role === 'module')) {
+    check(moduleIds.has(chapter.module), 'role=module 的章节需要用 module 字段指向模块清单中的编号。')
+    check(!bound.has(chapter.module), `模块 ${chapter.module} 对应了不止一章。`)
+    bound.set(chapter.module, chapter.id)
+  }
+  check(bound.size === moduleIds.size, '模块清单中的每个模块都需要一章 role=module，缺少：'
+    + [...moduleIds].filter(moduleId => !bound.has(moduleId)).join('、'))
+
+  const areaIds = new Set()
   const research = list(raw.research, 2, 8, '研究领域').map(area => {
     check(id(area?.id) && !areaIds.has(area.id), '研究领域编号必须唯一。')
     areaIds.add(area.id)
     check(['documentation', 'implementation'].includes(area.evidenceType), '研究领域必须说明需要项目说明还是实现证据。')
     return { id: area.id, question: prose(area.question, 300, '研究问题'), evidenceType: area.evidenceType,
-      paths: list(area.paths, 1, 6, '待读文件').map(path => {
-        if (!paths.has(path)) {
-          const display = typeof path === 'string' ? path : String(path)
-          const directory = typeof path === 'string' && directories.has(path.replace(/\/$/, ''))
-          invalidPaths.set(display, `${directory ? '目录' : '不存在文件'}：${display.slice(0, 300)}`)
-        }
-        return path
-      }) }
+      paths: list(area.paths, 1, 6, '待读文件').map(path => file(path, '待读文件')) }
   })
   check(!invalidPaths.size, '研究计划只能选择当前提交中实际存在的文件。无效候选：'
     + [...invalidPaths.values()].join('；') + '。目录请先用 wiki_list 查看，再选择具体文件。')
+
   const kinds = new Set()
   const views = list(raw.views, 0, 3, '计划视图').map(view => {
     check(wikiViewKinds.includes(view?.kind) && !kinds.has(view.kind), '计划应选择不同且适用的软件视图类型。')
@@ -61,12 +106,12 @@ export function normalizeWikiPlan(raw, source) {
     return { kind: view.kind, question: prose(view.question, 300, '视图要回答的问题'), why: prose(view.why, 350, '选择该视图的理由') }
   })
   const viewOmission = views.length ? undefined : prose(raw.viewOmission, 350, '不使用额外视图的理由')
-  return { audience: prose(raw.audience, 250, '读者'), goal: prose(raw.goal, 350, '阅读目标'), chapters, research, views,
+  return { audience: prose(raw.audience, 250, '读者'), goal: prose(raw.goal, 350, '阅读目标'), modules, chapters, research, views,
     ...(viewOmission && { viewOmission }) }
 }
 
 function references(raw, source, evidence, primary, field) {
-  const original = list(raw, 1, 4, field).map((ref, index) => {
+  const original = list(raw, 1, wikiCitationLimit, field).map((ref, index) => {
     const object = ref !== null && typeof ref === 'object' && !Array.isArray(ref)
     const integers = object && [ref.evidence, ref.start, ref.end].every(Number.isSafeInteger)
     const file = integers ? evidence[ref.evidence - 1] : undefined
@@ -76,7 +121,7 @@ function references(raw, source, evidence, primary, field) {
     return { evidence: ref.evidence, start: ref.start, end: ref.end }
   })
   const count = original.reduce((total, ref) => total + Math.ceil((ref.end - ref.start + 1) / 25), 0)
-  check(count <= 4, `${field} 完整拆分为 1–25 行引用后需要 ${count} 项，最多允许 4 项。请拆分正文或缩小引用范围，不能丢弃或截断证据。`)
+  check(count <= wikiCitationLimit, `${field} 完整拆分为 1–25 行引用后需要 ${count} 项，最多允许 ${wikiCitationLimit} 项。请拆分正文或缩小引用范围，不能丢弃或截断证据。`)
   const expanded = original.flatMap(ref => Array.from({ length: Math.ceil((ref.end - ref.start + 1) / 25) }, (_, index) => ({
     evidence: ref.evidence, start: ref.start + index * 25, end: Math.min(ref.end, ref.start + index * 25 + 24),
   })))
@@ -94,27 +139,42 @@ function references(raw, source, evidence, primary, field) {
 
 export function normalizeWikiDraft(raw, source, evidence, plan) {
   check(plan, '先提交研究计划，再提交草稿。')
-  check(JSON.stringify(raw).length <= 70_000, '草稿过长，请集中解释主要问题。')
+  check(JSON.stringify(raw).length <= 80_000, '草稿过长，请集中解释主要问题。')
+  const submitted = new Map()
+  for (const chapter of list(raw?.chapters, 2, 8, '草稿章节')) {
+    check(id(chapter?.id) && !submitted.has(chapter.id), '章节编号必须唯一。')
+    submitted.set(chapter.id, chapter)
+  }
+  check(submitted.size === plan.chapters.length && plan.chapters.every(chapter => submitted.has(chapter.id)),
+    '草稿章节必须与已接受的研究计划完全一致，缺少或新增了章节：'
+    + plan.chapters.map(chapter => chapter.id + '（' + roleLabel[chapter.role] + '）').join('、'))
   const ids = new Set()
   const claim = (value, field) => {
     check(['purpose', 'usage', 'implementation'].includes(value), `${field} 的 claimType 必须为 purpose、usage 或 implementation。`)
     return value
   }
-  const chapters = list(raw?.chapters, 2, 8, '草稿章节').map(chapter => {
-    check(id(chapter?.id) && !ids.has(chapter.id), '章节编号必须唯一。')
-    ids.add(chapter.id)
-    return { id: chapter.id, title: prose(chapter.title, 80, '章节标题'), blocks: list(chapter.blocks, 1, 10, '章节正文块').map(block => {
+  const chapters = plan.chapters.map(planned => {
+    const chapter = submitted.get(planned.id)
+    const blocks = list(chapter.blocks, 1, 14, `章节 ${planned.id} 的正文块`).map(block => {
       check(id(block?.id) && !ids.has(block.id), '正文块编号必须唯一。')
       ids.add(block.id)
       const type = block.type
-      check(['paragraph', 'steps', 'code', 'table', 'diagram'].includes(type), '正文只接受 paragraph、steps、code、table、diagram。')
+      check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading'].includes(type),
+        '正文只接受 paragraph、steps、code、table、diagram、heading。')
+      if (type === 'heading') {
+        const result = { id: block.id, type, claimType: claim(block.claimType ?? 'implementation', block.id),
+          refs: block.refs === undefined ? [] : references(block.refs, source, evidence, false, `小节 ${block.id} 的引用`),
+          text: prose(block.text, 60, '小节标题') }
+        if (!result.refs.length) delete result.refs
+        return result
+      }
       const claimType = claim(block.claimType, block.id)
       const primary = claimType === 'implementation' || type === 'code' || (type === 'diagram' && block.kind !== 'scenario')
       const refs = references(block.refs, source, evidence, primary, `正文 ${block.id} 的引用`)
       const result = { id: block.id, type, claimType, refs }
-      if (type === 'paragraph') result.text = prose(block.text, 1800, '段落')
+      if (type === 'paragraph') result.text = prose(block.text, 600, '段落')
       if (type === 'steps') result.items = list(block.items, 2, 7, '步骤').map(item => ({
-        text: prose(item?.text, 700, '步骤说明'), refs: references(item.refs, source, evidence, primary, '步骤引用'),
+        text: prose(item?.text, 400, '步骤说明'), refs: references(item.refs, source, evidence, primary, '步骤引用'),
       }))
       if (type === 'table') {
         result.columns = list(block.columns, 2, 5, '表格列').map(cell => prose(cell, 80, '列标题'))
@@ -144,7 +204,8 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
           return { id: node.id, label: prose(node.label, 60, '图示节点名称'), role: node.role,
             refs: references(node.refs, source, evidence, primary, `图示节点 ${node.id} 的引用`) }
         })
-        result.edges = list(block.edges, 1, 10, '图示关系').map(edge => {
+        const edgeLimit = block.kind === 'sequence' ? wikiViewEdgeLimits.sequence : wikiViewEdgeLimits.other
+        result.edges = list(block.edges, 1, edgeLimit, '图示关系').map(edge => {
           check(nodeIds.has(edge?.from) && nodeIds.has(edge?.to) && edge.from !== edge.to, '图示关系必须指向两个不同的已有节点。')
           const label = prose(edge.label, 60, '图示关系含义')
           const key = `${edge.from}:${edge.to}:${label}`
@@ -163,8 +224,20 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
             && content.includes(term)))].slice(0, 8)
       }
       return result
-    }) }
+    })
+
+    check(blocks[0].type !== 'heading', `章节 ${planned.id} 的第一块应是段落或步骤，不能是小节标题。`)
+    check(blocks.filter(block => block.type === 'heading').length <= 4, `章节 ${planned.id} 最多 4 个小节标题，请合并过于零碎的部分。`)
+    if (planned.role === 'module') {
+      check(blocks.some(block => block.type === 'paragraph'), `核心模块章 ${planned.id} 需要段落说明这个模块解决什么问题。`)
+      check(blocks.some(block => block.type === 'table'), `核心模块章 ${planned.id} 需要一张表格列出主要文件与职责。`)
+    } else if (planned.role !== 'architecture') {
+      check(blocks.some(block => block.type === 'table' || block.type === 'diagram'),
+        `章节 ${planned.id} 需要至少一张表格或一张图，纯文字章节读者很难建立结构。`)
+    }
+    return { id: planned.id, role: planned.role, title: prose(chapter.title, 40, '章节标题'), blocks }
   })
+
   const diagrams = chapters.flatMap(chapter => chapter.blocks.filter(block => block.type === 'diagram'))
   check(diagrams.length === plan.views.length && new Set(diagrams.map(view => view.kind)).size === plan.views.length,
     '草稿需要逐一回答计划中的视图问题；没有适用视图时应在计划说明理由。')
@@ -179,7 +252,9 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
     nodes: list(layer.nodes, 1, 8, '架构节点').map(node => {
       check(id(node?.id) && !nodeIds.has(node.id), '架构节点编号必须唯一。')
       nodeIds.add(node.id)
-      return { id: node.id, title: prose(node.title, 80, '组件名'), summary: prose(node.summary, 160, '组件职责'),
+      check(node.kind === undefined || wikiNodeKinds.includes(node.kind), '架构节点 kind 取值为 entry、core、data、external。')
+      return { id: node.id, title: prose(node.title, 80, '组件名'), kind: node.kind ?? 'core',
+        summary: prose(node.summary, 160, '组件职责'),
         technology: node.technology ? prose(node.technology, 180, '实现技术') : '',
         boundary: node.boundary ? prose(node.boundary, 180, '运行边界') : '',
         refs: references(node.refs, source, evidence, true, `组件 ${node.id} 的引用`) }
@@ -190,10 +265,28 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
     const key = `${edge?.from}:${edge?.to}`
     check(nodeIds.has(edge?.from) && nodeIds.has(edge?.to) && edge.from !== edge.to && !pairs.has(key), '架构关系必须引用两个不同的已有组件，且不可重复。')
     pairs.add(key)
-    return { from: edge.from, to: edge.to, label: prose(edge.label, 120, '关系描述'),
+    check(edge.kind === undefined || wikiEdgeKinds.includes(edge.kind), '架构关系 kind 取值为 call、data、dependency。')
+    return { from: edge.from, to: edge.to, kind: edge.kind ?? 'call', label: prose(edge.label, 120, '关系描述'),
       refs: references(edge.refs, source, evidence, true, `关系 ${key} 的引用`) }
   })
   return { chapters, coverage, graph: { layers, edges } }
+}
+
+export function restoreWikiDraft(checkpoint, source, evidence) {
+  let plan
+  try { plan = normalizeWikiPlan(checkpoint.plan, source) }
+  catch (error) {
+    if (error?.code !== 'model-output-invalid') throw error
+    // Older plans have no module roles. Replan against the existing evidence.
+    return {}
+  }
+  const raw = checkpoint.draft
+  if (raw === undefined) return { plan }
+  try { return { plan, raw, draft: normalizeWikiDraft(raw, source, evidence, plan) } }
+  catch (error) {
+    if (error?.code !== 'model-output-invalid') throw error
+    return { plan }
+  }
 }
 
 export function reviseWikiDraft(raw, revisions) {
@@ -237,7 +330,8 @@ export function renderWikiDocument(draft, source) {
   const chapters = draft.chapters.map(chapter => {
     const used = new Map()
     const links = refs => { for (const ref of refs) used.set(ref.url, ref); return cite(refs) }
-    const blocks = chapter.blocks.map(block => {
+    const rendered = chapter.blocks.map(block => {
+      if (block.type === 'heading') return '### ' + inline(block.text, block.inlineCode)
       const citation = links(block.refs)
       if (block.type === 'paragraph') return inline(block.text, block.inlineCode) + ' ' + citation
       if (block.type === 'steps') return block.items.map((item, i) => `${i + 1}. ${inline(item.text, block.inlineCode)} ${links(item.refs)}`).join('\n')
@@ -250,15 +344,19 @@ export function renderWikiDocument(draft, source) {
         views.push(view)
         const sourceRefs = [...new Map([...block.nodes.flatMap(node => node.refs), ...block.edges.flatMap(edge => edge.refs)]
           .map(ref => [ref.url, ref])).values()]
-        return '### ' + escape(block.title) + '\n\n' + escape(block.purpose) + ' ' + citation
+        return '**' + escape(block.title) + '**\n\n' + escape(block.purpose) + ' ' + citation
           + '\n\n```mermaid\n' + view.mermaid + '\n```\n\n' + links(sourceRefs)
       }
       const fence = '`'.repeat(Math.max(3, ...block.lines.flatMap(line => [...line.matchAll(/`+/g)].map(match => match[0].length + 1))))
       const language = ({ py: 'python', js: 'javascript', ts: 'typescript', rs: 'rust', sh: 'sh' })[block.path.split('.').at(-1)] || ''
       return inline(block.caption, block.inlineCode) + ' ' + citation + '\n\n' + fence + language + '\n' + block.lines.join('\n') + '\n' + fence
     })
+    if (chapter.role === 'architecture') {
+      const anchor = chapter.blocks.findIndex(block => block.type === 'paragraph')
+      rendered.splice(anchor < 0 ? 0 : anchor + 1, 0, architectureMarker)
+    }
     const index = [...used.values()].map(ref => `- [${numbers.get(ref.url)}](${ref.url}) ${escape(ref.label)}`).join('\n')
-    return '## ' + escape(chapter.title) + '\n\n' + blocks.join('\n\n') + '\n\n### 本章引用\n\n' + index
+    return '## ' + escape(chapter.title) + '\n\n' + rendered.join('\n\n') + '\n\n### 本章引用\n\n' + index
   })
   const repository = source.owner ? source.owner + '/' + source.repo : source.repo
   const architecture = { layers: draft.graph.layers.map(layer => ({ ...layer, nodes: layer.nodes.map(node => ({ ...node, refs: publicRefs(node.refs) })) })),
@@ -282,10 +380,12 @@ export function wikiViewMermaid(view) {
     ...view.edges.map(edge => `    ${name(edge.from)} -->|"${label(edge.label)}"| ${name(edge.to)}`)].join('\n')
 }
 
-export function wikiTargets(draft) {
-  return [...draft.chapters.flatMap(chapter => chapter.blocks.map(block => block.id)),
-    ...draft.graph.layers.flatMap(layer => layer.nodes.map(node => 'node:' + node.id)),
-    ...draft.graph.edges.map(edge => `edge:${edge.from}:${edge.to}`)]
+export function wikiTargetEntries(draft) {
+  return new Map([
+    ...draft.chapters.flatMap(chapter => chapter.blocks.map(block => [block.id, { section: chapter.id, value: block }])),
+    ...draft.graph.layers.flatMap(layer => layer.nodes.map(node => ['node:' + node.id, { section: layer.title, value: node }])),
+    ...draft.graph.edges.map(edge => [`edge:${edge.from}:${edge.to}`, { value: edge }]),
+  ])
 }
 
 function reviewExcerpts(selected, evidence) {
@@ -332,9 +432,59 @@ function reviewExcerpts(selected, evidence) {
   }).toSorted((a, b) => a.order - b.order).map(item => item.value)
 }
 
+// Reviewers only ever see the lines a draft cites, so a correct claim whose proof spills one
+// function below the cited range reads as unsupported. Attach a bounded neighbourhood of each
+// excerpt as explicit non-evidence context, letting reviewers tell a real gap from a cut range.
+const reviewContexts = (excerpts, evidence) => {
+  const limit = 8, budget = 12_000
+  const seen = new Map()
+  let remaining = budget
+  const contexts = []
+  for (const excerpt of excerpts) {
+    const file = evidence[excerpt.id - 1]
+    if (!file || remaining <= 0) continue
+    const lines = file.text.split('\n')
+    const from = excerpt.start - file.start
+    const to = excerpt.end - file.start
+    if (from < 0 || to >= lines.length) continue
+    const before = lines.slice(Math.max(0, from - limit), from)
+    const after = lines.slice(to + 1, Math.min(lines.length, to + 1 + limit))
+    if (!before.length && !after.length) continue
+    const keep = lines => {
+      if (!lines.length) return []
+      let kept = lines
+      if (kept.join('\n').length > remaining) {
+        kept = []
+        for (const line of lines) {
+          if (remaining - (kept.join('\n').length + line.length + 1) < 0) break
+          kept.push(line)
+        }
+      }
+      remaining -= kept.join('\n').length
+      return kept
+    }
+    const above = keep(before)
+    const below = keep(after)
+    if (!above.length && !below.length) continue
+    const key = file.path
+    const ranges = seen.get(key) ?? []
+    seen.set(key, ranges)
+    const nearest = ranges.find(range => !(above.length && range.end < excerpt.start - limit)
+      && !(below.length && range.start > excerpt.end + limit))
+    if (nearest) continue
+    ranges.push({ start: excerpt.start - above.length, end: excerpt.end + below.length })
+    contexts.push({ role: 'context', id: excerpt.id, path: file.path,
+      ...(above.length && { before: above.join('\n'),
+        beforeRange: { start: excerpt.start - above.length, end: excerpt.start - 1 } }),
+      ...(below.length && { after: below.join('\n'),
+        afterRange: { start: excerpt.end + 1, end: excerpt.end + below.length } }) })
+  }
+  return contexts
+}
+
 export function wikiReviewMaterial(draft, plan, evidence) {
   const selected = [...new Map([...draft.coverage.flatMap(item => item.refs), ...draft.chapters.flatMap(chapter => chapter.blocks.flatMap(block =>
-    [...block.refs, ...(block.items?.flatMap(item => item.refs) ?? []), ...(block.nodes?.flatMap(node => node.refs) ?? []),
+    [...(block.refs ?? []), ...(block.items?.flatMap(item => item.refs) ?? []), ...(block.nodes?.flatMap(node => node.refs) ?? []),
       ...(block.edges?.flatMap(edge => edge.refs) ?? [])])), ...draft.graph.layers.flatMap(layer => layer.nodes.flatMap(node => node.refs)),
   ...draft.graph.edges.flatMap(edge => edge.refs)].map(ref => [`${ref.evidence}:${ref.start}:${ref.end}`, ref])).values()]
   let remaining = 65_000
@@ -357,7 +507,7 @@ export function wikiReviewMaterial(draft, plan, evidence) {
       sourceRange: { start: file.start, end: file.end }, shownRange: { start: file.start, end: file.start + lines - 1 },
       characters: { original: file.text.length, included: text.length }, characterTruncated, lastLineTruncated })
   }
-  return { plan, draft, excerpts, documentOverviews,
-    citationInstructions: '同一文件中原文一致的重叠引用会合并展示；citations逐项保留原始证据id、start、end，与草稿refs中的evidence编号对应。各编号只能支持其原始引用范围，不能把合并范围当作单个编号的引用范围。没有citations时使用该摘录的id、start、end。所有引用原文均完整保留。',
+  return { plan, draft, excerpts, contexts: reviewContexts(excerpts, evidence), documentOverviews,
+    citationInstructions: '同一文件中原文一致的重叠引用会合并展示；citations逐项保留原始证据id、start、end，与草稿refs中的evidence编号对应。各编号只能支持其原始引用范围，不能把合并范围当作单个编号的引用范围。没有citations时使用该摘录的id、start、end。所有引用原文均完整保留。contexts是引用范围前后的相邻原文，标为context，只用于判断一条引用是否恰好截断在一条真实机制中间；它不构成证据，不能单独支持任何结论，也不能因为上下文中出现某内容就判该结论成立。',
     evidenceBudget: { limit: 65_000, characters: 65_000 - remaining, overviewRecordsOmitted } }
 }

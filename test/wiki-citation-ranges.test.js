@@ -20,14 +20,14 @@ const lines = refs => refs.flatMap(ref => Array.from({ length: ref.end - ref.sta
 
 test('28-line paragraph, coverage and graph citations split losslessly before review and public rendering', () => {
   const f = fixture()
-  const paragraph = f.raw.chapters[1].blocks[0]
+  const paragraph = f.raw.chapters[2].blocks[0]
   paragraph.refs = [{ evidence: 2, start: 128, end: 155 }]
   f.raw.coverage[0].refs = [{ evidence: 1, start: 128, end: 155 }]
   f.raw.graph.layers[1].nodes[0].refs = [{ evidence: 3, start: 25, end: 52 }]
   f.raw.graph.edges[0].refs = [{ evidence: 2, start: 128, end: 155 }]
   const original = structuredClone(f.raw)
   const draft = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan)
-  assert.deepEqual(ranges(draft.chapters[1].blocks[0].refs), [
+  assert.deepEqual(ranges(draft.chapters[2].blocks[0].refs), [
     { evidence: 2, start: 128, end: 152 }, { evidence: 2, start: 153, end: 155 },
   ])
   assert.deepEqual(ranges(draft.coverage[0].refs), [
@@ -50,26 +50,26 @@ test('28-line paragraph, coverage and graph citations split losslessly before re
 })
 
 test('citation expansion preserves order and every line at the four-reference budget', () => {
-  const f = fixture(), target = f.raw.chapters[1].blocks[0]
+  const f = fixture(), target = f.raw.chapters[2].blocks[0]
   target.refs = [{ evidence: 2, start: 100, end: 174 }, { evidence: 3, start: 25, end: 25 }]
   const draft = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan)
-  assert.deepEqual(ranges(draft.chapters[1].blocks[0].refs), [
+  assert.deepEqual(ranges(draft.chapters[2].blocks[0].refs), [
     { evidence: 2, start: 100, end: 124 }, { evidence: 2, start: 125, end: 149 },
     { evidence: 2, start: 150, end: 174 }, { evidence: 3, start: 25, end: 25 },
   ])
-  assert.deepEqual(lines(draft.chapters[1].blocks[0].refs.slice(0, 3)), Array.from({ length: 75 }, (_, index) => index + 100))
+  assert.deepEqual(lines(draft.chapters[2].blocks[0].refs.slice(0, 3)), Array.from({ length: 75 }, (_, index) => index + 100))
 })
 
 test('citation expansion rejects over-budget totals instead of clipping or dropping evidence', () => {
   for (const refs of [
-    [{ evidence: 2, start: 100, end: 175 }, { evidence: 3, start: 25, end: 25 }],
-    [{ evidence: 2, start: 100, end: 125 }, { evidence: 3, start: 1, end: 51 }],
+    [{ evidence: 2, start: 100, end: 194 }, { evidence: 3, start: 1, end: 95 }],
+    [{ evidence: 2, start: 100, end: 149 }, { evidence: 2, start: 150, end: 194 }, { evidence: 3, start: 1, end: 95 }],
   ]) {
     const f = fixture()
-    f.raw.chapters[1].blocks[0].refs = refs
+    f.raw.chapters[2].blocks[0].refs = refs
     assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), error =>
-      error.code === 'model-output-invalid' && /正文 execution_text.*需要 5 项.*最多允许 4 项.*不能丢弃或截断/.test(error.message))
-    assert.deepEqual(f.raw.chapters[1].blocks[0].refs, refs)
+      error.code === 'model-output-invalid' && /正文 execution_text.*需要 8 项.*最多允许 6 项.*不能丢弃或截断/.test(error.message))
+    assert.deepEqual(f.raw.chapters[2].blocks[0].refs, refs)
   }
 })
 
@@ -81,7 +81,7 @@ test('original citation types, integer ranges, read bounds and implementation ev
     { evidence: 2, start: 155, end: 128 }, { evidence: 1, start: 128, end: 155 }]) {
     const f = fixture()
     // The first range alone would need four parts; the invalid second range must still be validated first.
-    f.raw.chapters[1].blocks[0].refs = [{ evidence: 2, start: 100, end: 194 }, invalid]
+    f.raw.chapters[2].blocks[0].refs = [{ evidence: 2, start: 100, end: 194 }, invalid]
     assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), error =>
       error.code === 'model-output-invalid' && /正文 execution_text 的引用\[1\].*有效实现证据/.test(error.message))
   }
@@ -93,12 +93,12 @@ test('original citation types, integer ranges, read bounds and implementation ev
 test('code examples keep the original single 1–20-line contract after citation expansion', () => {
   for (const count of [21, 26]) {
     const f = fixture()
-    f.raw.chapters[1].blocks.find(block => block.type === 'code').refs = [{ evidence: 3, start: 25, end: 24 + count }]
+    f.raw.chapters[2].blocks.find(block => block.type === 'code').refs = [{ evidence: 3, start: 25, end: 24 + count }]
     assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), /源码示例 core_code 需要单个 1–20 行/)
   }
   const f = fixture()
-  f.raw.chapters[1].blocks.find(block => block.type === 'code').refs = [{ evidence: 3, start: 25, end: 44 }]
-  const code = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan).chapters[1].blocks.find(block => block.type === 'code')
+  f.raw.chapters[2].blocks.find(block => block.type === 'code').refs = [{ evidence: 3, start: 25, end: 44 }]
+  const code = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan).chapters[2].blocks.find(block => block.type === 'code')
   assert.equal(code.refs.length, 1)
   assert.equal(code.lines.length, 20)
   assert.equal(code.lines.at(-1), 'original line 44')
@@ -111,7 +111,7 @@ test('specialized view citations retain the same compact public contract after l
   const diagram = wikiDiagramFixture(f.spans)
   diagram.nodes[0].refs = [{ evidence: 2, start: 128, end: 155 }]
   diagram.edges[0].refs = [{ evidence: 2, start: 128, end: 155 }]
-  f.raw.chapters[1].blocks.push(diagram)
+  f.raw.chapters[2].blocks.push(diagram)
   const rendered = renderWikiDocument(normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), f.source)
   const view = rendered.views[0]
   assert.equal(view.nodes[0].refs.length, 2)

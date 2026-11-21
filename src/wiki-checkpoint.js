@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -66,6 +66,16 @@ async function readRegular(path) {
 }
 
 export function createWikiCheckpoints(directory) {
+  async function get(id) {
+    if (!validId(id)) return null
+    const bytes = await readRegular(join(directory, id + '.json'))
+    if (!bytes) return null
+    try {
+      const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+      return validPayload(value) ? value : null
+    } catch { return null }
+  }
+
   return {
     async save(id, payload) {
       if (!validId(id)) throw new TypeError('Invalid Wiki checkpoint ID')
@@ -95,14 +105,34 @@ export function createWikiCheckpoints(directory) {
       try { await writing }
       finally { if (pendingWrites.get(target) === writing) pendingWrites.delete(target) }
     },
-    async get(id) {
-      if (!validId(id)) return null
-      const bytes = await readRegular(join(directory, id + '.json'))
-      if (!bytes) return null
+    get,
+    async latest(accept = () => true) {
+      let entries
       try {
-        const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
-        return validPayload(value) ? value : null
-      } catch { return null }
+        entries = await readdir(directory, { withFileTypes: true })
+      } catch (error) {
+        if (error?.code === 'ENOENT') return null
+        throw error
+      }
+      const candidates = []
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+        const id = entry.name.slice(0, -5)
+        if (!validId(id)) continue
+        const file = await lstat(join(directory, entry.name)).catch(error => {
+          if (error?.code !== 'ENOENT') throw error
+        })
+        if (file?.isFile() && file.size <= maxBytes) candidates.push({ id, updatedAt: file.mtimeMs })
+      }
+      candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+      for (const { id, updatedAt } of candidates) {
+        const checkpoint = await get(id)
+        if (!checkpoint) continue
+        const { repositoryUrl, repositoryPath, commit } = checkpoint
+        const metadata = { id, commit, repositoryUrl, repositoryPath, updatedAt }
+        if (await accept(metadata)) return metadata
+      }
+      return null
     },
     async remove(id) {
       if (!validId(id)) return false

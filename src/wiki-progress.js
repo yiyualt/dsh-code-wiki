@@ -54,7 +54,7 @@ export function createWikiProgress(job) {
     }
     job.phase = next
     details.step = step
-    for (const key of counters) if (integer(metadata[key], key === 'repair' ? 2 : 1000)) details[key] = metadata[key]
+    for (const key of counters) if (integer(metadata[key], key === 'repair' ? 3 : 1000)) details[key] = metadata[key]
     if (categories.has(metadata.reasonCategory)) details.reasonCategory = metadata.reasonCategory
     if (typeof metadata.retryMessage === 'string') details.retryMessage = metadata.retryMessage.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 900)
     lastActivityAt = now

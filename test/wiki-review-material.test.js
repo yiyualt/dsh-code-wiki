@@ -32,7 +32,7 @@ function selected(draft) {
 test('overlapping source excerpts preserve every exact evidence ID and quoted range without changing the public document', () => {
   const f = fixture()
   f.raw.coverage[1].refs[0] = { evidence: 2, start: 5, end: 20 }
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 15, end: 30 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 15, end: 30 }]
   f.raw.graph.layers[0].nodes[0].refs = [{ evidence: 2, start: 10, end: 25 }]
   const draft = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan)
   const before = structuredClone(draft), rendered = renderWikiDocument(draft, f.source)
@@ -60,7 +60,7 @@ test('overlapping source excerpts preserve every exact evidence ID and quoted ra
 test('identical source ranges read under different evidence IDs retain both aliases but quote the source once', () => {
   const f = fixture()
   f.raw.coverage[1].refs[0] = { evidence: 2, start: 15, end: 20 }
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 15, end: 20 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 15, end: 20 }]
   const material = wikiReviewMaterial(normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), f.plan, f.evidence)
   const excerpts = material.excerpts.filter(item => item.path === 'main.js' && item.start === 15)
   assert.equal(excerpts.length, 1)
@@ -72,7 +72,7 @@ test('source deduplication rejects inconsistent overlapping lines rather than se
   lines[7] = 'conflicting source at original line 18'
   f.evidence[3].text = lines.join('\n')
   f.raw.coverage[1].refs[0] = { evidence: 2, start: 10, end: 20 }
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 15, end: 25 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 15, end: 25 }]
   const draft = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan)
   assert.throws(() => wikiReviewMaterial(draft, f.plan, f.evidence), error =>
     error.code === 'model-output-invalid' && /main\.js:18.*重叠原文冲突/.test(error.message))
@@ -81,7 +81,7 @@ test('source deduplication rejects inconsistent overlapping lines rather than se
 test('disjoint cited intervals never acquire unquoted lines between them', () => {
   const f = fixture()
   f.raw.coverage[1].refs[0] = { evidence: 2, start: 1, end: 5 }
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 11, end: 15 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 11, end: 15 }]
   const material = wikiReviewMaterial(normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), f.plan, f.evidence)
   const main = material.excerpts.filter(item => item.path === 'main.js')
   assert.deepEqual(main.map(item => [item.start, item.end]), [[1, 5], [11, 15]])
@@ -97,7 +97,7 @@ test('distinct source content still obeys the existing 65000-character review bu
   f.evidence[3] = { ...f.evidence[3], path: 'helper.js', start: 1, end: 20, text: large }
   f.source.tree.push({ path: 'helper.js', type: 'blob', mode: '100644' })
   f.raw.coverage[1].refs = [{ evidence: 2, start: 1, end: 20 }, { evidence: 3, start: 1, end: 20 }]
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 1, end: 20 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 1, end: 20 }]
   const draft = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan)
   assert.throws(() => wikiReviewMaterial(draft, f.plan, f.evidence), /审核材料超过预算/)
 })
@@ -105,7 +105,7 @@ test('distinct source content still obeys the existing 65000-character review bu
 test('a citation whose original text lacks its declared lines is rejected before any merge', () => {
   const f = fixture()
   f.evidence[3].text = f.body.slice(10, 15).join('\n')
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 11, end: 20 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 11, end: 20 }]
   const draft = normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan)
   assert.throws(() => wikiReviewMaterial(draft, f.plan, f.evidence), /审核引用 4:11–20 超出实际证据原文/)
 })
@@ -113,7 +113,7 @@ test('a citation whose original text lacks its declared lines is rejected before
 test('resumed targeted repairs find merged source through the original citation alias', async () => {
   const f = fixture()
   f.raw.coverage[1].refs[0] = { evidence: 2, start: 5, end: 20 }
-  f.raw.chapters[1].blocks[0].refs = [{ evidence: 4, start: 15, end: 25 }]
+  f.raw.chapters[2].blocks[0].refs = [{ evidence: 4, start: 15, end: 25 }]
   let semantic = 0, repairs = 0, reviews = 0
   const ctx = { llm: { async *stream(options) {
     reviews++
@@ -138,7 +138,7 @@ test('resumed targeted repairs find merged source through the original citation 
         assert.equal(excerpt.id, 2)
         assert.equal(excerpt.text, f.body.slice(4, 25).join('\n'))
         assert.match(restored.citationInstructions, /原始引用范围/)
-        const block = { ...structuredClone(f.raw.chapters[1].blocks[0]), text: '澄清后的入口实现说明。' }
+        const block = { ...structuredClone(f.raw.chapters[2].blocks[0]), text: '澄清后的入口实现说明。' }
         assert.match((await tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [
           { chapter: 'execution', action: 'replace', target: block.id, block },
         ] } })).status, /草稿已收到/)

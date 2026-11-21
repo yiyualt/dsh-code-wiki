@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { modelError } from './generate-wiki.js'
 import { repositoryTools } from './repository-tools.js'
-import { normalizeWikiPlan, normalizeWikiDraft, renderWikiDocument, reviseWikiDraft, wikiReviewMaterial, wikiInvalid } from './wiki-document.js'
+import { isDeepStrictEqual } from 'node:util'
+import { normalizeWikiPlan, normalizeWikiDraft, restoreWikiDraft, renderWikiDocument, reviseWikiDraft,
+  wikiReviewMaterial, wikiTargetEntries, wikiInvalid } from './wiki-document.js'
 import { wikiPublicationSchema, wikiResearchInstructions, reviewWikiDraft } from './wiki-editor.js'
 
 export async function exploreArchitecture(ctx, source, selection, adapter, signal, onRead, onPhase = () => {}, { checkpoint, onCheckpoint } = {}) {
@@ -13,7 +15,7 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
   const progress = (phase, step, details = {}) => onPhase(phase, {
     step, repair, attempt: roundAttempt, attemptLimit: 3, rejections, ...lastRetry, ...details,
   })
-  let currentRaw = checkpoint?.draft
+  let currentRaw, reviewed
   let checkpointWrites = Promise.resolve(), lastCheckpoint
   async function saveCheckpoint(draft = currentRaw) {
     if (!plan || !onCheckpoint) return
@@ -62,10 +64,14 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           return { status: '研究计划已接受。现在按领域读取实际证据，完成覆盖记录后提交 kind=draft；这还不是最终发布。' }
         }
         if (!['draft', 'revise'].includes(args?.kind)) throw wikiInvalid('wiki_publish 需要 kind=plan、kind=draft 或 kind=revise。')
+        if (args.kind === 'draft' && currentRaw !== undefined) throw wikiInvalid('已有草稿，请用 kind=revise 提交定向修订。')
         // A shared tool schema can produce unused payloads; only the selected kind participates.
         progress('writing', 'validating', { plan })
         const candidate = args.kind === 'revise' ? reviseWikiDraft(currentRaw, args.revisions) : args.draft
         const draft = normalizeWikiDraft(candidate, source, evidence, plan)
+        if (reviewed && isDeepStrictEqual(draft, reviewed.draft)) {
+          throw wikiInvalid('修订后正文、图和引用没有实际变化。请按审核意见修改对应内容。')
+        }
         const previousRaw = currentRaw, previousPhase = phase
         currentRaw = structuredClone(candidate)
         phase = 'reviewing'
@@ -91,11 +97,14 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
   try {
     let resumedDraft
     if (checkpoint) {
-      plan = normalizeWikiPlan(checkpoint.plan, source)
-      if (checkpoint.draft !== undefined) resumedDraft = normalizeWikiDraft(checkpoint.draft, source, evidence, plan)
-      phase = resumedDraft ? 'reviewing' : 'researching'; plans = 1
-      await saveCheckpoint()
-      progress(phase, resumedDraft ? 'reviewing' : 'researching')
+      const restored = restoreWikiDraft(checkpoint, source, evidence)
+      plan = restored.plan
+      currentRaw = restored.raw
+      resumedDraft = restored.draft
+      phase = resumedDraft ? 'reviewing' : plan ? 'researching' : 'planning'
+      plans = plan ? 1 : 0
+      if (plan) await saveCheckpoint()
+      progress(phase, phase)
       onRead?.(new Set(evidence.map(item => item.path)).size, evidence.at(-1)?.path)
     }
     if (adapter) disposeAdapter = ctx.llm.registerAdapter([provider], adapter)
@@ -147,12 +156,14 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
     }
     const repository = source.owner ? `${source.owner}/${source.repo}` : source.repo
     const researchPrompt = checkpoint && !resumedDraft
-      ? '\n已恢复同一提交的研究计划和已读证据，plan已被接受，但尚无草稿。证据编号保持不变，以下原文可以直接引用，不要重复读取。只补读确实缺少的依据，然后调用 wiki_publish(kind=draft) 提交新草稿，不能用 kind=revise。草稿仍须通过完整结构检查、事实审核与编辑审核才能发布。\n'
-        + JSON.stringify({ repository, commit: source.commit, plan,
+      ? '\n已恢复同一提交的已读证据，证据编号保持不变。以下原文可以直接引用，只补读确实缺少的依据。'
+        + (plan ? '研究计划已被接受，尚无可用草稿。' : '旧研究计划与当前格式不兼容，请参考旧计划并先用 kind=plan 提交新的计划。')
+        + '然后调用 wiki_publish(kind=draft) 提交新草稿。\n'
+        + JSON.stringify({ repository, commit: source.commit, ...(plan ? { plan } : { previousPlan: checkpoint.plan }),
           evidence: evidence.map((file, index) => ({ id: index + 1, ...file })) })
       : '\n先列目录并读取项目介绍。工具请求预算有限，优先批量读取和有目标的搜索；通常在40轮模型请求内提交初稿，预留后续审核修订所需请求。覆盖主要架构问题后及时写作，不穷举整个代码仓。'
     let draft = resumedDraft ?? await draftRound(wikiResearchInstructions + '\n\n仓库：' + repository + '\n固定提交：' + source.commit + researchPrompt)
-    for (let reviewRound = 0; reviewRound <= 2; reviewRound++) {
+    for (let reviewRound = 0; reviewRound <= 3; reviewRound++) {
       repair = reviewRound
       roundAttempt = 1
       progress('reviewing', 'reviewing', { plan, draft, attemptLimit: 2 })
@@ -161,12 +172,12 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           rejections++
           lastRetry = { reasonCategory: 'validation', retryMessage: details.retryMessage }
           progress('reviewing', 'submission-retry', details)
-        })
+        }, reviewed)
       lastRetry = undefined
       if (review.approved) return { ...renderWikiDocument(draft, source), files: [...evidence] }
-      if (repair === 2) throw wikiInvalid('Wiki 经过两次定向修订仍未通过独立审核：' + review.issues.map(issue => issue.reason).join('；').slice(0, 1200))
+      if (repair === 3) throw wikiInvalid('Wiki 经过三次定向修订仍未通过独立审核：' + review.issues.map(issue => issue.reason).join('；').slice(0, 1200))
       const requests = [...new Map(review.issues.flatMap(issue => issue.reads).map(read => [`${read.path}:${read.start}:${read.count}`, read])).values()]
-      const additionalEvidence = []
+      const additionalEvidence = [], incompleteReads = []
       repair = reviewRound + 1
       roundAttempt = 1
       if (requests.length) {
@@ -175,9 +186,9 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
         for (const request of requests) {
           signal.throwIfAborted()
           const result = JSON.parse((await read.execute(request, { signal })).data)
-          if (result.error || !result.evidence || result.rangeTruncated) throw wikiInvalid('审核要求的补读未完成：' + request.path + '，'
-            + (result.error || (result.rangeTruncated ? '所需范围超过读取预算，请缩小补读范围' : '没有返回证据')) + '。未发布草稿。')
-          additionalEvidence.push(result)
+          if (result.evidence) additionalEvidence.push(result)
+          if (!result.evidence || result.rangeTruncated) incompleteReads.push({ ...request,
+            reason: result.error ?? '读取范围超出单次预算', ...(result.nextLine && { nextLine: result.nextLine }) })
         }
       }
       phase = 'writing'
@@ -185,12 +196,8 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
       let recoveryContext = ''
       if (resumedDraft && reviewRound === 0) {
         const targets = new Set(review.issues.map(issue => issue.target))
-        const objects = [
-          ...draft.chapters.flatMap(chapter => chapter.blocks.map(block => [block.id, block])),
-          ...draft.graph.layers.flatMap(layer => layer.nodes.map(node => ['node:' + node.id, node])),
-          ...draft.graph.edges.map(edge => [`edge:${edge.from}:${edge.to}`, edge]),
-        ].filter(([target]) => targets.has(target)).map(([, value]) => value)
-        const ranges = new Set(objects.flatMap(value => [...value.refs, ...(value.items?.flatMap(item => item.refs) ?? []),
+        const objects = [...wikiTargetEntries(draft)].filter(([target]) => targets.has(target)).map(([, { value }]) => value)
+        const ranges = new Set(objects.flatMap(value => [...(value.refs ?? []), ...(value.items?.flatMap(item => item.refs) ?? []),
           ...(value.nodes?.flatMap(node => node.refs) ?? []), ...(value.edges?.flatMap(edge => edge.refs) ?? [])])
           .map(ref => `${ref.evidence}:${ref.start}:${ref.end}`))
         const reviewMaterial = wikiReviewMaterial(draft, plan, evidence)
@@ -201,10 +208,11 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
             excerpts: reviewMaterial.excerpts.filter(ref => (ref.citations ?? [ref])
               .some(citation => ranges.has(`${citation.id}:${citation.start}:${citation.end}`))) }) + '\n'
       }
-      draft = await draftRound('独立审核要求定向修订，尚未发布。保留未受影响的章节，只修正列出的问题。调用 wiki_publish(kind=revise) 仅提交改动，不重新输出整篇草稿。'
-        + 'revisions.blocks 使用 chapter、action(replace|insert_after|delete)、target(原正文块id)及新增/替换的完整block；replace保留原id。需要时可整体更新revisions.graph或coverage。合并后仍会完整验证并重新审核。补读材料已实际读取，可继续有针对性地查证。\n'
+      reviewed = { draft, review }
+      draft = await draftRound('独立审核要求定向修订，尚未发布。保留未受影响的章节，逐项解决列出的问题。调用 wiki_publish(kind=revise) 仅提交改动，不重新输出整篇草稿。'
+        + 'revisions.blocks 使用 chapter、action(replace|insert_after|delete)、target(原正文块id)及新增/替换的完整block；replace保留原id。需要时可整体更新revisions.graph或coverage。合并后验证完整结构，审核员复核未解决的问题和新增改动。补读成功的原文在 additionalEvidence，仍缺证据时可按具体符号搜索或缩小范围继续查证。\n'
         + recoveryContext
-        + JSON.stringify({ corrections: review.issues, additionalEvidence }))
+        + JSON.stringify({ corrections: review.issues, additionalEvidence, incompleteReads }))
     }
   } catch (error) {
     // Retain completed research even when a pending model request is cancelled or times out.

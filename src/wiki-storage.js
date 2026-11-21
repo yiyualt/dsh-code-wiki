@@ -3,6 +3,8 @@ import { constants } from 'node:fs'
 import { link, mkdir, open, readdir, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
+import { wikiCitationLimit, wikiViewEdgeLimits } from './wiki-document.js'
+
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 const documentFile = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.json$/
 const commitHash = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i
@@ -19,10 +21,11 @@ function validViews(views) {
     if (!view || !/^[a-z][a-z0-9_-]{0,43}$/.test(view.id) || ids.has(view.id) || !viewKinds.has(view.kind)
       || !nonempty(view.title) || !nonempty(view.purpose) || !nonempty(view.mermaid)
       || !Array.isArray(view.nodes) || view.nodes.length < 2 || view.nodes.length > 8
-      || !Array.isArray(view.edges) || view.edges.length < 1 || view.edges.length > 10) return false
+      || !Array.isArray(view.edges) || view.edges.length < 1
+      || view.edges.length > (view.kind === 'sequence' ? wikiViewEdgeLimits.sequence : wikiViewEdgeLimits.other)) return false
     ids.add(view.id)
     const nodes = new Set()
-    const refs = value => Array.isArray(value) && value.length > 0 && value.length <= 4
+    const refs = value => Array.isArray(value) && value.length > 0 && value.length <= wikiCitationLimit
       && value.every(ref => nonempty(ref?.label) && nonempty(ref?.url))
     if (!view.nodes.every(node => {
       if (!/^[a-z][a-z0-9_-]{0,43}$/.test(node?.id) || nodes.has(node.id) || !nonempty(node.label) || !refs(node.refs)) return false

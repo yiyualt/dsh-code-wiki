@@ -58,7 +58,7 @@ test('four targeted changes accept two-chapter placeholder or nonempty unrelated
       { id: id + '_text', type: 'paragraph', claimType: 'purpose', text: '', refs: [{ evidence: 1, start: 1, end: 1 }] },
     ] }))
     else draft.chapters[0].blocks[0].text = 'unrelated_payload_marker'
-    assert.equal(draft.chapters.length, 2)
+    assert.equal(draft.chapters.length, placeholder ? 2 : 4)
     const fRun = repairContext(f, async tools => {
       const result = await tools.get('wiki_publish').execute({ kind: 'revise', plan, draft, revisions: f.revisions })
       assert.match(result.status, /草稿已收到/)

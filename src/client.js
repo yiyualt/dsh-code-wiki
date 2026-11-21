@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
       if (!Array.isArray(graph?.layers) || !Array.isArray(graph.edges)) return null
       function citations(refs) {
         if (!Array.isArray(refs)) return []
-        return refs.slice(0, 4).flatMap(ref => {
+        return refs.slice(0, 6).flatMap(ref => {
           if (typeof ref?.label !== 'string' || typeof ref.url !== 'string') return []
           const url = URL.parse(ref.url)
           if (!url) return []
@@ -65,6 +65,8 @@ window.__ModuleLoader__.load({
         })
       }
       const ids = new Set()
+      const nodeKinds = new Set(['entry', 'core', 'data', 'external'])
+      const edgeKinds = new Set(['call', 'data', 'dependency'])
       const layers = graph.layers.slice(0, 5).flatMap(layer => {
         if (typeof layer?.title !== 'string' || !Array.isArray(layer.nodes)) return []
         const nodes = layer.nodes.flatMap(node => {
@@ -72,14 +74,14 @@ window.__ModuleLoader__.load({
           const refs = citations(node.refs)
           if (!refs.length) return []
           ids.add(node.id)
-          return [{ ...node, refs }]
+          return [{ ...node, kind: nodeKinds.has(node.kind) ? node.kind : 'core', refs }]
         })
         return nodes.length ? [{ title: layer.title, nodes }] : []
       })
       const edges = graph.edges.slice(0, 24).flatMap(edge => {
         if (!ids.has(edge?.from) || !ids.has(edge?.to) || typeof edge.label !== 'string') return []
         const refs = citations(edge.refs)
-        return refs.length ? [{ ...edge, refs }] : []
+        return refs.length ? [{ ...edge, kind: edgeKinds.has(edge.kind) ? edge.kind : 'call', refs }] : []
       })
       return layers.length > 1 && edges.length ? { layers, edges } : null
     }
@@ -121,7 +123,7 @@ window.__ModuleLoader__.load({
       const text = (value, maximum) => typeof value === 'string' && value.trim() && value.length <= maximum
         && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)
       function references(refs) {
-        if (!Array.isArray(refs) || !refs.length || refs.length > 4) return null
+        if (!Array.isArray(refs) || !refs.length || refs.length > 6) return null
         const resolved = refs.map(ref => {
           if (!text(ref?.label, 600) || typeof ref.url !== 'string' || !sourceLink(ref.url, metadata)) return null
           const href = metadata.source === 'local' ? new URL('api/dsh-code-wiki/source' + new URL(ref.url).search, document.baseURI).href : ref.url
@@ -134,7 +136,7 @@ window.__ModuleLoader__.load({
           || !['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment'].includes(view.kind)
           || !text(view.title, 100) || !text(view.purpose, 450) || !text(view.mermaid, 16_000)
           || !Array.isArray(view.nodes) || view.nodes.length < 2 || view.nodes.length > 8
-          || !Array.isArray(view.edges) || !view.edges.length || view.edges.length > 10) return []
+          || !Array.isArray(view.edges) || !view.edges.length || view.edges.length > (view.kind === 'sequence' ? 16 : 10)) return []
         const nodeIds = new Set(), connected = new Set()
         const nodes = view.nodes.map(node => {
           const refs = references(node?.refs)
@@ -169,6 +171,12 @@ window.__ModuleLoader__.load({
           if (close && close[1][0] === marker[1][0] && close[1].length >= marker[1].length && !close[2].trim()) break
         }
         const mermaid = marker[2].trim().toLowerCase() === 'mermaid'
+        if (marker[2].trim().toLowerCase() === 'dsh-architecture') {
+          if (pending.length) blocks.push({ markdown: pending.splice(0).join('\n') })
+          blocks.push({ architecture: true })
+          i = end
+          continue
+        }
         const view = mermaid && end < lines.length && /^ {0,3}(`{3,}|~{3,})/.test(lines[i])
           && approved.get(lines.slice(i + 1, end).join('\n'))
         if (view) {
@@ -347,8 +355,9 @@ window.__ModuleLoader__.load({
     function matchingRetry(job, source, repositoryUrl, repositoryPath) {
       const target = retryTarget(job)
       if (!target || job.phase !== 'failed' || target.source !== source) return null
+      const githubKey = url => url.trim().toLowerCase().replace(/\/+$/, '').replace(/\.git$/, '')
       const same = source === 'local' ? target.repositoryPath === repositoryPath.trim()
-        : target.repositoryUrl.replace(/\/+$/, '') === repositoryUrl.trim().replace(/\/+$/, '')
+        : githubKey(target.repositoryUrl) === githubKey(repositoryUrl)
       if (!same) return null
       const canResume = job.canResume === true && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(job.id)
         && (source === 'local' || /^[a-f\d]{40}$/i.test(job.commit))
@@ -887,13 +896,13 @@ window.__ModuleLoader__.load({
     function generationPresentation(generation, stage) {
       let status = stage?.status ?? '正在提交任务'
       let detail = stage?.detail ?? '任务开始后会显示当前阶段。'
-      const repair = Number.isSafeInteger(generation.repair) && generation.repair > 0 && generation.repair <= 2
+      const repair = Number.isSafeInteger(generation.repair) && generation.repair > 0 && generation.repair <= 3
         ? `（第 ${generation.repair} 轮）` : ''
       const rejections = Number.isSafeInteger(generation.rejections) && generation.rejections > 0 ? generation.rejections : 0
       if (generation.phase === 'writing') {
         if (generation.step === 'revising') {
           status = '按审核意见修订' + repair
-          detail = '正在修改审核指出的内容，完成后会重新检查全文。'
+          detail = '正在修改审核指出的内容，完成后会复核这些问题和改动。'
         } else if (generation.step === 'submission-retry') {
           status = rejections ? `提交校验未通过，正在修正（累计 ${rejections} 次）` : '正在重新提交草稿'
           detail = '正在按校验反馈调整草稿，尚未保存正式文档。'
@@ -1172,7 +1181,16 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-code-wiki-diagram-frame' },
         h('div', { className: 'dsh-code-wiki-diagram-heading' },
           h('h2', { id: titleId }, '架构图'),
-          h('p', { id: hintId }, '拖动空白处平移，点击组件查看源码。')),
+          h('p', { id: hintId }, '拖动空白处平移，点击组件查看源码。'),
+          h('div', { className: 'dsh-code-wiki-diagram-legend', 'aria-label': '图例' },
+            [['entry', '入口'], ['core', '核心逻辑'], ['data', '数据与存储'], ['external', '外部依赖']]
+              .filter(([kind]) => [...nodes.values()].some(node => node.kind === kind))
+              .map(([kind, label]) => h('span', { key: kind, className: 'dsh-code-wiki-legend-node', 'data-kind': kind },
+                h('i', { 'aria-hidden': true }), label)),
+            [['call', '调用'], ['data', '数据流'], ['dependency', '依赖']]
+              .filter(([kind]) => edges.some(edge => edge.kind === kind))
+              .map(([kind, label]) => h('span', { key: kind, className: 'dsh-code-wiki-legend-edge', 'data-kind': kind },
+                h('i', { 'aria-hidden': true }), label)))),
         h('div', { className: 'dsh-code-wiki-diagram-tools', role: 'group', 'aria-label': '架构图控制' },
           h('div', { className: 'dsh-code-wiki-diagram-view-tools' },
             h('div', { className: 'dsh-code-wiki-diagram-zoom', role: 'group', 'aria-label': '缩放' },
@@ -1213,7 +1231,7 @@ window.__ModuleLoader__.load({
                 const d = edgePath(edge, index)
                 const active = selected && (edge.from === selected.id || edge.to === selected.id)
                 return sourceLink(edge.refs[0], { key: index, tabIndex: -1, className: 'dsh-code-wiki-diagram-edge',
-                  'data-active': active ? '' : undefined, 'data-muted': selected && !active ? '' : undefined },
+                  'data-kind': edge.kind, 'data-active': active ? '' : undefined, 'data-muted': selected && !active ? '' : undefined },
                   h('title', null, nodes.get(edge.from).title + ' → ' + nodes.get(edge.to).title + ' · ' + edge.label),
                   h('path', { className: 'dsh-code-wiki-diagram-edge-target', d, strokeWidth: 14 }),
                   h('path', { d, fill: 'none', stroke: 'currentColor', strokeWidth: active ? 2 : 1.35,
@@ -1226,6 +1244,7 @@ window.__ModuleLoader__.load({
               'aria-pressed': selectedId === node.id,
               'aria-controls': detailsId,
               'aria-label': node.title,
+              'data-kind': node.kind,
               'data-muted': selected && node.id !== selected.id && !relatedIds.has(node.id) ? '' : undefined,
               style: { left: node.x, width: nodeWidth, top: node.y, height: nodeHeight },
               onFocus: event => showNodeInViewport(event, node),
@@ -1266,6 +1285,17 @@ window.__ModuleLoader__.load({
         )))
     }
 
+    function chapterSections(markdown) {
+      const titles = []
+      outsideCode(markdown, line => {
+        // Chapters are demoted by one level while splitting, so a section arrives as a second-level heading.
+        const heading = /^ {0,3}##[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line)
+        if (heading) titles.push(heading[1].replace(/\\([^\w\s])/g, '$1').trim())
+        return line
+      })
+      return [...new Set(titles.filter(Boolean))].slice(0, 10)
+    }
+
     function WikiArticle({ result, chapterIndex, headingRef }) {
       const chapter = result.chapters[chapterIndex]
       const repository = repositoryLabel(result)
@@ -1273,11 +1303,16 @@ window.__ModuleLoader__.load({
       const isDocumentTitle = title && title !== chapter.title
         && ![repository + ' Wiki', repository + ' 架构 Wiki'].includes(title)
       const shortCommit = result.commit.slice(0, 12)
-      const overview = chapterIndex === 0 && result.architecture ? introductionBeforeGraph(chapter.markdown) : null
+      const placedInline = result.chapters.some(item => item.markdown.includes('```dsh-architecture'))
+      const overview = !placedInline && chapterIndex === 0 && result.architecture
+        ? introductionBeforeGraph(chapter.markdown) : null
       const prose = markdown => markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
-        approvedViewBlocks(markdown, result.views ?? []).map((block, i) => block.view
-          ? h(WikiView, { key: block.view.id + '-' + i, view: block.view })
-          : block.markdown.trim() && h(MarkdownText, { key: i, text: block.markdown, labels, omitHtml: true })))
+        approvedViewBlocks(markdown, result.views ?? []).map((block, i) => block.architecture
+          ? result.architecture && h(ArchitectureGraph, { key: 'architecture-' + i, graph: result.architecture })
+          : block.view
+            ? h(WikiView, { key: block.view.id + '-' + i, view: block.view })
+            : block.markdown.trim() && h(MarkdownText, { key: i, text: block.markdown, labels, omitHtml: true })))
+      const sections = chapterSections(chapter.markdown)
       const revision = h(React.Fragment, null,
         h('span', { 'aria-hidden': true }, h(IconBranchOutlineRegular, { size: 14 })),
         h('code', null, shortCommit),
@@ -1303,8 +1338,14 @@ window.__ModuleLoader__.load({
           ),
           result.note && h('p', { className: 'dsh-code-wiki-note' }, result.note),
         ),
+        sections.length > 1 && h('nav', { className: 'dsh-code-wiki-sections', 'aria-label': '本章小节' },
+          sections.map(section => h('button', { key: section, type: 'button', onClick: event => {
+            const article = event.currentTarget.closest('article')
+            const target = [...(article?.querySelectorAll('h2, h3') ?? [])].find(node => node.textContent.trim() === section)
+            target?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+          } }, section))),
         prose(overview ? overview.introduction : chapter.markdown),
-        chapterIndex === 0 && result.architecture && h(ArchitectureGraph, { key: result.id, graph: result.architecture }),
+        overview && h(ArchitectureGraph, { key: result.id, graph: result.architecture }),
         overview && prose(overview.remaining),
         chapter.references && h('details', { className: 'dsh-code-wiki-sources' },
           h('summary', null, '本章引用', h('span', null, chapter.referenceCount)),

@@ -132,12 +132,53 @@ test('the first chapter introduces the system before its graph and keeps source 
   assert.equal(find(rendered, node => node.props.role === 'status').children[0], '正在核对源码')
 })
 
+test('an architecture placeholder keeps the graph inside its own chapter and chapter sections become navigation', async () => {
+  const data = record('# Project Wiki\n\n## 系统架构\n\n这一段说明分层依据。 [1](' + sourceUrl + ')\n\n```dsh-architecture\n```\n\n'
+    + '## 数据管道\n\n### 批处理\n\n正文一段。 [1](' + sourceUrl + ')\n\n### 缓存\n\n正文两段。')
+  const ref = { label: 'src/main.js:10–20', url: sourceUrl }
+  data.architecture = { layers: [
+    { title: '输入', nodes: [{ id: 'input', title: 'Input', kind: 'entry', summary: 'Accepts input.', refs: [ref] }] },
+    { title: '输出', nodes: [{ id: 'output', title: 'Output', kind: 'data', summary: 'Returns a result.', refs: [ref] }] },
+  ], edges: [{ from: 'input', to: 'output', kind: 'data', label: 'Passes input', refs: [ref] }] }
+  const { wiki, Page } = await reader(data)
+  const snapshot = wiki.getSnapshot()
+  const articleFor = index => {
+    const element = find(Page({ wiki: { ...wiki, getSnapshot: () => ({ ...snapshot, chapterIndex: index }) } }),
+      node => node.type?.name === 'WikiArticle')
+    return element.type(element.props)
+  }
+
+  const architecture = articleFor(0)
+  assert.equal(architecture.children.filter(node => node?.props?.className === 'dsh-code-wiki-prose').length, 1,
+    'the graph stays inside the architecture chapter instead of being appended after the prose')
+  const graph = find(architecture, node => node?.type?.name === 'ArchitectureGraph')
+  assert(graph)
+  assert.equal(graph.props.graph.layers[0].nodes[0].kind, 'entry')
+  assert.equal(graph.props.graph.edges[0].kind, 'data')
+  const diagram = graph.type(graph.props)
+  const node = find(diagram, item => item?.props?.['data-kind'] === 'entry')
+  assert(node, 'architecture nodes expose their kind for the accent colour')
+  assert(find(diagram, item => item?.props?.className === 'dsh-code-wiki-diagram-legend'))
+
+  const pipeline = articleFor(1)
+  const nav = pipeline.children.find(item => item?.props?.className === 'dsh-code-wiki-sections')
+  assert(nav)
+  assert.deepEqual(nav.children.map(button => button.children[0]), ['批处理', '缓存'])
+  assert.equal(architecture.children.some(item => item?.props?.className === 'dsh-code-wiki-sections'), false,
+    'a chapter without short sections does not show navigation')
+})
+
 test('only exact approved diagram fences become controlled views and all other Mermaid stays code', async () => {
-  const refs = [{ label: 'src/main.js:10–20', url: sourceUrl }]
-  const view = { id: 'input_flow', kind: 'flow', title: 'Input processing', purpose: 'Show how the input reaches storage.',
+  const refs = Array.from({ length: 6 }, (_, index) => ({ label: `src/main.js:${10 + index}–20`,
+    url: sourceUrl.replace('#L10-', `#L${10 + index}-`) }))
+  const edges = Array.from({ length: 13 }, (_, index) => ({
+    from: index % 2 ? 'store' : 'input', to: index % 2 ? 'input' : 'store', label: `Message ${index + 1}`, refs,
+  }))
+  const view = { id: 'input_flow', kind: 'sequence', title: 'Input processing', purpose: 'Show how the input reaches storage.',
     nodes: [{ id: 'input', label: 'Input', role: 'data', refs }, { id: 'store', label: 'Store', role: 'store', refs }],
-    edges: [{ from: 'input', to: 'store', label: 'Writes input', refs }],
-    mermaid: 'flowchart TD\n    n_input[/"Input"/]\n    n_store[("Store")]\n    n_input -->|"Writes input"| n_store' }
+    edges,
+    mermaid: ['sequenceDiagram', '    participant n_input as Input', '    participant n_store as Store',
+      ...edges.map(edge => `    n_${edge.from}->>n_${edge.to}: ${edge.label}`)].join('\n') }
   const unapproved = view.mermaid + '\n    extra[Unverified]'
   const markdown = '# Wiki\n\n## Overview\n\nApproved view.\n\n```mermaid\n' + view.mermaid
     + '\n```\n\nUnverified text.\n\n```mermaid\n' + unapproved + '\n```'
@@ -147,6 +188,8 @@ test('only exact approved diagram fences become controlled views and all other M
   const drawn = find(article, node => node.type?.name === 'WikiView')
   assert(drawn)
   assert.equal(drawn.props.view.id, view.id)
+  assert.equal(drawn.props.view.edges.length, 13)
+  assert.equal(drawn.props.view.edges[0].refs.length, 6)
   assert.equal(drawn.props.view.nodes[0].refs[0].href, sourceUrl)
   const code = find(article, node => node.type === 'markdown' && node.props.text.includes('extra[Unverified]'))
   assert(code.props.text.includes('```text\n' + unapproved + '\n```'))
@@ -217,8 +260,8 @@ test('a resumable GitHub failure keeps one continue action and pins the original
   assert.equal(submitLabel(wiki, Page), '继续生成')
   wiki.setFormOpen(false)
   wiki.setFormOpen(true)
-  wiki.setRepositoryUrl('  ' + repoUrl + '/  ')
-  assert.equal(submitLabel(wiki, Page), '继续生成', 'Closing the form or normalizing a trailing slash preserves the matching retry')
+  wiki.setRepositoryUrl('  ' + repoUrl.toUpperCase() + '.git/  ')
+  assert.equal(submitLabel(wiki, Page), '继续生成', 'Equivalent GitHub URLs preserve the matching retry')
   await wiki.generate()
   const bodies = calls.filter(call => call.method === 'POST').map(call => JSON.parse(call.body))
   assert.deepEqual(bodies[1], { repositoryUrl: repoUrl, resumeFrom: id, commit })
@@ -307,6 +350,7 @@ test('Wiki progress distinguishes revision, rejected submissions and waiting for
     [{ step: 'drafting' }, '正在撰写初稿'],
     [{ step: 'revising', repair: 1 }, '按审核意见修订（第 1 轮）'],
     [{ step: 'revising', repair: 2 }, '按审核意见修订（第 2 轮）'],
+    [{ step: 'revising', repair: 3 }, '按审核意见修订（第 3 轮）'],
     [{ step: 'submission-retry', rejections: 3 }, '提交校验未通过，正在修正（累计 3 次）'],
     [{ step: 'validating' }, '正在校验草稿'],
     [{ step: 'agent-finishing' }, '草稿已收到，等待模型结束当前回复'],

@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 
 import { apply } from '../index.js'
+import { wikiDraftFixture, wikiPlanFixture } from '../fixtures/wiki-editorial.js'
 import { createWikiStorage } from '../src/wiki-storage.js'
 import { createWikiCheckpoints } from '../src/wiki-checkpoint.js'
 
@@ -180,7 +181,10 @@ test('disconnecting a synchronous Wiki request still cancels generation and rele
   assert(clock.logs.every(log => log.timeoutMs === null))
   const checkpoint = await createWikiCheckpoints(join(api.profileDirectory, 'dsh-code-wiki-checkpoints')).get(job.id)
   assert(checkpoint.plan && checkpoint.draft)
-  assert.deepEqual(await (await api.request('generation')).json(), { job: null })
+  const retry = (await (await api.request('generation')).json()).job
+  assert.equal(retry.id, job.id)
+  assert.equal(retry.phase, 'failed')
+  assert.equal(retry.canResume, true)
   assert.deepEqual(await api.storage.list(), [])
 })
 
@@ -269,27 +273,34 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
         const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: {
           audience: 'Developers inspecting this runner', goal: 'Understand the committed entry and returned value',
           views: [], viewOmission: 'The existing overall component diagram fully explains this small example.',
-          chapters: [{ id: 'entry', title: 'Entry', question: 'What runs?' },
-            { id: 'core', title: 'Core', question: 'What is returned?' }],
+          modules: [{ id: 'entry', name: 'Entry', responsibility: 'Passes the call to core.', entry: 'main.js', paths: ['main.js'] },
+            { id: 'core', name: 'Core', responsibility: 'Returns a value.', entry: 'core.js', paths: ['core.js'] }],
+          chapters: [{ id: 'overview', title: 'Overview', role: 'overview', question: 'What does the project do?' },
+            { id: 'architecture', title: 'Architecture', role: 'architecture', question: 'How is the code split?' },
+            { id: 'entry', title: 'Entry', role: 'module', module: 'entry', question: 'What runs?' },
+            { id: 'core', title: 'Core', role: 'module', module: 'core', question: 'What is returned?' }],
           research: [{ id: 'purpose', question: 'What does the project claim to do?', evidenceType: 'documentation', paths: ['README.md'] },
             { id: 'behavior', question: 'How does the entry invoke the implementation?', evidenceType: 'implementation', paths: ['main.js', 'core.js'] }],
         } })
         assert.match(planned.status, /研究计划已接受/)
         const paragraph = (id, text, span, claimType = 'implementation') => ({ id, type: 'paragraph', claimType, text, refs: cite(span) })
-        const node = (id, span) => ({ id, title: id, summary: id, technology: 'JavaScript', boundary: '进程内模块', refs: cite(span) })
+        const table = (id, span, claimType = 'implementation') => ({ id, type: 'table', claimType, columns: ['Symbol', 'Role'],
+          rows: [['run', 'Returns a value']], refs: cite(span) })
+        const node = (id, kind, span) => ({ id, title: id, kind, summary: id, technology: 'JavaScript', boundary: '进程内模块', refs: cite(span) })
         const published = await tools.get('wiki_publish').execute({ kind: 'draft', draft: {
           chapters: [
-            { id: 'entry', title: 'Entry', blocks: [paragraph('purpose', 'A small command runner.', readme, 'purpose'),
-              paragraph('entry-call', 'Uses committed source to call run.', entry)] },
-            { id: 'core', title: 'Core', blocks: [paragraph('core-return', 'Returns a value.', core),
+            { id: 'overview', title: 'Overview', blocks: [paragraph('purpose', 'A small command runner.', readme, 'purpose'), table('layout', readme, 'usage')] },
+            { id: 'architecture', title: 'Architecture', blocks: [paragraph('architecture', 'The entry hands the call to core.', entry)] },
+            { id: 'entry', title: 'Entry', blocks: [paragraph('entry-call', 'Uses committed source to call run.', entry), table('entry-table', entry)] },
+            { id: 'core', title: 'Core', blocks: [paragraph('core-return', 'Returns a value.', core), table('core-table', core),
               { id: 'core-code', type: 'code', claimType: 'implementation', caption: 'The committed implementation.', refs: cite(core) }] },
           ],
           coverage: [{ area: 'purpose', refs: cite(readme) }, { area: 'behavior', refs: [...cite(entry), ...cite(core)] }],
           graph: {
-            layers: [{ title: 'Entry', nodes: [node('entry', entry)] },
-              { title: 'Core', nodes: [node('core', core), node('value', core)] }],
-            edges: [{ from: 'entry', to: 'core', label: 'Calls', refs: cite(entry) },
-              { from: 'core', to: 'value', label: 'Returns', refs: cite(core) }],
+            layers: [{ title: 'Entry', nodes: [node('entry', 'entry', entry)] },
+              { title: 'Core', nodes: [node('core', 'core', core), node('value', 'data', core)] }],
+            edges: [{ from: 'entry', to: 'core', kind: 'call', label: 'Calls', refs: cite(entry) },
+              { from: 'core', to: 'value', kind: 'data', label: 'Returns', refs: cite(core) }],
           },
         } })
         assert.match(published.status, /草稿已收到/)
@@ -334,7 +345,7 @@ test('a failed review keeps a private draft and resumes only the matching pinned
   assert.match(failedJob.commit, /^[a-f0-9]{40}$/)
   assert.equal(failedJob.failureCode, 'AUTH')
   const checkpoints = createWikiCheckpoints(dir)
-  assert((await checkpoints.get(resumeFrom)).draft.chapters.length === 2)
+  assert((await checkpoints.get(resumeFrom)).draft.chapters.length === 4)
   assert.equal((await post('generate', { repositoryPath: repositoryPath + '-other', resumeFrom })).status, 400)
   assert.equal((await post('generate', { repositoryPath, resumeFrom: '../bad' })).status, 400)
   failure = false
@@ -349,6 +360,69 @@ test('a failed review keeps a private draft and resumes only the matching pinned
   assert.equal(await checkpoints.get(resumeFrom), null)
   assert.equal(await checkpoints.get(document.id), null)
   assert.equal((await storage.list()).length, 1)
+})
+
+test('a GitHub checkpoint survives restart and can replan with the same numbered source evidence', async t => {
+  const resumeFrom = randomUUID(), commit = 'a'.repeat(40), tree = 'b'.repeat(40)
+  const repositoryUrl = 'https://github.com/example/repo'
+  const evidence = [
+    { path: 'README.md', text: 'A command runner.', primary: false, kind: 'documentation' },
+    { path: 'main.js', text: 'export { run } from "./core.js"', primary: true, kind: 'source' },
+    { path: 'core.js', text: 'export const run = () => 42', primary: true, kind: 'source' },
+  ].map(file => ({ ...file, start: 1, end: 1 }))
+  const spans = evidence.map((_file, index) => ({ evidence: index + 1, start: 1, end: 1 }))
+  const plan = wikiPlanFixture(), draft = wikiDraftFixture({ docs: spans[0], entry: spans[1], core: spans[2] })
+  const oldPlan = structuredClone(plan)
+  delete oldPlan.modules
+  for (const chapter of oldPlan.chapters) {
+    delete chapter.role
+    delete chapter.module
+  }
+  const { post, request, profileDirectory } = await fixture(t, {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'fixture', model: 'fixture' }) },
+    agents: { async create(options) {
+      const tools = new Map()
+      options.setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
+      let draftTurn
+      return { agent: { followup(message) {
+        draftTurn = (async () => {
+          const prompt = message.content[0].text
+          const restored = JSON.parse(prompt.split('\n').at(-1))
+          assert.deepEqual(restored.evidence.map(({ id, path }) => [id, path]), [[1, 'README.md'], [2, 'main.js'], [3, 'core.js']])
+          const submit = tools.get('wiki_publish')
+          assert.match((await submit.execute({ kind: 'plan', plan })).status, /研究计划已接受/)
+          assert.match((await submit.execute({ kind: 'draft', draft })).status, /草稿已收到/)
+        })()
+      }, whenIdle: () => draftTurn, cancel() {} }, dispose() {} }
+    } },
+  })
+  const checkpoints = createWikiCheckpoints(join(profileDirectory, 'dsh-code-wiki-checkpoints'))
+  await checkpoints.save(resumeFrom, { version: 1, repositoryUrl, commit, plan: oldPlan, draft, evidence })
+  for (const query of ['', '?id=' + resumeFrom]) {
+    const { job } = await (await request('generation' + query)).json()
+    assert.equal(job.id, resumeFrom)
+    assert.equal(job.phase, 'failed')
+    assert.equal(job.repositoryUrl, repositoryUrl)
+    assert.equal(job.canResume, true)
+    assert.deepEqual(Object.keys(job).sort(), ['canResume', 'commit', 'elapsedMs', 'error', 'id', 'phase', 'repository', 'repositoryUrl'])
+  }
+
+  const fetch = t.mock.method(globalThis, 'fetch', async url => {
+    const path = new URL(url).pathname.toLowerCase()
+    if (path === '/repos/example/repo/commits/' + commit) return Response.json({ sha: commit, commit: { tree: { sha: tree } } })
+    assert.equal(path, '/repos/example/repo/git/trees/' + tree, 'only the pinned commit tree should be read')
+    return Response.json({ truncated: false, tree: evidence.map(file => ({ path: file.path, type: 'blob', mode: '100644' })) })
+  })
+  assert.equal((await post('generate', { repositoryUrl: 'https://github.com/example/other', resumeFrom })).status, 400)
+  assert.equal((await post('generate', { repositoryUrl, resumeFrom, commit: 'c'.repeat(40) })).status, 400)
+  assert.equal(fetch.mock.callCount(), 0)
+  const response = await post('generate', { repositoryUrl: 'https://github.com/EXAMPLE/Repo.git/', resumeFrom })
+  const published = await response.json()
+  assert.equal(response.status, 200, published.error)
+  assert.equal(published.commit, commit)
+  assert.equal(fetch.mock.callCount(), 2)
+  assert.equal(await checkpoints.get(resumeFrom), null)
+  assert.deepEqual(await (await request('generation')).json(), { job: null })
 })
 
 test('failed research resumes from private evidence and publishes only after a new draft passes both reviews', async t => {
@@ -385,7 +459,7 @@ test('failed research resumes from private evidence and publishes only after a n
       return { agent: { followup(message) {
         run = (async () => {
           const prompt = message.content[0].text
-          assert.match(prompt, /plan已被接受，但尚无草稿/)
+          assert.match(prompt, /研究计划已被接受，尚无可用草稿/)
           const research = JSON.parse(prompt.split('\n').at(-1))
           assert.deepEqual(research.evidence.map(file => file.id), [1, 2, 3])
           assert.deepEqual(new Set(research.evidence.map(file => file.path)), new Set(['main.js', 'core.js', 'README.md']))

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { readConfiguredModel } from './src/configured-model.js'
 import { exploreArchitecture } from './src/architecture.js'
-import { collectGithubSource, openGithubRepository } from './src/github-source.js'
+import { collectGithubSource, openGithubRepository, sameGithubRepository } from './src/github-source.js'
 import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
 import { collectLocalSource, openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
@@ -97,6 +97,15 @@ function withoutEvidence({ files, ...document }) {
   return document
 }
 
+function checkpointProgress(id, checkpoint) {
+  if (!checkpoint) return null
+  const { commit, repositoryUrl, repositoryPath } = checkpoint
+  const repository = repositoryUrl ? repositoryUrl.replace(/^https:\/\/github\.com\//i, '').replace(/\/$/, '').replace(/\.git$/i, '')
+    : basename(repositoryPath)
+  return { id, phase: 'failed', elapsedMs: 0, commit, repository, canResume: true,
+    ...(repositoryUrl ? { repositoryUrl } : { repositoryPath }), error: '上次生成已中断，已保存研究进度。' }
+}
+
 async function documentsResponse(request, storage) {
   const id = new URL(request.url).searchParams.get('id')
   try {
@@ -123,6 +132,28 @@ export function apply(ctx, config) {
     return { ...status, ...diagnostics.get(job)?.status(), elapsedMs: Math.max(0, (finishedAt ?? Date.now()) - startedAt) }
   }
 
+  async function generationStatus(id) {
+    if (id !== null) {
+      if (jobs.has(id)) return progress(jobs.get(id))
+      const checkpoint = await checkpoints.get(id)
+      return checkpoint && !await storage.get(id) ? checkpointProgress(id, checkpoint) : null
+    }
+    if (active) return progress(active)
+    if (jobs.size) {
+      const latest = [...jobs.values()].at(-1)
+      return latest.phase === 'failed' && latest.canResume && !lifetime.signal.aborted ? progress(latest) : null
+    }
+    let documents
+    const checkpoint = await checkpoints.latest(async saved => {
+      documents ??= await storage.list()
+      return !documents.some(document => document.commit === saved.commit
+        && new Date(document.createdAt).getTime() >= Math.floor(saved.updatedAt)
+        && (saved.repositoryUrl ? sameGithubRepository(document.repoUrl, saved.repositoryUrl) : document.repositoryPath === saved.repositoryPath))
+    })
+    // A generation may have started while the disk records were being read.
+    return active ? progress(active) : jobs.size ? null : checkpointProgress(checkpoint?.id, checkpoint)
+  }
+
   async function runGeneration(job, body, github, architecture, requestSignal) {
     const tracking = createWikiProgress(job)
     diagnostics.set(job, tracking)
@@ -135,7 +166,7 @@ export function apply(ctx, config) {
     try {
       const checkpoint = body.resumeFrom ? await checkpoints.get(body.resumeFrom) : null
       if (body.resumeFrom && (!checkpoint
-        || (github ? checkpoint.repositoryUrl !== body.repositoryUrl.trim() : checkpoint.repositoryPath !== body.repositoryPath.trim())
+        || (github ? !sameGithubRepository(checkpoint.repositoryUrl, body.repositoryUrl) : checkpoint.repositoryPath !== body.repositoryPath.trim())
         || (body.commit !== undefined && checkpoint.commit !== body.commit))) {
         return fail('找不到这个仓库版本的研究记录，请重新生成。', 400)
       }
@@ -263,10 +294,11 @@ export function apply(ctx, config) {
     path: generationRoute,
     methods: ['GET', 'POST'],
     requestBody: 'buffered',
-    fetch(request) {
+    async fetch(request) {
       if (request.method === 'POST') return startGeneration(request, true, true)
       const id = new URL(request.url).searchParams.get('id')
-      return json({ job: progress(id === null ? active : jobs.get(id)) })
+      try { return json({ job: await generationStatus(id) }) }
+      catch { return json({ error: '无法读取生成进度，请重试。' }, 500) }
     },
   })
   ctx.connection.fetch.register({

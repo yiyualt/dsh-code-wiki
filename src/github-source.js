@@ -44,6 +44,12 @@ function parseRepository(repositoryUrl) {
   return { owner, repo }
 }
 
+export function sameGithubRepository(firstUrl, secondUrl) {
+  if (typeof firstUrl !== 'string' || typeof secondUrl !== 'string') return false
+  const first = parseRepository(firstUrl), second = parseRepository(secondUrl)
+  return first.owner.toLowerCase() === second.owner.toLowerCase() && first.repo.toLowerCase() === second.repo.toLowerCase()
+}
+
 function requestFailed() {
   return sourceError('github-request-failed', '无法完成 GitHub 仓库读取，请稍后重试。')
 }

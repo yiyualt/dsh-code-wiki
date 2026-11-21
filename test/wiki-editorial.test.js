@@ -19,9 +19,11 @@ function fixture() {
   return { source, evidence, spans, plan, raw: wikiDraftFixture(spans) }
 }
 
-test('Wiki plans adapt to two substantive chapters and reject imaginary research files', () => {
+test('Wiki plans use the fixed skeleton with one chapter per module and reject imaginary research files', () => {
   const { source, plan } = fixture()
-  assert.equal(plan.chapters.length, 2)
+  assert.equal(plan.chapters.length, 4)
+  assert.deepEqual(plan.chapters.map(chapter => chapter.role), ['overview', 'architecture', 'module', 'module'])
+  assert.deepEqual(plan.modules.map(module => module.id), ['entry', 'core'])
   const bad = wikiPlanFixture(); bad.research[0].paths = ['missing.md']
   assert.throws(() => normalizeWikiPlan(bad, source), /实际存在/)
   const missingViewReason = wikiPlanFixture(); delete missingViewReason.viewOmission
@@ -34,10 +36,11 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
   const block = draft.chapters.items.properties.blocks.items.properties
   const bounds = schema => [schema.minItems, schema.maxItems]
   for (const [schema, expected] of [
-    [plan.chapters, [2, 8]], [plan.research, [2, 8]], [plan.research.items.properties.paths, [1, 6]], [plan.views, [0, 3]],
-    [draft.chapters, [2, 8]], [draft.chapters.items.properties.blocks, [1, 10]], [draft.coverage, [2, 8]],
+    [plan.chapters, [4, 8]], [plan.research, [2, 8]], [plan.research.items.properties.paths, [1, 6]], [plan.views, [0, 3]],
+    [plan.modules, [2, 5]], [plan.modules.items.properties.paths, [1, 6]],
+    [draft.chapters, [4, 8]], [draft.chapters.items.properties.blocks, [1, 14]], [draft.coverage, [2, 8]],
     [block.items, [2, 7]], [block.columns, [2, 5]], [block.rows, [1, 8]], [block.rows.items, [2, 5]],
-    [block.inlineCode, [0, 8]], [block.nodes, [2, 8]], [block.edges, [1, 10]],
+    [block.inlineCode, [0, 8]], [block.nodes, [2, 8]], [block.edges, [1, 16]],
     [draft.graph.properties.layers, [2, 5]], [draft.graph.properties.layers.items.properties.nodes, [1, 8]],
     [draft.graph.properties.edges, [2, 24]],
   ]) assert.deepEqual(bounds(schema), expected)
@@ -48,16 +51,16 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
       visit(schema.items)
     }
     for (const [name, child] of Object.entries(schema.properties ?? {})) {
-      if (name === 'refs') { refLocations++; assert.deepEqual(bounds(child), [1, 4]) }
+      if (name === 'refs') { refLocations++; assert.deepEqual(bounds(child), [1, 6]) }
       visit(child)
     }
   }
   visit(wikiPublicationSchema)
   assert.equal(refLocations, 14)
-  assert.match(wikiResearchInstructions, /超过4个引用时.*拆为多个段落.*不丢弃必要依据/)
+  assert.match(wikiResearchInstructions, /超过 25 行会按 25 行拆分且拆分后总数仍不能超过 6 项/)
   const { raw, source, evidence, plan: acceptedPlan, spans } = fixture()
-  raw.chapters[0].blocks[0].refs = Array(5).fill(spans.docs)
-  assert.throws(() => normalizeWikiDraft(raw, source, evidence, acceptedPlan), /引用 需要 1–4 项/)
+  raw.chapters[0].blocks[0].refs = Array(7).fill(spans.docs)
+  assert.throws(() => normalizeWikiDraft(raw, source, evidence, acceptedPlan), /引用 需要 1–6 项/)
 })
 
 test('Wiki revise submissions reuse complete block, graph and coverage constraints while bounding only the changed operations', () => {
@@ -77,14 +80,14 @@ test('Wiki revise submissions reuse complete block, graph and coverage constrain
   assert.equal(revisions.properties.graph, schema.draft.properties.graph)
   assert.equal(revisions.properties.coverage, schema.draft.properties.coverage)
   assert.match(wikiResearchInstructions, /kind=revise/)
-  assert.match(wikiResearchInstructions, /只提交修改/)
+  assert.match(wikiResearchInstructions, /只提交改动/)
   assert.doesNotMatch(wikiResearchInstructions, /提交完整修订稿/)
 })
 
 test('targeted Wiki revisions replace, insert and delete blocks without mutating the original or their supplied replacements', () => {
   const { source, evidence, plan, raw } = fixture()
   const original = structuredClone(raw)
-  const replacement = { ...structuredClone(raw.chapters[1].blocks[0]), text: 'main.js 调用独立的核心实现。' }
+  const replacement = { ...structuredClone(raw.chapters[2].blocks[0]), text: 'main.js 调用独立的核心实现。' }
   const inserted = { ...structuredClone(raw.chapters[0].blocks[0]), id: 'purpose_details', text: '项目说明支持这一用途。' }
   const revisions = { blocks: [
     { chapter: 'execution', action: 'replace', target: 'execution_text', block: replacement },
@@ -94,10 +97,10 @@ test('targeted Wiki revisions replace, insert and delete blocks without mutating
   const next = reviseWikiDraft(raw, revisions)
   normalizeWikiDraft(next, source, evidence, plan)
   assert.deepEqual(raw, original)
-  assert.deepEqual(next.chapters[0].blocks.map(block => block.id), ['purpose_text', 'purpose_details'])
-  assert.equal(next.chapters[1].blocks[0].text, replacement.text)
-  assert.deepEqual(next.chapters[1].blocks.slice(1), original.chapters[1].blocks.slice(1))
-  next.chapters[1].blocks[0].text = '本地副本变更'
+  assert.deepEqual(next.chapters[0].blocks.map(block => block.id), ['purpose_text', 'purpose_details', 'layout_table'])
+  assert.equal(next.chapters[2].blocks[0].text, replacement.text)
+  assert.deepEqual(next.chapters[2].blocks.slice(1), original.chapters[2].blocks.slice(1))
+  next.chapters[2].blocks[0].text = '本地副本变更'
   next.graph.edges[0].label = '本地关系变更'
   next.coverage[0].refs[0].start = 99
   assert.equal(replacement.text, 'main.js 调用独立的核心实现。')
@@ -109,7 +112,7 @@ test('targeted Wiki revisions replace, insert and delete blocks without mutating
 test('unknown revision targets and invalid evidence cannot change the accepted raw Wiki draft', () => {
   const { source, evidence, plan, raw } = fixture()
   const original = structuredClone(raw)
-  const replacement = { ...structuredClone(raw.chapters[1].blocks[0]), text: 'main.js 的新解释。' }
+  const replacement = { ...structuredClone(raw.chapters[2].blocks[0]), text: 'main.js 的新解释。' }
   assert.throws(() => reviseWikiDraft(raw, { blocks: [
     { chapter: 'execution', action: 'replace', target: 'execution_text', block: replacement },
     { chapter: 'overview', action: 'delete', target: 'missing_block' },
@@ -130,7 +133,7 @@ test('unchanged Wiki revision blocks, graph and coverage are rejected while an a
   for (const revisions of [
     { blocks: [] },
     { blocks: [], graph: structuredClone(raw.graph), coverage: structuredClone(raw.coverage) },
-    { blocks: [{ chapter: 'execution', action: 'replace', target: 'execution_text', block: structuredClone(raw.chapters[1].blocks[0]) }] },
+    { blocks: [{ chapter: 'execution', action: 'replace', target: 'execution_text', block: structuredClone(raw.chapters[2].blocks[0]) }] },
   ]) {
     assert.throws(() => reviseWikiDraft(raw, revisions), /实际改动|没有改变草稿/)
     assert.deepEqual(raw, original)
@@ -167,7 +170,7 @@ function diagramFixture(kind = 'sequence') {
   rawPlan.views = [{ kind, question: '入口与核心如何协作？', why: '用特定的软件视图说明总览图没有表达的协作问题。' }]
   f.plan = normalizeWikiPlan(rawPlan, f.source)
   f.diagram = wikiDiagramFixture(f.spans, kind)
-  f.raw.chapters[1].blocks.push(f.diagram)
+  f.raw.chapters[2].blocks.push(f.diagram)
   return f
 }
 
@@ -177,7 +180,7 @@ test('multiple inserted paragraphs retain author order after the same anchor', (
   const names = ['experiment_entry', 'experiment_protocol', 'experiment_result']
   const blocks = names.map(id => ({ ...structuredClone(raw.chapters[0].blocks[0]), id, text: id }))
   const next = reviseWikiDraft(raw, { blocks: blocks.map(block => ({ chapter: 'overview', action: 'insert_after', target: 'purpose_text', block })) })
-  assert.deepEqual(next.chapters[0].blocks.map(block => block.id), ['purpose_text', ...names, 'usage_steps'])
+  assert.deepEqual(next.chapters[0].blocks.map(block => block.id), ['purpose_text', ...names, 'usage_steps', 'layout_table'])
   assert.deepEqual(raw, before)
 })
 
@@ -197,6 +200,23 @@ test('controlled Wiki sequence views preserve message order, public evidence and
   assert.deepEqual(Object.keys(view.edges[0].refs[0]), ['label', 'url'])
   const again = renderWikiDocument(draft, source)
   assert.deepEqual(again.views, result.views)
+})
+
+test('a sequence can add return messages to a ten-message draft within its own message limit', () => {
+  const sequence = diagramFixture()
+  const { source, evidence, plan, raw, diagram } = sequence
+  const [call, reply] = diagram.edges
+  diagram.edges = [...Array.from({ length: 10 }, (_, index) => ({ ...call, label: `Call ${index + 1}` })),
+    ...Array.from({ length: 3 }, (_, index) => ({ ...reply, label: `Return ${index + 1}` }))]
+  const [view] = renderWikiDocument(normalizeWikiDraft(raw, source, evidence, plan), source).views
+  assert.equal(view.edges.length, 13)
+  assert.match(view.mermaid, /n_core->>n_entry: Return 1[\s\S]*n_core->>n_entry: Return 3$/)
+  diagram.edges.push(...Array(4).fill(reply))
+  assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /图示关系 需要 1–16 项/)
+
+  const flow = diagramFixture('flow')
+  flow.diagram.edges = Array.from({ length: 11 }, (_, index) => ({ ...flow.diagram.edges[0], label: `Step ${index + 1}` }))
+  assert.throws(() => normalizeWikiDraft(flow.raw, flow.source, flow.evidence, flow.plan), /图示关系 需要 1–10 项/)
 })
 
 test('derived Mermaid encodes punctuation in labels without adding executable diagram statements or fences', () => {
@@ -227,7 +247,7 @@ test('scenario views can use documented actors and goals while deployment and da
 test('Wiki view planning rejects unplanned, missing and raw Mermaid diagrams without silently dropping them', () => {
   const f = diagramFixture('dataflow')
   const raw = structuredClone(f.raw)
-  raw.chapters[1].blocks.pop()
+  raw.chapters[2].blocks.pop()
   assert.throws(() => normalizeWikiDraft(raw, f.source, f.evidence, f.plan), /逐一回答/)
   f.diagram.kind = 'deployment'
   assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), /研究计划/)
@@ -247,7 +267,7 @@ test('every diagram node and message citation is included in independent reviewe
     calls++
     const context = JSON.parse(options.messages[0].content[0].text)
     assert(context.excerpts.some(item => item.id === 3 && item.start === 1 && item.end === 1))
-    assert.equal(context.draft.chapters[1].blocks.at(-1).edges[1].label, '返回结果')
+    assert.equal(context.draft.chapters[2].blocks.at(-1).edges[1].label, '返回结果')
     const response = options.system.includes('事实审核员')
       ? { approved: false, issues: [{ target: 'sequence_view', reason: '该导出不证明返回消息，需修正时序或补读。', reads: [] }] }
       : approvedWikiReview()
@@ -263,7 +283,7 @@ test('Wiki purpose can cite project documents while behavior and diagram require
   const { source, evidence, plan, raw, spans } = fixture()
   const normalized = normalizeWikiDraft(raw, source, evidence, plan)
   assert.equal(normalized.chapters[0].blocks[0].refs[0].evidence, 1)
-  const behavior = structuredClone(raw); behavior.chapters[1].blocks[0].refs = [spans.docs]
+  const behavior = structuredClone(raw); behavior.chapters[2].blocks[0].refs = [spans.docs]
   assert.throws(() => normalizeWikiDraft(behavior, source, evidence, plan), /实现证据/)
   const diagram = structuredClone(raw); diagram.graph.layers[0].nodes[0].refs = [spans.docs]
   assert.throws(() => normalizeWikiDraft(diagram, source, evidence, plan), /实现证据/)
@@ -282,8 +302,10 @@ test('Wiki blocks retain paragraphs, steps, exact code, tables and compact pinne
   assert.match(result.markdown, /\| 组件 \| 职责 \|/)
   assert.match(result.markdown, /\[1\]\(https:\/\/github.com\/example\/project\/blob\/a{40}\/README.md#L1-L2\)/)
   assert.match(result.markdown, /### 本章引用/)
+  assert.match(result.markdown, /\n## 系统组成\n\n[^\n]+[^\n]*\n\n```dsh-architecture\n```/,
+    'the architecture chapter carries the placeholder the page turns into the interactive graph')
   assert.deepEqual(Object.keys(result.architecture.layers[0].nodes[0].refs[0]), ['label', 'url'])
-  const bad = structuredClone(raw); bad.chapters[1].blocks[0].refs[0].end = 99
+  const bad = structuredClone(raw); bad.chapters[2].blocks[0].refs[0].end = 99
   assert.throws(() => normalizeWikiDraft(bad, source, evidence, plan), /不能丢弃/)
   const noPlan = () => normalizeWikiDraft(raw, source, evidence)
   assert.throws(noPlan, /先提交研究计划/)
@@ -291,25 +313,25 @@ test('Wiki blocks retain paragraphs, steps, exact code, tables and compact pinne
 
 test('optional inline-code hints ignore stale or unsafe terms while preserving every word and evidence requirement', () => {
   const { source, evidence, plan, raw } = fixture()
-  const block = raw.chapters[1].blocks[0]
+  const block = raw.chapters[2].blocks[0]
   block.text += ' 原文保留 `标记`、a|b 和多\n行文字。'
   block.inlineCode = ['Config', 'main.js', 'main.js', '`标记`', 'a|b', '多\n行文字', '', null, 'x'.repeat(81)]
   const normalized = normalizeWikiDraft(raw, source, evidence, plan)
-  const clean = structuredClone(raw); delete clean.chapters[1].blocks[0].inlineCode
+  const clean = structuredClone(raw); delete clean.chapters[2].blocks[0].inlineCode
   const expected = normalizeWikiDraft(clean, source, evidence, plan)
-  assert.equal(normalized.chapters[1].blocks[0].text, expected.chapters[1].blocks[0].text)
-  assert.deepEqual(normalized.chapters[1].blocks[0].refs, expected.chapters[1].blocks[0].refs)
-  assert.deepEqual(normalized.chapters[1].blocks[0].inlineCode, ['main.js'])
+  assert.equal(normalized.chapters[2].blocks[0].text, expected.chapters[2].blocks[0].text)
+  assert.deepEqual(normalized.chapters[2].blocks[0].refs, expected.chapters[2].blocks[0].refs)
+  assert.deepEqual(normalized.chapters[2].blocks[0].inlineCode, ['main.js'])
   assert.match(renderWikiDocument(normalized, source).markdown, /`main.js` 导入核心函数/)
   block.inlineCode = 'main.js'
-  assert.deepEqual(normalizeWikiDraft(raw, source, evidence, plan).chapters[1].blocks[0].inlineCode, [])
+  assert.deepEqual(normalizeWikiDraft(raw, source, evidence, plan).chapters[2].blocks[0].inlineCode, [])
   block.refs[0].end = 99
   assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /不能丢弃/)
 })
 
 test('independent Wiki reviewers see each cited range including import-only evidence and validate further reads', async () => {
   const { source, evidence, plan, raw, spans } = fixture()
-  raw.chapters[1].blocks[0].refs = [{ ...spans.core, start: 1, end: 1 }]
+  raw.chapters[2].blocks[0].refs = [{ ...spans.core, start: 1, end: 1 }]
   const draft = normalizeWikiDraft(raw, source, evidence, plan)
   const context = wikiReviewMaterial(draft, plan, evidence)
   assert(context.excerpts.some(item => item.id === 3 && item.start === 1 && item.end === 1 && item.text.startsWith('export { helper }')))
@@ -325,6 +347,64 @@ test('independent Wiki reviewers see each cited range including import-only evid
   assert.equal(roles.length, 2)
   assert.equal(review.approved, false)
   assert.equal(review.issues[0].reads[0].start, 2)
+})
+
+test('revision review retains unresolved targets while excluding unrelated accepted blocks', async () => {
+  const { source, evidence, plan, raw } = fixture()
+  const before = normalizeWikiDraft(raw, source, evidence, plan)
+  const issue = { target: 'execution_text', reason: '需要查证入口调用。', reads: [] }
+  const previous = { draft: before, review: { semantic: { approved: false, issues: [issue] },
+    editorial: { approved: false, issues: [{ target: 'usage_steps', reason: '与模块说明重复。', reads: [] }] } } }
+  const required = raw.chapters[0].blocks[0]
+  required.text = '项目提供可重复调用的模块示例。'
+  raw.chapters[0].blocks.splice(1, 1)
+  const after = normalizeWikiDraft(raw, source, evidence, plan)
+  const calls = []
+  const llm = { async *stream(options) {
+    const context = JSON.parse(options.messages[0].content[0].text)
+    const isSemantic = options.system.includes('事实审核员')
+    calls.push(isSemantic ? 'semantic' : 'editorial')
+    assert.match(options.system, /定向复审/)
+    assert.deepEqual(context.revision.changedTargets, ['purpose_text'])
+    assert.deepEqual(context.revision.removedTargets, ['usage_steps'])
+    assert.deepEqual(context.revision.pendingIssues, isSemantic ? [issue] : [])
+    assert.deepEqual(context.targets, isSemantic ? ['purpose_text', 'execution_text'] : ['purpose_text'])
+    const response = isSemantic ? { approved: false, issues: [issue] } : approvedWikiReview()
+    yield { type: 'text-delta', text: JSON.stringify(response) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  const result = await reviewWikiDraft(llm, {}, after, plan, evidence, source, new AbortController().signal, undefined, previous)
+  assert.deepEqual(calls, ['semantic', 'editorial'])
+  assert.equal(result.approved, false)
+  assert.deepEqual(result.issues, [{ ...issue, reviewer: 'semantic' }])
+})
+
+test('a resumed draft may revise a heading that has no source references', async () => {
+  const { source, evidence, plan, raw } = fixture()
+  raw.chapters[0].blocks.splice(1, 0, { id: 'navigation', type: 'heading', text: '目录' })
+  let initial = true
+  const llm = { async *stream(options) {
+    const editorial = options.system.includes('中文技术文档编辑')
+    const response = editorial && initial ? { approved: false, issues: [
+      { target: 'navigation', reason: '标题需要指出导航的范围。', reads: [] },
+    ] } : approvedWikiReview()
+    if (editorial) initial = false
+    yield { type: 'text-delta', text: JSON.stringify(response) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  const ctx = { llm, agents: { async create({ setup }) {
+    const tools = new Map()
+    setup({ tools: { restrict() {}, register(tool) { tools.set(tool.name, tool) } } })
+    let round
+    return { agent: { followup() {
+      round = tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [
+        { chapter: 'overview', action: 'replace', target: 'navigation', block: { id: 'navigation', type: 'heading', text: '仓库导航' } },
+      ] } })
+    }, whenIdle: () => round, cancel() {} }, dispose() {} }
+  } } }
+  const result = await exploreArchitecture(ctx, source, { provider: 'fixture' }, null, new AbortController().signal,
+    undefined, undefined, { checkpoint: { plan, draft: raw, evidence } })
+  assert.match(result.markdown, /^### 仓库导航$/m)
 })
 
 test('a malformed reviewer range receives one precise format retry without discarding its factual issue or rerunning its sibling', async () => {
@@ -477,8 +557,13 @@ function pipelineFixture(t, { rejectAlways = false, badRead = false } = {}) {
         if (round === 1) {
           statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
           statuses.push((await tools.get('wiki_publish').execute({ kind: 'plan', plan: wikiPlanFixture() })).status)
+          statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
+        } else {
+          const blocks = draft.chapters[2].blocks.map(block => ({ chapter: 'execution', action: 'replace', target: block.id, block }))
+          blocks[0].block.text += ' 版本 ' + round
+          statuses.push((await tools.get('wiki_publish').execute({ kind: 'revise',
+            revisions: { blocks, graph: draft.graph, coverage: draft.coverage } })).status)
         }
-        statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
       })()
     }, whenIdle: () => run, cancel() {} }, async dispose() { disposed++ } }
   } } }
@@ -499,15 +584,19 @@ test('Wiki publication requires a plan, real independent reviews, and targeted e
   assert(f.phases.includes('planning') && f.phases.includes('researching') && f.phases.includes('writing') && f.phases.includes('reviewing'))
 })
 
-test('unavailable reviewer reads and persistent review rejection never return a publishable Wiki', async t => {
+test('an unavailable requested read reaches the author and persistent review rejection blocks publication', async t => {
   const unreadable = pipelineFixture(t, { badRead: true })
-  await assert.rejects(exploreArchitecture(unreadable.ctx, unreadable.source, { provider: 'fixture' }, null,
-    new AbortController().signal), /补读未完成/)
-  assert.equal(unreadable.rounds(), 1)
+  const result = await exploreArchitecture(unreadable.ctx, unreadable.source, { provider: 'fixture' }, null,
+    new AbortController().signal)
+  assert.equal(unreadable.rounds(), 2)
+  const repair = JSON.parse(unreadable.messages[1].content[0].text.split('\n').at(-1))
+  assert.deepEqual(repair.additionalEvidence, [])
+  assert.deepEqual(repair.incompleteReads.map(({ path, start }) => ({ path, start })), [{ path: 'core.js', start: 99 }])
+  assert.match(result.markdown, /export const run/)
   const rejected = pipelineFixture(t, { rejectAlways: true })
   await assert.rejects(exploreArchitecture(rejected.ctx, rejected.source, { provider: 'fixture' }, null,
-    new AbortController().signal), /两次定向修订/)
-  assert.equal(rejected.rounds(), 3)
+    new AbortController().signal), /三次定向修订/)
+  assert.equal(rejected.rounds(), 4)
   assert.equal(rejected.disposed(), 1)
 })
 
@@ -553,7 +642,7 @@ test('research failures and timeouts retain accepted evidence for a fresh draft 
         submissions++
         run = (async () => {
           const prompt = message.content[0].text
-          assert.match(prompt, /plan已被接受，但尚无草稿/)
+          assert.match(prompt, /研究计划已被接受，尚无可用草稿/)
           assert.match(prompt, /kind=draft/)
           const restored = JSON.parse(prompt.split('\n').at(-1))
           assert.deepEqual(restored.plan, f.plan)
@@ -699,18 +788,18 @@ function checkpointResumeFixture({ rejectOnce = false, mixedFields = false } = {
         incompatiblePlan.views = [{ kind: 'sequence', question: 'Which call happens first?', why: 'Follow interaction order.' }]
         assert.match((await tools.get('wiki_publish').execute({ kind: 'plan', plan: incompatiblePlan })).status,
           /已有草稿后保留已接受的研究计划/)
-        const brokenCode = structuredClone(repaired.chapters[1].blocks.find(block => block.id === 'core_code'))
+        const brokenCode = structuredClone(repaired.chapters[2].blocks.find(block => block.id === 'core_code'))
         brokenCode.refs[0].end = 99
         const rejected = await tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [
           { chapter: 'execution', action: 'replace', target: 'execution_text',
-            block: { ...structuredClone(raw.chapters[1].blocks[0]), text: '此处不应保留失败候选的文字。' } },
+            block: { ...structuredClone(raw.chapters[2].blocks[0]), text: '此处不应保留失败候选的文字。' } },
           { chapter: 'execution', action: 'replace', target: 'core_code', block: brokenCode },
         ] } })
         assert.match(rejected.status, /提交未通过/)
         const submitted = await tools.get('wiki_publish').execute({ kind: 'revise',
           ...(mixedFields && { plan: { ...checkpoint.plan, goal: '无关计划不得覆盖已有研究。' },
             draft: { ...checkpoint.draft, chapters: [] } }), revisions: {
-          blocks: repaired.chapters[1].blocks.filter(block => block.id !== 'execution_text')
+          blocks: repaired.chapters[2].blocks.filter(block => block.id !== 'execution_text')
             .map(block => ({ chapter: 'execution', action: 'replace', target: block.id, block })),
           graph: repaired.graph, coverage: repaired.coverage,
         } })
@@ -733,7 +822,7 @@ test('an accepted research checkpoint enters both independent reviews without ne
   assert.deepEqual(f.reviews.map(item => item.semantic).sort(), [false, true])
   assert.equal(f.checkpoints.length, 1)
   assert.deepEqual(f.checkpoints[0].draft, f.checkpoint.draft)
-  assert.equal(f.checkpoints[0].draft.chapters[1].blocks.find(block => block.type === 'code').lines, undefined)
+  assert.equal(f.checkpoints[0].draft.chapters[2].blocks.find(block => block.type === 'code').lines, undefined)
   assert.deepEqual(f.checkpoint.draft, wikiDraftFixture({ ...fixture().spans, core: { evidence: 3, start: 1, end: 1 } }))
   assert.deepEqual(result.files, f.checkpoint.evidence)
   assert.match(result.markdown, /export \{ helper \}/)
@@ -760,10 +849,10 @@ test('a rejected checkpoint keeps the accepted plan and original evidence IDs th
   const finalCheckpoint = f.checkpoints[2]
   assert.deepEqual(finalCheckpoint.plan, normalizeWikiPlan(f.checkpoint.plan, f.source))
   assert.deepEqual(finalCheckpoint.evidence, result.files)
-  const code = finalCheckpoint.draft.chapters[1].blocks.find(block => block.type === 'code')
+  const code = finalCheckpoint.draft.chapters[2].blocks.find(block => block.type === 'code')
   assert.equal(code.refs[0].evidence, 4)
   assert.equal(code.lines, undefined, 'checkpoint stores the raw submission, not hydrated display code')
-  assert.equal(finalCheckpoint.draft.chapters[1].blocks[0].text, f.checkpoint.draft.chapters[1].blocks[0].text,
+  assert.equal(finalCheckpoint.draft.chapters[2].blocks[0].text, f.checkpoint.draft.chapters[2].blocks[0].text,
     'a failed multi-block candidate must not leak any changes into the next valid revision')
   assert.match(result.markdown, /export const run = \(\) => 42/)
   assert.equal(f.disposed(), 1)
@@ -779,7 +868,7 @@ test('revise ignores unrelated plan and draft payloads while reviewing only the 
   assert.equal(f.reviews.length, 4)
   assert.equal(f.checkpoints.length, 3)
   assert.deepEqual(f.checkpoints[2].plan, normalizeWikiPlan(f.checkpoint.plan, f.source))
-  assert.equal(f.checkpoints[2].draft.chapters[1].blocks[0].text, f.checkpoint.draft.chapters[1].blocks[0].text)
+  assert.equal(f.checkpoints[2].draft.chapters[2].blocks[0].text, f.checkpoint.draft.chapters[2].blocks[0].text)
   assert.doesNotMatch(result.markdown, /混合字段的候选/)
   assert.deepEqual(f.sourceReads, ['core.js'])
 })

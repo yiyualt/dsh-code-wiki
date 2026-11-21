@@ -2002,3 +2002,142 @@ a.dsh-code-wiki-revision:hover {
   .dsh-code-wiki-video-big-play { transition: none; }
   .dsh-code-wiki-video-spinner { animation: none; }
 }
+
+/* Reading structure: chapter section rail, layered architecture semantics, readable tables. */
+
+.dsh-code-wiki-page {
+  --wiki-node-entry: #3f7fd6;
+  --wiki-node-core: color-mix(in srgb, var(--wiki-accent) 84%, #6f52bf);
+  --wiki-node-data: #2f9e6e;
+  --wiki-node-external: #bf8a2f;
+}
+
+.dsh-code-wiki-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 var(--wiki-reading-pad) 0;
+  padding-block-end: 14px;
+  border-block-end: 1px solid var(--wiki-line);
+}
+
+.dsh-code-wiki-sections button {
+  padding: 3px 10px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 999px;
+  background: var(--wiki-paper);
+  color: var(--wiki-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.dsh-code-wiki-sections button:is(:hover, :focus-visible) {
+  border-color: var(--wiki-accent);
+  background: var(--wiki-accent-fill);
+  color: var(--wiki-accent-ink);
+}
+
+.dsh-code-wiki-prose > div :is(h3, h4) {
+  scroll-margin-block-start: 18px;
+}
+
+.dsh-code-wiki-prose > div table {
+  display: table;
+  width: 100%;
+  max-width: 100%;
+  margin-block: 0.55em 1.25em;
+  border: 1px solid var(--wiki-line);
+  border-radius: 8px;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  font-size: 0.95em;
+  line-height: 1.62;
+}
+
+.dsh-code-wiki-prose > div :is(th, td) {
+  padding: 7px 11px;
+  border-block-start: 1px solid var(--wiki-line);
+  border-inline-start: 1px solid var(--wiki-line);
+  overflow-wrap: anywhere;
+  text-align: start;
+  vertical-align: top;
+}
+
+.dsh-code-wiki-prose > div :is(th, td):first-child {
+  border-inline-start: 0;
+}
+
+.dsh-code-wiki-prose > div thead th {
+  border-block-start: 0;
+  background: color-mix(in srgb, var(--wiki-accent) 7%, var(--wiki-paper));
+  font-weight: 660;
+  white-space: nowrap;
+}
+
+.dsh-code-wiki-prose > div tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--wiki-ink) 2.6%, transparent);
+}
+
+.dsh-code-wiki-diagram-node::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-start-start-radius: 8px;
+  border-end-start-radius: 8px;
+  background: var(--wiki-node-tone, var(--wiki-accent));
+}
+
+.dsh-code-wiki-diagram-node[data-kind='entry'] { --wiki-node-tone: var(--wiki-node-entry); }
+.dsh-code-wiki-diagram-node[data-kind='core'] { --wiki-node-tone: var(--wiki-node-core); }
+.dsh-code-wiki-diagram-node[data-kind='data'] { --wiki-node-tone: var(--wiki-node-data); }
+.dsh-code-wiki-diagram-node[data-kind='external'] { --wiki-node-tone: var(--wiki-node-external); border-style: dashed; }
+
+.dsh-code-wiki-diagram-edge[data-kind='data'] path:last-child {
+  stroke-dasharray: 5 3;
+}
+
+.dsh-code-wiki-diagram-edge[data-kind='dependency'] path:last-child {
+  stroke-dasharray: 1.5 3.5;
+  stroke-linecap: round;
+}
+
+.dsh-code-wiki-diagram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-block-start: 7px;
+  color: var(--wiki-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.dsh-code-wiki-diagram-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dsh-code-wiki-legend-node i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--wiki-node-tone, var(--wiki-accent));
+}
+
+.dsh-code-wiki-legend-node[data-kind='entry'] { --wiki-node-tone: var(--wiki-node-entry); }
+.dsh-code-wiki-legend-node[data-kind='core'] { --wiki-node-tone: var(--wiki-node-core); }
+.dsh-code-wiki-legend-node[data-kind='data'] { --wiki-node-tone: var(--wiki-node-data); }
+.dsh-code-wiki-legend-node[data-kind='external'] { --wiki-node-tone: var(--wiki-node-external); }
+
+.dsh-code-wiki-legend-edge i {
+  width: 18px;
+  height: 0;
+  border-block-start: 1.6px solid var(--wiki-diagram-wire);
+}
+
+.dsh-code-wiki-legend-edge[data-kind='data'] i { border-block-start-style: dashed; }
+.dsh-code-wiki-legend-edge[data-kind='dependency'] i { border-block-start-style: dotted; border-block-start-width: 2px; }
