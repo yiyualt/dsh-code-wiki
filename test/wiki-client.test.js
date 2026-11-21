@@ -374,37 +374,16 @@ function content(node) {
   return (node?.children ?? []).map(content).join('')
 }
 
-test('archived AI review is advisory and displays validated issue text in a collapsed list', async () => {
-  async function notice(review) {
-    const { wiki, Page } = await reader({ ...record('# A saved Wiki'), review })
+test('saved Wikis open directly to the article regardless of archived review status', async () => {
+  const reason = '请核对函数返回值。'
+  for (const review of [undefined, { status: 'approved' }, { status: 'unavailable' },
+    { status: 'findings', issues: [{ reviewer: 'semantic', reason }] }]) {
+    const { wiki, Page } = await reader({ ...record('# A saved Wiki\n\n## 概览\n\n这里是正文。'), review })
     const article = find(Page({ wiki }), node => node.type?.name === 'WikiArticle')
-    return find(article.type(article.props), node => node.props.className === 'dsh-code-wiki-review')
+    const tree = article.type(article.props)
+    assert.match(find(tree, node => node.type === 'markdown').props.text, /这里是正文。/)
+    assert.doesNotMatch(content(tree), /审核意见待核对|内容审核未完成|请核对函数返回值。/)
   }
-
-  assert.equal(await notice(undefined), undefined)
-  assert.equal(await notice({ status: 'approved' }), undefined)
-  assert.equal(await notice({ status: 'invalid' }), undefined)
-
-  const literal = '<script>alert(1)</script>'
-  const findings = await notice({ status: 'findings', issues: [
-    { reviewer: 'semantic', reason: '核对返回值。' },
-    { reviewer: 'editorial', reason: literal },
-    { reviewer: 'unknown', reason: '隐藏无效意见。' },
-  ] })
-  assert.equal(findings.type, 'details')
-  assert.equal(findings.props.open, undefined)
-  assert.equal(content(find(findings, node => node.type === 'summary')), '审核意见待核对 · 2 条')
-  assert.deepEqual(find(findings, node => node.type === 'ul').children.map(content), [
-    '事实核对 核对返回值。', '编辑检查 ' + literal,
-  ])
-  assert.equal(find(findings, node => node.type === 'script' || node.props.dangerouslySetInnerHTML), undefined)
-
-  const unavailable = await notice({ status: 'unavailable' })
-  assert.equal(unavailable.type, 'p')
-  assert.match(content(unavailable), /^内容审核未完成/)
-  const partial = await notice({ status: 'unavailable', issues: [{ reviewer: 'semantic', reason: '核对返回值。' }] })
-  assert.equal(partial.type, 'details')
-  assert.match(content(partial), /^内容审核未完成 · 1 条/)
 })
 
 async function progressRenderer() {
@@ -430,7 +409,7 @@ test('Wiki progress distinguishes revision, rejected submissions and waiting for
     [{ step: 'agent-finishing' }, '草稿已收到，等待模型结束当前回复'],
     [{ phase: 'researching', step: 'review-reading', repair: 1 }, '按审核意见补读源码（第 1 轮）'],
     [{ phase: 'reviewing', step: 'reviewing' }, '正在检查文档'],
-    [{ phase: 'reviewing', step: 'submission-retry', attempt: 2, attemptLimit: 2 }, '审核反馈格式未通过，正在重新检查'],
+    [{ phase: 'reviewing', step: 'submission-retry', attempt: 2, attemptLimit: 2 }, '正在检查文档'],
   ]
   for (const [generation, expected] of cases) {
     const tree = render(generation)
@@ -447,11 +426,10 @@ test('Wiki progress distinguishes revision, rejected submissions and waiting for
   assert.equal(find(render({ step: 'agent-finishing', retryMessage: '已经解决的反馈' }),
     node => node.type === 'p' && content(node).startsWith('校验反馈：')), undefined)
   const reviewerRetry = render({ phase: 'reviewing', step: 'submission-retry', rejections: 1,
-    attempt: 2, attemptLimit: 2, retryMessage: '审核补读范围需要调整。' })
-  assert(content(reviewerRetry).includes('审核反馈：第 2 / 2 次尝试。'))
-  assert(content(reviewerRetry).includes('校验反馈：审核补读范围需要调整。'))
-  assert.doesNotMatch(content(reviewerRetry), /草稿提交/)
-  assert.match(content(render({ phase: 'reviewing', step: 'reviewing' })), /审核结束后将保存文档，并附上待核对的审核意见。/)
+    attempt: 2, attemptLimit: 2, retryMessage: '审核补读范围需要调整。',
+    transport: { event: 'request-retry', retryCode: 'TRANSPORT', attempt: 1, attemptLimit: 3 } })
+  assert.match(content(reviewerRetry), /检查完成后将保存到文档库。/)
+  assert.doesNotMatch(content(reviewerRetry), /审核反馈|校验反馈|草稿提交|重试模型请求/)
 })
 
 test('Wiki transport retries show the upcoming or current attempt and only translated safe reasons', async () => {

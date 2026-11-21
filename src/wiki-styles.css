@@ -830,39 +830,6 @@ a.dsh-code-wiki-revision:hover {
   line-height: 1.6;
 }
 
-.dsh-code-wiki-review {
-  box-sizing: border-box;
-  width: fit-content;
-  max-inline-size: 100%;
-  margin: 11px 0 0;
-  padding: 7px 11px;
-  border: 1px solid var(--wiki-line);
-  border-radius: 7px;
-  background: var(--wiki-canvas);
-  color: var(--wiki-muted);
-  font-size: 13px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.dsh-code-wiki-review > summary {
-  width: fit-content;
-  color: var(--wiki-ink);
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.dsh-code-wiki-review > summary:focus-visible {
-  outline: 2px solid var(--wiki-accent-ink);
-  outline-offset: 3px;
-  border-radius: 3px;
-}
-
-.dsh-code-wiki-review > summary > span { color: var(--wiki-muted); font-weight: 400; }
-.dsh-code-wiki-review > ul { margin: 6px 0 2px; padding-inline-start: 20px; }
-.dsh-code-wiki-review li + li { margin-block-start: 5px; }
-.dsh-code-wiki-review strong { color: var(--wiki-ink); font-weight: 650; }
-
 .dsh-code-wiki-prose {
   padding: clamp(22px, 3.8cqi, 38px) var(--wiki-reading-pad) clamp(26px, 4.8cqi, 49px);
 }
