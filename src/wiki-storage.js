@@ -4,6 +4,7 @@ import { link, mkdir, open, readdir, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
 import { wikiCitationLimit, wikiViewEdgeLimits } from './wiki-document.js'
+import { readWikiWalkthrough } from './wiki-walkthrough-data.js'
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 const documentFile = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.json$/
@@ -35,6 +36,27 @@ function validViews(views) {
   })
 }
 
+function storedWalkthrough(raw, architecture, { id, source, repoUrl, commit }) {
+  if (!Array.isArray(architecture?.layers) || !Array.isArray(architecture.edges)) return undefined
+  const nodeIds = new Set(architecture.layers.flatMap(layer => Array.isArray(layer?.nodes)
+    ? layer.nodes.map(node => node?.id) : []))
+  function readRefs(refs) {
+    const result = []
+    for (const ref of refs) {
+      if (!nonempty(ref?.label) || ref.label.length > 600 || typeof ref.url !== 'string') return undefined
+      const url = URL.parse(ref.url)
+      if (!url || url.username || url.password) return undefined
+      if (source === 'github') {
+        if (!url.href.startsWith(repoUrl + '/blob/' + commit + '/') || !/^#L\d+(?:-L\d+)?$/.test(url.hash)) return undefined
+      } else if (source !== 'local' || url.origin !== 'https://dsh-code-wiki.invalid' || url.pathname !== '/source'
+        || !new RegExp('^\\?key=' + id + '&file=\\d+&start=\\d+&end=\\d+$').test(url.search)) return undefined
+      result.push({ label: ref.label, url: url.href })
+    }
+    return result
+  }
+  return readWikiWalkthrough(raw, { nodeIds, chapterCount: 8, readRefs })
+}
+
 function documentRecord(document, id) {
   if (document?.id !== id || !uuid.test(id)) return
   const { createdAt, source, repoUrl, repositoryPath, repoName, commit, markdown, model, note, files, durationMs, architecture, views } = document
@@ -46,6 +68,8 @@ function documentRecord(document, id) {
   if (note !== undefined && typeof note !== 'string') return
   if (repoName !== undefined && !nonempty(repoName)) return
   if (views !== undefined && !validViews(views)) return
+  const walkthrough = document.walkthrough === undefined ? undefined : storedWalkthrough(document.walkthrough, architecture, document)
+  if (document.walkthrough !== undefined && !walkthrough) return
 
   const metadata = { id, createdAt, source, commit, ...(repoName !== undefined && { repoName }) }
   const content = {
@@ -53,6 +77,7 @@ function documentRecord(document, id) {
     ...(Number.isSafeInteger(durationMs) && durationMs >= 0 && { durationMs }),
     ...(Array.isArray(architecture?.layers) && Array.isArray(architecture?.edges) && { architecture }),
     ...(views !== undefined && { views }),
+    ...(walkthrough && { walkthrough }),
   }
   if (source === 'github' && typeof repoUrl === 'string' && githubRepo.test(repoUrl)) {
     return { ...metadata, repoUrl, ...content }

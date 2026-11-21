@@ -18,6 +18,7 @@ const publicRefs = refs => refs.map(({ label, url }) => ({ label, url }))
 export const wikiViewKinds = ['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment']
 export const wikiViewEdgeLimits = { sequence: 16, other: 10 }
 export const wikiCitationLimit = 6
+export const wikiWalkthroughTaskKinds = ['feature', 'debug']
 export const wikiChapterRoles = ['overview', 'quickstart', 'architecture', 'module', 'flow', 'extension']
 export const wikiNodeKinds = ['entry', 'core', 'data', 'external']
 export const wikiEdgeKinds = ['call', 'data', 'dependency']
@@ -106,8 +107,12 @@ export function normalizeWikiPlan(raw, source) {
     return { kind: view.kind, question: prose(view.question, 300, '视图要回答的问题'), why: prose(view.why, 350, '选择该视图的理由') }
   })
   const viewOmission = views.length ? undefined : prose(raw.viewOmission, 350, '不使用额外视图的理由')
+  const walkthrough = raw.walkthrough === undefined ? undefined : {
+    title: prose(raw.walkthrough?.title, 80, '案例计划标题'),
+    question: prose(raw.walkthrough.question, 240, '案例要回答的问题'),
+  }
   return { audience: prose(raw.audience, 250, '读者'), goal: prose(raw.goal, 350, '阅读目标'), modules, chapters, research, views,
-    ...(viewOmission && { viewOmission }) }
+    ...(viewOmission && { viewOmission }), ...(walkthrough && { walkthrough }) }
 }
 
 function references(raw, source, evidence, primary, field) {
@@ -135,6 +140,53 @@ function references(raw, source, evidence, primary, field) {
       : 'https://dsh-code-wiki.invalid/source?' + new URLSearchParams({ key: source.sourceKey, file: ref.evidence, start: ref.start, end: ref.end })
     return { evidence: ref.evidence, start: ref.start, end: ref.end, label, url }
   })
+}
+
+function normalizeWalkthrough(raw, source, evidence, nodeIds, chapterIds) {
+  const cite = (refs, field) => references(refs, source, evidence, true, `案例${field}的引用`)
+  const mappedNodes = new Set()
+  const modules = list(raw?.modules, 2, 6, '案例模块').map(module => {
+    check(nodeIds.has(module?.node) && !mappedNodes.has(module.node), '案例模块需要指向不同的已有架构组件。')
+    check(module.chapter === undefined || chapterIds.has(module.chapter), '案例模块的 chapter 必须指向已有章节。')
+    mappedNodes.add(module.node)
+    return { node: module.node, ...(module.chapter !== undefined && { chapter: module.chapter }),
+      entry: prose(module.entry, 160, '案例模块的入口'), change: prose(module.change, 300, '案例模块的修改位置'),
+      refs: cite(module.refs, '模块') }
+  })
+
+  const stepIds = new Set(), activeModules = new Set()
+  const steps = list(raw.steps, 3, 10, '案例步骤').map(step => {
+    check(id(step?.id) && !stepIds.has(step.id), '案例步骤需要唯一的简短英文编号。')
+    check(mappedNodes.has(step.module), '案例步骤的 module 必须指向案例模块的 node。')
+    stepIds.add(step.id)
+    activeModules.add(step.module)
+    const result = { id: step.id, module: step.module, title: prose(step.title, 80, '案例步骤标题'),
+      action: prose(step.action, 320, '案例步骤的动作'), outcome: prose(step.outcome, 320, '案例步骤的结果'),
+      refs: cite(step.refs, '步骤') }
+    if (step.data !== undefined) {
+      const columns = list(step.data?.columns, 2, 5, '示例数据列').map(value => prose(value, 60, '示例数据列标题'))
+      const rows = list(step.data.rows, 1, 6, '示例数据行').map(row => {
+        check(Array.isArray(row) && row.length === columns.length, '示例数据每行必须与列数一致。')
+        return row.map(value => prose(value, 180, '示例数据单元格'))
+      })
+      result.data = { title: prose(step.data.title, 80, '示例数据标题'), columns, rows, refs: cite(step.data.refs, '数据') }
+    }
+    return result
+  })
+  check(activeModules.size === mappedNodes.size, '每个案例模块必须至少出现于一个案例步骤。')
+  check(steps[0].data && steps.at(-1).data && steps.filter(step => step.data).length >= 3,
+    '案例首尾步骤及至少一个中间步骤需要示例数据，展示输入、中间状态和输出。')
+
+  const taskKinds = new Set()
+  const tasks = list(raw.tasks, 2, 2, '案例实践任务').map(task => {
+    check(wikiWalkthroughTaskKinds.includes(task?.kind) && !taskKinds.has(task.kind), '案例需要一个 feature 任务和一个 debug 任务。')
+    taskKinds.add(task.kind)
+    const steps = list(task.steps, 1, 5, '实践任务的关联步骤')
+    check(new Set(steps).size === steps.length && steps.every(step => stepIds.has(step)), '实践任务必须引用不同的已有案例步骤。')
+    return { kind: task.kind, title: prose(task.title, 100, '实践任务标题'), summary: prose(task.summary, 500, '实践任务说明'),
+      steps: [...steps], refs: cite(task.refs, '实践任务') }
+  })
+  return { title: prose(raw.title, 80, '案例标题'), objective: prose(raw.objective, 260, '案例目标'), modules, steps, tasks }
 }
 
 export function normalizeWikiDraft(raw, source, evidence, plan) {
@@ -269,7 +321,10 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
     return { from: edge.from, to: edge.to, kind: edge.kind ?? 'call', label: prose(edge.label, 120, '关系描述'),
       refs: references(edge.refs, source, evidence, true, `关系 ${key} 的引用`) }
   })
-  return { chapters, coverage, graph: { layers, edges } }
+  check(raw.walkthrough !== undefined || !plan.walkthrough, '研究计划包含贯穿案例，草稿必须提交 walkthrough。')
+  const walkthrough = raw.walkthrough === undefined ? undefined
+    : normalizeWalkthrough(raw.walkthrough, source, evidence, nodeIds, new Set(chapters.map(chapter => chapter.id)))
+  return { chapters, coverage, graph: { layers, edges }, ...(walkthrough && { walkthrough }) }
 }
 
 export function restoreWikiDraft(checkpoint, source, evidence) {
@@ -292,7 +347,7 @@ export function restoreWikiDraft(checkpoint, source, evidence) {
 export function reviseWikiDraft(raw, revisions) {
   check(raw && revisions && typeof revisions === 'object', '定向修订需要已有草稿和 revisions。')
   const changes = list(revisions.blocks, 0, 16, '正文修订')
-  check(changes.length || revisions.graph || revisions.coverage, '定向修订至少需要一项实际改动。')
+  check(changes.length || revisions.graph || revisions.coverage || revisions.walkthrough !== undefined, '定向修订至少需要一项实际改动。')
   const next = structuredClone(raw)
   const insertedAfter = new Map()
   for (const change of changes) {
@@ -316,7 +371,8 @@ export function reviseWikiDraft(raw, revisions) {
   }
   if (revisions.graph !== undefined) next.graph = structuredClone(revisions.graph)
   if (revisions.coverage !== undefined) next.coverage = structuredClone(revisions.coverage)
-  check(!isDeepStrictEqual(next, raw), '这次修订没有改变草稿。请在 revisions.blocks 中提交实际正文修改，或修正需要改变的图与覆盖记录。')
+  if (revisions.walkthrough !== undefined) next.walkthrough = structuredClone(revisions.walkthrough)
+  check(!isDeepStrictEqual(next, raw), '这次修订没有改变草稿。请提交实际的正文、图、覆盖记录或案例修改。')
   return next
 }
 
@@ -361,7 +417,15 @@ export function renderWikiDocument(draft, source) {
   const repository = source.owner ? source.owner + '/' + source.repo : source.repo
   const architecture = { layers: draft.graph.layers.map(layer => ({ ...layer, nodes: layer.nodes.map(node => ({ ...node, refs: publicRefs(node.refs) })) })),
     edges: draft.graph.edges.map(edge => ({ ...edge, refs: publicRefs(edge.refs) })) }
-  return { markdown: '# ' + escape(repository) + ' 架构 Wiki\n\n' + chapters.join('\n\n') + '\n', architecture, views }
+  const withPublicRefs = value => ({ ...value, refs: publicRefs(value.refs) })
+  const walkthrough = draft.walkthrough && { ...draft.walkthrough,
+    modules: draft.walkthrough.modules.map(module => ({ ...withPublicRefs(module),
+      ...(module.chapter !== undefined && { chapter: draft.chapters.findIndex(chapter => chapter.id === module.chapter) }) })),
+    steps: draft.walkthrough.steps.map(step => ({ ...withPublicRefs(step), ...(step.data && { data: withPublicRefs(step.data) }) })),
+    tasks: draft.walkthrough.tasks.map(withPublicRefs),
+  }
+  return { markdown: '# ' + escape(repository) + ' 架构 Wiki\n\n' + chapters.join('\n\n') + '\n', architecture, views,
+    ...(walkthrough && { walkthrough }) }
 }
 
 export function wikiViewMermaid(view) {
@@ -381,10 +445,17 @@ export function wikiViewMermaid(view) {
 }
 
 export function wikiTargetEntries(draft) {
+  const walkthrough = draft.walkthrough
   return new Map([
     ...draft.chapters.flatMap(chapter => chapter.blocks.map(block => [block.id, { section: chapter.id, value: block }])),
     ...draft.graph.layers.flatMap(layer => layer.nodes.map(node => ['node:' + node.id, { section: layer.title, value: node }])),
     ...draft.graph.edges.map(edge => [`edge:${edge.from}:${edge.to}`, { value: edge }]),
+    ...(walkthrough ? [
+      ['walkthrough:summary', { value: { title: walkthrough.title, objective: walkthrough.objective } }],
+      ...walkthrough.modules.map(module => [`walkthrough:module:${module.node}`, { value: module }]),
+      ...walkthrough.steps.map((step, index) => [`walkthrough:step:${step.id}`, { section: index, value: step }]),
+      ...walkthrough.tasks.map(task => [`walkthrough:task:${task.kind}`, { value: task }]),
+    ] : []),
   ])
 }
 
@@ -483,10 +554,16 @@ const reviewContexts = (excerpts, evidence) => {
 }
 
 export function wikiReviewMaterial(draft, plan, evidence) {
+  const walkthrough = draft.walkthrough
+  const walkthroughRefs = walkthrough ? [
+    ...walkthrough.modules.flatMap(module => module.refs),
+    ...walkthrough.steps.flatMap(step => [...step.refs, ...(step.data?.refs ?? [])]),
+    ...walkthrough.tasks.flatMap(task => task.refs),
+  ] : []
   const selected = [...new Map([...draft.coverage.flatMap(item => item.refs), ...draft.chapters.flatMap(chapter => chapter.blocks.flatMap(block =>
     [...(block.refs ?? []), ...(block.items?.flatMap(item => item.refs) ?? []), ...(block.nodes?.flatMap(node => node.refs) ?? []),
       ...(block.edges?.flatMap(edge => edge.refs) ?? [])])), ...draft.graph.layers.flatMap(layer => layer.nodes.flatMap(node => node.refs)),
-  ...draft.graph.edges.flatMap(edge => edge.refs)].map(ref => [`${ref.evidence}:${ref.start}:${ref.end}`, ref])).values()]
+  ...draft.graph.edges.flatMap(edge => edge.refs), ...walkthroughRefs].map(ref => [`${ref.evidence}:${ref.start}:${ref.end}`, ref])).values()]
   let remaining = 65_000
   const excerpts = reviewExcerpts(selected, evidence)
   for (const excerpt of excerpts) {

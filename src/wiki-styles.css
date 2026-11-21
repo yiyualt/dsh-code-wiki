@@ -2141,3 +2141,398 @@ a.dsh-code-wiki-revision:hover {
 
 .dsh-code-wiki-legend-edge[data-kind='data'] i { border-block-start-style: dashed; }
 .dsh-code-wiki-legend-edge[data-kind='dependency'] i { border-block-start-style: dotted; border-block-start-width: 2px; }
+
+.dsh-code-wiki-walkthrough {
+  --walk-panel: color-mix(in srgb, var(--wiki-accent) 4%, var(--wiki-paper));
+  --walk-selected: color-mix(in srgb, var(--wiki-accent) 12%, var(--wiki-paper));
+  --walk-data-tone: color-mix(in srgb, var(--wiki-ink) 60%, #168975);
+  --walk-data-fill: color-mix(in srgb, #168975 8%, var(--wiki-paper));
+  --walk-pad: clamp(14px, 3.3cqi, 24px);
+  container: dsh-walkthrough / inline-size;
+  margin: 19px var(--wiki-reading-pad) 10px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 14px;
+  background: var(--wiki-paper);
+  color: var(--wiki-ink);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-walkthrough :is(h2, h3, h4, p, ol, ul, dl, dd) { margin: 0; }
+.dsh-code-wiki-walkthrough :is(ol, ul) { padding: 0; list-style: none; }
+
+.dsh-code-wiki-walkthrough :is(button, select) {
+  box-sizing: border-box;
+  border: 1px solid var(--wiki-line);
+  border-radius: 7px;
+  background: var(--wiki-paper);
+  color: var(--wiki-ink);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dsh-code-wiki-walkthrough :is(button, select, summary, a, [tabindex='0']):focus-visible {
+  outline: 2px solid var(--wiki-accent-ink);
+  outline-offset: 2px;
+}
+
+.dsh-code-wiki-walkthrough button:not(:disabled):hover {
+  border-color: var(--wiki-accent-ink);
+}
+
+.dsh-walk-header {
+  padding: var(--walk-pad) var(--walk-pad) 12px;
+}
+
+.dsh-walk-header h2 {
+  max-inline-size: 35ch;
+  font-size: clamp(19px, 3.4cqi, 27px);
+  font-weight: 710;
+  line-height: 1.26;
+}
+
+.dsh-walk-header p {
+  max-inline-size: 70ch;
+  margin-block-start: 8px;
+  color: var(--wiki-muted);
+}
+
+.dsh-walk-task-area { padding: 0 var(--walk-pad) var(--walk-pad); }
+
+.dsh-walk-tasks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dsh-walk-tasks button {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  padding: 9px 12px;
+  background: var(--walk-panel);
+}
+
+.dsh-walk-tasks button[aria-pressed='true'] {
+  border-color: var(--wiki-accent-ink);
+  background: var(--walk-selected);
+}
+
+.dsh-walk-tasks span {
+  color: var(--wiki-accent-ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.dsh-walk-tasks strong { font-weight: 640; }
+
+.dsh-walk-task-summary {
+  margin-block-start: 10px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--wiki-accent-ink);
+}
+
+.dsh-walk-task-summary p { color: var(--wiki-muted); }
+
+.dsh-walk-grid {
+  display: grid;
+  border-block-start: 1px solid var(--wiki-line);
+}
+
+.dsh-walk-timeline {
+  display: none;
+  min-inline-size: 0;
+  padding: var(--walk-pad) 10px;
+  border-inline-end: 1px solid var(--wiki-line);
+  border-end-start-radius: 14px;
+  background: var(--walk-panel);
+}
+
+.dsh-walk-timeline h3 {
+  margin: 0 8px 10px;
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-weight: 640;
+}
+
+.dsh-walk-timeline li {
+  position: relative;
+  padding-block-end: 4px;
+}
+
+.dsh-walk-timeline li:not(:last-child)::after {
+  position: absolute;
+  z-index: 0;
+  inset-block: 27px -13px;
+  inset-inline-start: 20px;
+  width: 1px;
+  background: var(--wiki-accent-line);
+  content: '';
+}
+
+.dsh-walk-timeline button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 23px minmax(0, 1fr);
+  width: 100%;
+  gap: 8px;
+  align-items: start;
+  min-block-size: 44px;
+  padding: 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.44;
+}
+
+.dsh-walk-timeline button[aria-current='step'] {
+  border-color: var(--wiki-accent-line);
+  background: var(--walk-selected);
+  font-weight: 680;
+}
+
+.dsh-walk-step-number {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  inline-size: 23px;
+  block-size: 23px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 50%;
+  background: var(--wiki-paper);
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-walk-timeline button[aria-current='step'] .dsh-walk-step-number {
+  border-color: transparent;
+  background: var(--wiki-accent-ink);
+  color: var(--wiki-paper);
+}
+
+.dsh-walk-timeline button[data-recommended] .dsh-walk-step-number { border-color: var(--wiki-accent-ink); }
+
+.dsh-walk-timeline small {
+  display: block;
+  margin-block-start: 3px;
+  color: var(--wiki-accent-ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dsh-walk-mobile-picker {
+  display: grid;
+  gap: 6px;
+  padding: 11px var(--walk-pad);
+  border-block-end: 1px solid var(--wiki-line);
+  background: var(--walk-panel);
+}
+
+.dsh-walk-mobile-picker label { color: var(--wiki-muted); font-size: 12px; font-weight: 620; }
+.dsh-walk-mobile-picker select { min-width: 0; max-width: 100%; padding: 7px 9px; }
+
+.dsh-walk-stage {
+  min-inline-size: 0;
+  padding: var(--walk-pad);
+}
+
+.dsh-walk-stage-header > span {
+  color: var(--wiki-accent-ink);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-walk-stage-header h3 {
+  margin-block: 3px 12px;
+  font-size: clamp(17px, 2.7cqi, 21px);
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.dsh-walk-stage-properties,
+.dsh-walk-module-properties {
+  display: grid;
+  gap: 8px;
+}
+
+.dsh-walk-stage-properties > div,
+.dsh-walk-module-properties > div {
+  display: grid;
+  grid-template-columns: 3.4em minmax(0, 1fr);
+  gap: 8px;
+}
+
+.dsh-walk-module-properties > div { grid-template-columns: 3.75rem minmax(0, 1fr); }
+
+.dsh-walk-stage-properties dt,
+.dsh-walk-module-properties dt {
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.85;
+}
+
+.dsh-walk-module-properties dd { min-width: 0; }
+.dsh-walk-module-properties code { color: var(--wiki-accent-ink); font-size: .92em; }
+
+.dsh-walk-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 11px;
+  margin-block-start: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.dsh-walk-sources a { color: var(--wiki-accent-ink); text-underline-offset: 2px; }
+
+.dsh-walk-stage-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-block-start: 15px;
+}
+
+.dsh-walk-data,
+.dsh-walk-modules {
+  min-inline-size: 0;
+  padding: 12px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 9px;
+  background: var(--walk-panel);
+}
+
+.dsh-walk-data { background: var(--walk-data-fill); }
+
+.dsh-walk-card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-block-end: 10px;
+}
+
+.dsh-walk-card-heading h4 { font-size: 14px; font-weight: 680; }
+.dsh-walk-card-heading span { color: var(--walk-data-tone); font-size: 12px; font-weight: 620; }
+.dsh-walk-data .dsh-walk-held { margin-block-end: 9px; color: var(--wiki-muted); font-size: 12px; }
+
+.dsh-walk-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--wiki-line);
+  border-radius: 6px;
+  background: var(--wiki-paper);
+}
+
+.dsh-walk-table-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dsh-walk-table-scroll :is(th, td) {
+  min-inline-size: 3rem;
+  border-block-end: 1px solid var(--wiki-line);
+  padding: 6px 7px;
+  text-align: start;
+  vertical-align: top;
+}
+
+.dsh-walk-table-scroll th { background: var(--walk-data-fill); font-weight: 650; }
+.dsh-walk-table-scroll tbody tr:last-child td { border-block-end: 0; }
+
+.dsh-walk-previous { margin-block-start: 10px; }
+.dsh-walk-previous summary { color: var(--walk-data-tone); font-size: 12px; font-weight: 620; cursor: pointer; }
+.dsh-walk-previous[open] > summary { margin-block-end: 9px; }
+
+.dsh-code-wiki-walkthrough .dsh-walk-module-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-block-end: 11px;
+}
+
+.dsh-walk-module-picker button {
+  min-block-size: 34px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.dsh-walk-module-picker button[aria-pressed='true'] {
+  border-color: var(--wiki-accent-ink);
+  background: var(--walk-selected);
+  color: var(--wiki-accent-ink);
+  font-weight: 670;
+}
+
+.dsh-code-wiki-walkthrough .dsh-walk-relations {
+  display: grid;
+  gap: 7px;
+  margin-block-start: 10px;
+}
+
+.dsh-walk-relations li {
+  padding: 6px 8px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 6px;
+  background: var(--wiki-paper);
+  font-size: 12px;
+}
+
+.dsh-walk-edge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  font-weight: 620;
+}
+
+.dsh-walk-edge > button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--wiki-accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dsh-walk-edge [data-active] { color: var(--wiki-accent-ink); font-weight: 700; }
+.dsh-walk-edge-arrow, .dsh-walk-edge-label { color: var(--wiki-muted); }
+
+.dsh-code-wiki-walkthrough .dsh-walk-chapter-link {
+  margin-block-start: 8px;
+  padding: 5px 8px;
+  color: var(--wiki-accent-ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.dsh-walk-pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-block-start: 14px;
+}
+
+.dsh-walk-pager button { min-block-size: 36px; padding: 5px 10px; font-size: 12px; }
+.dsh-walk-pager button:disabled { opacity: .55; cursor: default; }
+
+@container dsh-walkthrough (max-width: 360px) {
+  .dsh-walk-table-scroll :is(th, td) { min-inline-size: 2.5rem; padding-inline: 5px; }
+}
+
+@container dsh-walkthrough (min-width: 550px) {
+  .dsh-walk-grid { grid-template-columns: minmax(142px, 25%) minmax(0, 1fr); }
+  .dsh-walk-timeline { display: block; }
+  .dsh-walk-mobile-picker { display: none; }
+}
+
+@container dsh-walkthrough (min-width: 820px) {
+  .dsh-walk-stage-cards { grid-template-columns: minmax(0, 1fr) minmax(0, .88fr); align-items: start; }
+}

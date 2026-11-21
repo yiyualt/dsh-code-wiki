@@ -12,6 +12,7 @@ window.__ModuleLoader__.load({
     const FolderBrowser = createCodeWikiFolderBrowser(React, primitives)
     const VideoPanel = createCodeWikiVideo(React, primitives)
     const WikiView = createWikiViewRenderer(React)
+    const WikiWalkthrough = createWikiWalkthroughRenderer(React)
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
     const generationError = '生成失败，请稍后重试。'
@@ -33,6 +34,7 @@ window.__ModuleLoader__.load({
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
     }
+    const initialWalkthroughSelection = { index: 0, task: null }
 
     function resolveLocalReferences(markdown) {
       const reference = /^https:\/\/dsh-code-wiki\.invalid\/source(\?key=[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}&file=\d+&start=\d+&end=\d+)$/i
@@ -320,6 +322,21 @@ window.__ModuleLoader__.load({
         return metadata.source === 'local' ? { ...readable,
           markdown: resolveLocalReferences(readable.markdown), references: resolveLocalReferences(readable.references) } : readable
       })
+      const architecture = readArchitecture(data.architecture, metadata)
+      const walkthrough = architecture && data.walkthrough && readWikiWalkthrough(data.walkthrough, {
+        nodeIds: new Set(architecture.layers.flatMap(layer => layer.nodes.map(node => node.id))),
+        chapterCount: chapters.length,
+        readRefs(refs) {
+          const trusted = refs.map(ref => {
+            if (typeof ref?.label !== 'string' || !ref.label.trim() || ref.label.length > 600
+              || typeof ref.url !== 'string' || !sourceLink(ref.url, metadata)) return null
+            const url = metadata.source === 'local'
+              ? new URL('api/dsh-code-wiki/source' + new URL(ref.url).search, document.baseURI).href : ref.url
+            return { label: ref.label, url }
+          })
+          return trusted.every(Boolean) ? trusted : undefined
+        },
+      })
       return {
         ...metadata,
         ...content, chapters,
@@ -327,7 +344,8 @@ window.__ModuleLoader__.load({
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
         durationMs: Number.isSafeInteger(data.durationMs) && data.durationMs >= 0 ? data.durationMs : undefined,
-        architecture: readArchitecture(data.architecture, metadata),
+        architecture,
+        ...(walkthrough && { walkthrough }),
       }
     }
 
@@ -1296,7 +1314,7 @@ window.__ModuleLoader__.load({
       return [...new Set(titles.filter(Boolean))].slice(0, 10)
     }
 
-    function WikiArticle({ result, chapterIndex, headingRef }) {
+    function WikiArticle({ result, chapterIndex, headingRef, walkthroughControls }) {
       const chapter = result.chapters[chapterIndex]
       const repository = repositoryLabel(result)
       const title = result.documentTitle
@@ -1344,6 +1362,8 @@ window.__ModuleLoader__.load({
             const target = [...(article?.querySelectorAll('h2, h3') ?? [])].find(node => node.textContent.trim() === section)
             target?.scrollIntoView({ block: 'start', behavior: 'smooth' })
           } }, section))),
+        chapterIndex === 0 && result.walkthrough && h(WikiWalkthrough, { key: result.id, walkthrough: result.walkthrough,
+          graph: result.architecture, chapterTitles: result.chapters.map(item => item.title), ...walkthroughControls }),
         prose(overview ? overview.introduction : chapter.markdown),
         overview && h(ArchitectureGraph, { key: result.id, graph: result.architecture }),
         overview && prose(overview.remaining),
@@ -1361,6 +1381,8 @@ window.__ModuleLoader__.load({
       const formId = useId()
       const page = useRef(null)
       const articleHeading = useRef(null)
+      const focusChapter = useRef(false)
+      const [walkthroughProgress, setWalkthroughProgress] = useState(null)
       const documentId = result?.id
       const repository = result && repositoryLabel(result)
       const showForm = formOpen && !loading
@@ -1374,7 +1396,24 @@ window.__ModuleLoader__.load({
       }, [documentId])
       useEffect(() => {
         if (documentId && page.current) page.current.scrollTop = 0
+        if (focusChapter.current) {
+          focusChapter.current = false
+          articleHeading.current?.focus({ preventScroll: true })
+        }
       }, [documentId, chapterIndex])
+
+      const walkthroughControls = result?.walkthrough && {
+        selection: walkthroughProgress?.id === documentId ? walkthroughProgress.selection : initialWalkthroughSelection,
+        setSelection(update) {
+          setWalkthroughProgress(previous => ({ id: documentId,
+            selection: update(previous?.id === documentId ? previous.selection : initialWalkthroughSelection) }))
+        },
+        onSelectChapter(index) {
+          if (index === chapterIndex) return
+          focusChapter.current = true
+          wiki.selectChapter(index)
+        },
+      }
 
       const progress = generation && !(generation.phase === 'completed' && documentId === generation.id) && h(GenerationProgress, {
         generation, progressOffline, openDocument: wiki.openDocument,
@@ -1412,7 +1451,7 @@ window.__ModuleLoader__.load({
               h(ChapterDirectory, { chapters: result.chapters, chapterIndex, selectChapter: wiki.selectChapter })),
             h('div', { className: 'dsh-code-wiki-main' },
               progress,
-              h(WikiArticle, { result, chapterIndex, headingRef: articleHeading })),
+              h(WikiArticle, { result, chapterIndex, headingRef: articleHeading, walkthroughControls })),
           ) : h('div', { className: 'dsh-code-wiki-library' },
             progress,
             showForm && h(GenerationForm, { wiki, formId, ...snapshot }),

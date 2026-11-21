@@ -19,6 +19,33 @@ function fixture() {
   return { source, evidence, spans, plan, raw: wikiDraftFixture(spans) }
 }
 
+function planWithWalkthrough() {
+  return { ...wikiPlanFixture(), walkthrough: { title: '执行示例', question: '一次调用如何得到结果？' } }
+}
+
+function draftWithWalkthrough(spans) {
+  const { entry, core } = spans
+  const ref = ({ evidence, start, end }) => ({ evidence, start, end })
+  const step = (id, module, title, action, outcome, value, span) => ({ id, module, title, action, outcome, refs: [ref(span)],
+    data: { title, columns: ['阶段', '示例值'], rows: [[title, value]], refs: [ref(span)] } })
+  return { ...wikiDraftFixture(spans), walkthrough: {
+    title: '执行示例', objective: '检查一次调用返回的值。',
+    modules: [
+      { node: 'entry', chapter: 'execution', entry: 'main.js', change: '在入口检查调用参数。', refs: [ref(entry)] },
+      { node: 'core', chapter: 'core', entry: 'core.js/run', change: '调整 run 返回的值。', refs: [ref(core)] },
+    ],
+    steps: [
+      step('start', 'entry', '触发入口', '读取执行入口。', '调用 run。', 'run()', entry),
+      step('execute', 'core', '进入实现', '执行 run。', '求得返回值。', '42', core),
+      step('result', 'core', '返回结果', '返回计算值。', '调用取得结果。', '42', core),
+    ],
+    tasks: [
+      { kind: 'feature', title: '修改返回值', summary: '调整 run 并用测试断言返回值。', steps: ['result'], refs: [ref(core)] },
+      { kind: 'debug', title: '核对入口', summary: '检查入口是否执行 run。', steps: ['start'], refs: [ref(entry)] },
+    ],
+  } }
+}
+
 test('Wiki plans use the fixed skeleton with one chapter per module and reject imaginary research files', () => {
   const { source, plan } = fixture()
   assert.equal(plan.chapters.length, 4)
@@ -56,7 +83,7 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
     }
   }
   visit(wikiPublicationSchema)
-  assert.equal(refLocations, 14)
+  assert.equal(refLocations, 22)
   assert.match(wikiResearchInstructions, /超过 25 行会按 25 行拆分且拆分后总数仍不能超过 6 项/)
   const { raw, source, evidence, plan: acceptedPlan, spans } = fixture()
   raw.chapters[0].blocks[0].refs = Array(7).fill(spans.docs)
@@ -553,10 +580,11 @@ function pipelineFixture(t, { rejectAlways = false, badRead = false } = {}) {
         const read = async args => JSON.parse((await tools.get('wiki_read').execute(args, { signal: options.signal })).data)
         const docs = await read({ path: 'README.md' }), entry = await read({ path: 'main.js' })
         const core = await read({ path: 'core.js', start: round === 1 ? 1 : 2, count: 1 })
-        const draft = wikiDraftFixture({ docs, entry, core })
+        const draft = draftWithWalkthrough({ docs, entry, core })
         if (round === 1) {
           statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
           statuses.push((await tools.get('wiki_publish').execute({ kind: 'plan', plan: wikiPlanFixture() })).status)
+          statuses.push((await tools.get('wiki_publish').execute({ kind: 'plan', plan: planWithWalkthrough() })).status)
           statuses.push((await tools.get('wiki_publish').execute({ kind: 'draft', draft })).status)
         } else {
           const blocks = draft.chapters[2].blocks.map(block => ({ chapter: 'execution', action: 'replace', target: block.id, block }))
@@ -575,11 +603,14 @@ test('Wiki publication requires a plan, real independent reviews, and targeted e
   const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture', model: 'fixture' }, null,
     new AbortController().signal, undefined, phase => f.phases.push(phase))
   assert.match(f.statuses[0], /先提交研究计划/)
+  assert.match(f.statuses[1], /新研究计划需要 walkthrough/)
+  assert.match(f.statuses[2], /研究计划已接受/)
   assert.equal(f.rounds(), 2)
   assert.equal(f.reviews.length, 4)
   assert(f.reviews[2].excerpts.some(item => item.path === 'core.js' && item.start === 2))
   assert.match(f.messages[1].content[0].text, /additionalEvidence/)
   assert.match(result.markdown, /export const run/)
+  assert.equal(result.walkthrough.steps.length, 3)
   assert.equal(f.disposed(), 1)
   assert(f.phases.includes('planning') && f.phases.includes('researching') && f.phases.includes('writing') && f.phases.includes('reviewing'))
 })
@@ -612,7 +643,7 @@ test('research failures and timeouts retain accepted evidence for a fresh draft 
         let run
         return { agent: { followup() {
           run = (async () => {
-            assert.match((await tools.get('wiki_publish').execute({ kind: 'plan', plan: wikiPlanFixture() })).status, /研究计划已接受/)
+            assert.match((await tools.get('wiki_publish').execute({ kind: 'plan', plan: planWithWalkthrough() })).status, /研究计划已接受/)
             for (const path of ['README.md', 'main.js', 'core.js']) await tools.get('wiki_read').execute({ path }, { signal })
             if (mode === 'timeout') controller.abort(failure)
             throw failure
@@ -645,12 +676,12 @@ test('research failures and timeouts retain accepted evidence for a fresh draft 
           assert.match(prompt, /研究计划已被接受，尚无可用草稿/)
           assert.match(prompt, /kind=draft/)
           const restored = JSON.parse(prompt.split('\n').at(-1))
-          assert.deepEqual(restored.plan, f.plan)
+          assert.deepEqual(restored.plan, normalizeWikiPlan(planWithWalkthrough(), f.source))
           assert.deepEqual(restored.evidence, f.evidence.map((file, index) => ({ id: index + 1, ...file })))
           assert.equal(reviews, 0)
           const rejected = await tools.get('wiki_publish').execute({ kind: 'revise', revisions: { blocks: [] } })
           assert.match(rejected.status, /需要已有草稿/)
-          assert.match((await tools.get('wiki_publish').execute({ kind: 'draft', draft: f.raw })).status, /草稿已收到/)
+          assert.match((await tools.get('wiki_publish').execute({ kind: 'draft', draft: draftWithWalkthrough(f.spans) })).status, /草稿已收到/)
         })()
       }, whenIdle: () => run, cancel() {} }, dispose() {} }
     } } }
@@ -677,7 +708,7 @@ test('concurrent evidence reads await serialized immutable checkpoint snapshots 
     let run
     return { agent: { followup() {
       run = (async () => {
-        await tools.get('wiki_publish').execute({ kind: 'plan', plan: wikiPlanFixture() })
+        await tools.get('wiki_publish').execute({ kind: 'plan', plan: planWithWalkthrough() })
         await Promise.all(['main.js', 'core.js'].map(path => tools.get('wiki_read').execute({ path }, { signal })))
         throw Object.assign(new Error('fixture'), { code: 'TRANSPORT' })
       })()
@@ -895,7 +926,7 @@ function structuralResumeFixture(outcomes) {
           if (!spans) {
             const read = async path => JSON.parse((await tools.get('wiki_read').execute({ path }, { signal: options.signal })).data)
             spans = { docs: await read('README.md'), entry: await read('main.js'), core: await read('core.js') }
-            const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: wikiPlanFixture() })
+            const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: planWithWalkthrough() })
             assert.match(planned.status, /研究计划已接受/)
             plans++
           }
@@ -906,7 +937,7 @@ function structuralResumeFixture(outcomes) {
             return
           }
           if (outcome !== 'stop' && outcome !== 'length') {
-            const draft = wikiDraftFixture(spans)
+            const draft = draftWithWalkthrough(spans)
             if (outcome === 'schema') draft.chapters[0].blocks[0].refs[0].end = 99
             const submitted = await tools.get('wiki_publish').execute({ kind: 'draft', draft })
             assert.match(submitted.status, outcome === 'schema' ? /提交未通过/ : /草稿已收到/)

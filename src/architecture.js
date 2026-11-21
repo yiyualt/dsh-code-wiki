@@ -56,6 +56,7 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           if (currentRaw !== undefined) throw wikiInvalid('已有草稿后保留已接受的研究计划，请按审核意见定向修订草稿。')
           if (plans >= 3) throw wikiInvalid('研究计划最多修订三次，请按当前计划完成研究。')
           const next = normalizeWikiPlan(args.plan, source)
+          if (!checkpoint && !next.walkthrough) throw wikiInvalid('新研究计划需要 walkthrough，填写案例标题和要解释的问题。')
           plan = next; plans++; phase = 'researching'
           await saveCheckpoint()
           lastRetry = undefined
@@ -198,7 +199,8 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
         const targets = new Set(review.issues.map(issue => issue.target))
         const objects = [...wikiTargetEntries(draft)].filter(([target]) => targets.has(target)).map(([, { value }]) => value)
         const ranges = new Set(objects.flatMap(value => [...(value.refs ?? []), ...(value.items?.flatMap(item => item.refs) ?? []),
-          ...(value.nodes?.flatMap(node => node.refs) ?? []), ...(value.edges?.flatMap(edge => edge.refs) ?? [])])
+          ...(value.nodes?.flatMap(node => node.refs) ?? []), ...(value.edges?.flatMap(edge => edge.refs) ?? []),
+          ...(value.data?.refs ?? [])])
           .map(ref => `${ref.evidence}:${ref.start}:${ref.end}`))
         const reviewMaterial = wikiReviewMaterial(draft, plan, evidence)
         recoveryContext = wikiResearchInstructions + '\n此前研究已完成，plan已被接受，以下是同一提交的当前草稿、完整证据目录及被审核问题直接引用的原文。仅修订审核问题；未展示全文的证据可按目录中的真实路径补读，不必重复研究。证据目录id与工具evidence编号一致。\n'
@@ -210,7 +212,7 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
       }
       reviewed = { draft, review }
       draft = await draftRound('独立审核要求定向修订，尚未发布。保留未受影响的章节，逐项解决列出的问题。调用 wiki_publish(kind=revise) 仅提交改动，不重新输出整篇草稿。'
-        + 'revisions.blocks 使用 chapter、action(replace|insert_after|delete)、target(原正文块id)及新增/替换的完整block；replace保留原id。需要时可整体更新revisions.graph或coverage。合并后验证完整结构，审核员复核未解决的问题和新增改动。补读成功的原文在 additionalEvidence，仍缺证据时可按具体符号搜索或缩小范围继续查证。\n'
+        + 'revisions.blocks 使用 chapter、action(replace|insert_after|delete)、target(原正文块id)及新增/替换的完整block；replace保留原id。仅按需提交 revisions.graph、coverage 或 walkthrough 的完整替换。合并后验证完整结构，审核员复核待解决问题和改动。补读原文在 additionalEvidence，仍缺证据时可按具体符号搜索或缩小范围。\n'
         + recoveryContext
         + JSON.stringify({ corrections: review.issues, additionalEvidence, incompleteReads }))
     }

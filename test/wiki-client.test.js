@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
+import { readWikiWalkthrough } from '../src/wiki-walkthrough-data.js'
+import { createWikiWalkthroughRenderer } from '../src/wiki-walkthrough.js'
 
 const id = '12345678-1234-1234-1234-123456789abc'
 const commit = 'a'.repeat(40)
@@ -25,6 +27,7 @@ async function client(fetchRequest) {
     setTimeout: callback => { callback(); return 0 },
     codeWikiStyles: '', createCodeWikiFolderBrowser: () => () => null, createCodeWikiVideo: () => () => null,
     createWikiViewRenderer: () => function WikiView() {},
+    createWikiWalkthroughRenderer, readWikiWalkthrough,
     fetch: async (url, options = {}) => { requests.push(String(url)); calls.push({ url: String(url), ...options }); return fetchRequest(new URL(url), options) },
   })
   const plugin = definition.factory(name => name === 'react' ? React : primitives)
@@ -166,6 +169,44 @@ test('an architecture placeholder keeps the graph inside its own chapter and cha
   assert.deepEqual(nav.children.map(button => button.children[0]), ['批处理', '缓存'])
   assert.equal(architecture.children.some(item => item?.props?.className === 'dsh-code-wiki-sections'), false,
     'a chapter without short sections does not show navigation')
+})
+
+test('only the overview mounts the linked walkthrough and every archived citation is verified and resolved', async () => {
+  const local = 'https://dsh-code-wiki.invalid/source?key=' + id + '&file=2&start=10&end=20'
+  const refs = [{ label: 'src/main.js:10–20', url: local }]
+  const data = { ...record('# Project Wiki\n\n## Overview\n\nIntro.\n\n## Execution\n\nImplementation.'),
+    source: 'local', repositoryPath: '/example/project', repoName: 'project' }
+  data.architecture = { layers: [
+    { title: '输入', nodes: [{ id: 'input', title: 'Input', kind: 'entry', summary: 'Accepts input.', refs }] },
+    { title: '输出', nodes: [{ id: 'output', title: 'Output', kind: 'data', summary: 'Returns a result.', refs }] },
+  ], edges: [{ from: 'input', to: 'output', kind: 'data', label: 'Passes input', refs }] }
+  data.walkthrough = { title: 'Process one record', objective: 'Follow its data through execution.',
+    modules: [{ node: 'input', entry: 'main()', change: 'Edit input parsing.', refs },
+      { node: 'output', chapter: 1, entry: 'format()', change: 'Update formatting.', refs }],
+    steps: ['receive', 'transform', 'output'].map((name, i) => ({ id: name,
+      module: i === 0 ? 'input' : 'output', title: name, action: 'Run the operation.', outcome: 'Continue the call.', refs,
+      data: { title: 'Record contents', columns: ['Field', 'Value'], rows: [['item', String(i)]], refs } })),
+    tasks: [{ kind: 'feature', title: 'Change output fields', summary: 'Adjust formatting.', steps: ['output'], refs },
+      { kind: 'debug', title: 'Verify input', summary: 'Inspect the first value.', steps: ['receive'], refs }] }
+  const { wiki, Page } = await reader(data)
+  const snapshot = wiki.getSnapshot()
+  const articleFor = index => {
+    const article = find(Page({ wiki: { ...wiki, getSnapshot: () => ({ ...snapshot, chapterIndex: index }) } }),
+      node => node.type?.name === 'WikiArticle')
+    return article.type(article.props)
+  }
+  const walkthrough = find(articleFor(0), node => node.type?.name === 'WikiWalkthrough')
+  assert(walkthrough)
+  assert.equal(walkthrough.props.chapterTitles[1], 'Execution')
+  assert.equal(walkthrough.props.walkthrough.steps[0].data.refs[0].url,
+    'http://localhost/api/dsh-code-wiki/source?key=' + id + '&file=2&start=10&end=20')
+  assert(!find(articleFor(1), node => node.type?.name === 'WikiWalkthrough'))
+
+  const unsafe = structuredClone(data)
+  unsafe.walkthrough.steps[0].data.refs = [{ label: 'Untrusted', url: 'javascript:alert(1)' }]
+  const invalid = await reader(unsafe)
+  assert.equal(invalid.wiki.getSnapshot().result.walkthrough, undefined)
+  assert(invalid.wiki.getSnapshot().result.architecture)
 })
 
 test('only exact approved diagram fences become controlled views and all other Mermaid stays code', async () => {

@@ -272,6 +272,7 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
         const cite = span => [{ evidence: span.evidence, start: span.start, end: span.end }]
         const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: {
           audience: 'Developers inspecting this runner', goal: 'Understand the committed entry and returned value',
+          walkthrough: { title: 'Load the runner', question: 'How does importing main.js produce value?' },
           views: [], viewOmission: 'The existing overall component diagram fully explains this small example.',
           modules: [{ id: 'entry', name: 'Entry', responsibility: 'Passes the call to core.', entry: 'main.js', paths: ['main.js'] },
             { id: 'core', name: 'Core', responsibility: 'Returns a value.', entry: 'core.js', paths: ['core.js'] }],
@@ -301,6 +302,26 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
               { title: 'Core', nodes: [node('core', 'core', core), node('value', 'data', core)] }],
             edges: [{ from: 'entry', to: 'core', kind: 'call', label: 'Calls', refs: cite(entry) },
               { from: 'core', to: 'value', kind: 'data', label: 'Returns', refs: cite(core) }],
+          },
+          walkthrough: {
+            title: 'Load the runner',
+            objective: 'Follow main.js from import to the exported value.',
+            modules: [
+              { node: 'entry', chapter: 'entry', entry: 'main.js', change: 'Edit how value is exported.', refs: cite(entry) },
+              { node: 'core', chapter: 'core', entry: 'core.js', change: 'Edit what run returns.', refs: cite(core) },
+            ],
+            steps: [
+              { id: 'load', module: 'entry', title: 'Import the entry', action: 'Load main.js.', outcome: 'The entry imports run.',
+                refs: cite(entry), data: { title: 'Module request', columns: ['File', 'Import'], rows: [['main.js', 'run']], refs: cite(entry) } },
+              { id: 'call', module: 'core', title: 'Run the implementation', action: 'Call run.', outcome: 'It returns 42.',
+                refs: cite(core), data: { title: 'Return', columns: ['Function', 'Number'], rows: [['run', '42']], refs: cite(core) } },
+              { id: 'export', module: 'entry', title: 'Export value', action: 'Assign the return value to value.', outcome: 'The import can read value.',
+                refs: cite(entry), data: { title: 'Export', columns: ['Name', 'Number'], rows: [['value', '42']], refs: cite(entry) } },
+            ],
+            tasks: [
+              { kind: 'feature', title: 'Change the returned value', summary: 'Update run and assert the exported number.', steps: ['call', 'export'], refs: cite(core) },
+              { kind: 'debug', title: 'Trace an unexpected export', summary: 'Compare the return from run with the assigned value.', steps: ['export', 'call'], refs: cite(entry) },
+            ],
           },
         } })
         assert.match(published.status, /草稿已收到/)
@@ -643,6 +664,20 @@ test('the synchronous generate endpoint uses the same reviewed Wiki pipeline', a
   assert.equal(reviews, 2, 'facts and writing must both be reviewed before the old endpoint publishes')
   assert.match(document.markdown, /```javascript/)
   assert.equal(document.architecture.edges.length, 2)
+  assert.equal(document.walkthrough.steps[2].outcome, 'The import can read value.')
+  assert.equal(document.walkthrough.modules[1].chapter, 3)
+  const link = new URL(document.walkthrough.steps[2].data.refs[0].url)
+  assert.equal(link.searchParams.get('key'), document.id)
+  const source = await api.request('source' + link.search)
+  assert.equal(source.status, 200)
+  assert.match(await source.text(), /export const value/)
+  const reopened = await (await api.request('documents?id=' + document.id)).json()
+  assert.deepEqual(reopened.walkthrough, document.walkthrough)
+  const invalid = await api.storage.get(document.id)
+  invalid.walkthrough.steps[2].data.refs[0].url = 'https://example.com/source'
+  await assert.rejects(api.storage.save(invalid), /Invalid wiki document/)
+  const { documents } = await (await api.request('documents')).json()
+  assert.equal(documents[0].walkthrough, undefined, 'history contains summaries only')
 })
 
 test('a fresh installation follows the current DSH provider, model and reasoning setting on each generation', async t => {

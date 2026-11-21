@@ -182,6 +182,7 @@ export function apply(ctx, config) {
       let markdown
       let graph
       let views
+      let walkthrough
       let files = source.files
       let note
       let model
@@ -203,6 +204,7 @@ export function apply(ctx, config) {
           markdown = result.markdown
           graph = result.architecture
           views = result.views
+          walkthrough = result.walkthrough
           files = result.files.map(file => ({ path: file.path, text: file.text, startLine: file.start }))
         } else {
           markdown = await generateWiki(llm, selection, source, signal)
@@ -231,6 +233,7 @@ export function apply(ctx, config) {
         markdown,
         ...(graph && { architecture: graph }),
         ...(views?.length && { views }),
+        ...(walkthrough && { walkthrough }),
         model,
         note,
       }
