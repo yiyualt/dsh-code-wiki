@@ -19,6 +19,17 @@ function fixture() {
   return { source, evidence, spans, plan, raw: wikiDraftFixture(spans) }
 }
 
+test('file tables render generated relative link notation as file names with the verified citations below', () => {
+  const { source, evidence, raw, plan } = fixture()
+  const table = raw.chapters[2].blocks.find(block => block.type === 'table')
+  table.columns = ['关键文件', '职责']
+  table.rows = [['[core.js](<core.js#L2>)、[main.js](./main.js#L1-L2)', '入口与核心实现。']]
+  const { markdown } = renderWikiDocument(normalizeWikiDraft(raw, source, evidence, plan), source)
+  assert.match(markdown, /\| \x60core\.js\x60、\x60main\.js\x60 \| 入口与核心实现。 \|/)
+  assert.match(markdown, /\/core\.js#L2\)/)
+  assert.doesNotMatch(markdown, /\\\[core\.js\\\]/)
+})
+
 function planWithWalkthrough() {
   return { ...wikiPlanFixture(), walkthrough: { title: '执行示例', question: '一次调用如何得到结果？' } }
 }

@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path'
 
 import { wikiCitationLimit, wikiViewEdgeLimits } from './wiki-document.js'
 import { readWikiWalkthrough } from './wiki-walkthrough-data.js'
+import { formatWikiFileTables } from './wiki-file-tables.js'
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 const documentFile = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.json$/
@@ -73,7 +74,7 @@ function documentRecord(document, id) {
 
   const metadata = { id, createdAt, source, commit, ...(repoName !== undefined && { repoName }) }
   const content = {
-    markdown, ...(model !== undefined && { model }), ...(note !== undefined && { note }),
+    markdown: formatWikiFileTables(markdown), ...(model !== undefined && { model }), ...(note !== undefined && { note }),
     ...(Number.isSafeInteger(durationMs) && durationMs >= 0 && { durationMs }),
     ...(Array.isArray(architecture?.layers) && Array.isArray(architecture?.edges) && { architecture }),
     ...(views !== undefined && { views }),

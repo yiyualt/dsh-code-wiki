@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { formatWikiFileTables } from './wiki-file-tables.js'
 
 export const wikiInvalid = message => Object.assign(new Error(message), { code: 'model-output-invalid' })
 const check = (condition, message) => { if (!condition) throw wikiInvalid(message) }
@@ -424,7 +425,8 @@ export function renderWikiDocument(draft, source) {
     steps: draft.walkthrough.steps.map(step => ({ ...withPublicRefs(step), ...(step.data && { data: withPublicRefs(step.data) }) })),
     tasks: draft.walkthrough.tasks.map(withPublicRefs),
   }
-  return { markdown: '# ' + escape(repository) + ' 架构 Wiki\n\n' + chapters.join('\n\n') + '\n', architecture, views,
+  const markdown = formatWikiFileTables('# ' + escape(repository) + ' 架构 Wiki\n\n' + chapters.join('\n\n') + '\n')
+  return { markdown, architecture, views,
     ...(walkthrough && { walkthrough }) }
 }
 

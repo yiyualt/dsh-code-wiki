@@ -64,6 +64,25 @@ test('concurrent saves for the same ID publish a single complete archive', async
   assert.deepEqual(await readdir(directory), [original.id + '.json'])
 })
 
+test('archived file table repair preserves source citations, code, and unrelated links', async t => {
+  const { directory, storage } = await fixture(t)
+  const row = String.raw`| \[quick\_start.py\]\(\<recbole/quick\_start.py\#L128-L150\>\) | Runs an experiment. |`
+  const other = String.raw`| \[manual.md\]\(\<https://example.test/manual.md\>\) | Documentation. |`
+  const header = '| 关键文件 | 职责 |'
+  const rule = '| --- | --- |'
+  const source = '[1](https://github.com/example/wiki/blob/' + 'a'.repeat(40) + '/recbole/quick_start.py#L128-L150)'
+  const lines = ['# Wiki', '', header, rule, row, other, '', source, '', '```md', header, rule, row, '```', '', '| 示例 | 说明 |', rule, row]
+  const original = document({ markdown: lines.join('\r\n') })
+  const file = join(directory, original.id + '.json')
+  await storage.save(original)
+  // Simulate a file written by an older plugin before it processed file tables.
+  await writeFile(file, JSON.stringify(original))
+  const reopened = await storage.get(original.id)
+  lines[4] = '| `quick_start.py` | Runs an experiment. |'
+  assert.equal(reopened.markdown, lines.join('\r\n'))
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).markdown, original.markdown)
+})
+
 test('architectural views reopen without changing existing document or video input fields', async t => {
   const { directory, storage } = await fixture(t)
   const ref = { label: 'main.js:1', url: 'https://github.com/example/wiki/blob/' + 'a'.repeat(40) + '/main.js#L1' }
