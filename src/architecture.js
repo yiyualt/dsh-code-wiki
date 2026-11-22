@@ -56,12 +56,12 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           if (plans >= 3) throw wikiInvalid('研究计划最多修订三次，请按当前计划完成研究。')
           const next = normalizeWikiPlan(args.plan, source)
           if (!checkpoint && !next.walkthrough) throw wikiInvalid('新研究计划需要 walkthrough，填写案例标题和要解释的问题。')
-          plan = next; plans++; phase = 'researching'
+          plan = { ...next, moduleCases: true }; plans++; phase = 'researching'
           await saveCheckpoint()
           lastRetry = undefined
           lastRejection = ''
           progress('researching', 'researching', { plan })
-          return { status: '研究计划已接受。现在按领域读取实际证据，完成覆盖记录后提交 kind=draft；这还不是最终发布。' }
+          return { status: '研究计划已接受。读取实际证据后提交 kind=draft，每个核心模块章需要一个 module-case。' }
         }
         if (args?.kind !== 'draft') throw wikiInvalid('wiki_publish 需要 kind=plan 或 kind=draft。')
         progress('writing', 'validating', { plan })

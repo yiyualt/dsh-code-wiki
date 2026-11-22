@@ -22,6 +22,30 @@ export function wikiDiagramFixture({ docs, entry, core }, kind = 'sequence') {
       ...(kind === 'sequence' ? [{ from: 'core', to: 'entry', label: '返回结果', refs: refs(core) }] : [])] }
 }
 
+export function wikiModuleCaseFixture(id, entry, core) {
+  const refs = (...spans) => spans.map(({ evidence, start, end }) => ({ evidence, start, end }))
+  const base = { id: id + '_case', type: 'module-case' }
+  if (id === 'core') {
+    return { ...base, title: '核对核心函数的返回值', items: [
+      { text: '入口触发对 run 的调用。', refs: refs(entry) },
+      { text: 'run 执行返回表达式，把计算结果交给调用方。', refs: refs(core) },
+    ], boundary: { condition: '调用方直接执行 run()', result: '核心函数求值并返回 42。', refs: refs(core) },
+    change: { goal: '修改 run 的返回结果。', location: 'core.js 中 run 的返回表达式。', refs: refs(core) },
+    verification: { action: '单独导入并调用 run()。', expected: '调用方得到数字 42。', refs: refs(core) } }
+  }
+  return { ...base, title: '从入口追踪一次核心调用', items: [
+    { text: 'main.js 从 core.js 导入 run。', refs: refs(entry) },
+    { text: '入口执行 run()，触发核心实现。', refs: refs(entry, core) },
+  ], boundary: { condition: '入口文件被加载并执行。', result: 'run 在入口的调用点执行。', refs: refs(entry) },
+  change: { goal: '调整入口触发的调用。', location: 'main.js 中调用 run 的表达式。', refs: refs(entry) },
+  verification: { action: '在 run 上设置断点，再加载 main.js。', expected: '断点显示来自 main.js 的调用。', refs: refs(entry, core) } }
+}
+
+export function withWikiModuleCases(draft, { entry, core }) {
+  return { ...draft, chapters: draft.chapters.map(chapter => ['entry', 'execution', 'core'].includes(chapter.id)
+    ? { ...chapter, blocks: [...chapter.blocks, wikiModuleCaseFixture(chapter.id, entry, core)] } : chapter) }
+}
+
 export function wikiDraftFixture({ docs, entry, core }) {
   const ref = span => ({ evidence: span.evidence, start: span.start, end: span.end })
   const refs = span => [ref(span)]

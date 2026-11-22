@@ -113,7 +113,7 @@ export function normalizeWikiPlan(raw, source) {
     question: prose(raw.walkthrough.question, 240, '案例要回答的问题'),
   }
   return { audience: prose(raw.audience, 250, '读者'), goal: prose(raw.goal, 350, '阅读目标'), modules, chapters, research, views,
-    ...(viewOmission && { viewOmission }), ...(walkthrough && { walkthrough }) }
+    ...(viewOmission && { viewOmission }), ...(walkthrough && { walkthrough }), ...(raw.moduleCases === true && { moduleCases: true }) }
 }
 
 function references(raw, source, evidence, primary, field) {
@@ -141,6 +141,22 @@ function references(raw, source, evidence, primary, field) {
       : 'https://dsh-code-wiki.invalid/source?' + new URLSearchParams({ key: source.sourceKey, file: ref.evidence, start: ref.start, end: ref.end })
     return { evidence: ref.evidence, start: ref.start, end: ref.end, label, url }
   })
+}
+
+function normalizeModuleCase(block, source, evidence) {
+  const cite = (part, field) => references(part.refs, source, evidence, true, `模块实例 ${block.id} 的${field}引用`)
+  const { boundary, change, verification } = block
+  return { id: block.id, type: block.type, title: prose(block.title, 80, '模块实例标题'),
+    items: list(block.items, 2, 7, '模块实例步骤').map(item => ({
+      text: prose(item?.text, 400, '模块实例步骤说明'), refs: cite(item, '步骤'),
+    })),
+    boundary: { condition: prose(boundary?.condition, 240, '模块实例边界条件'),
+      result: prose(boundary.result, 240, '模块实例边界结果'), refs: cite(boundary, '边界') },
+    change: { goal: prose(change?.goal, 240, '模块实例修改目标'),
+      location: prose(change.location, 240, '模块实例修改位置'), refs: cite(change, '修改位置') },
+    verification: { action: prose(verification?.action, 240, '模块实例验证操作'),
+      expected: prose(verification.expected, 240, '模块实例验证结果'), refs: cite(verification, '验证') },
+  }
 }
 
 function normalizeWalkthrough(raw, source, evidence, nodeIds, chapterIds) {
@@ -212,8 +228,12 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
       check(id(block?.id) && !ids.has(block.id), '正文块编号必须唯一。')
       ids.add(block.id)
       const type = block.type
-      check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading'].includes(type),
-        '正文只接受 paragraph、steps、code、table、diagram、heading。')
+      check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading', 'module-case'].includes(type),
+        '正文只接受 paragraph、steps、code、table、diagram、heading、module-case。')
+      if (type === 'module-case') {
+        check(planned.role === 'module', 'module-case 只能出现在核心模块章。')
+        return normalizeModuleCase(block, source, evidence)
+      }
       if (type === 'heading') {
         const result = { id: block.id, type, claimType: claim(block.claimType ?? 'implementation', block.id),
           refs: block.refs === undefined ? [] : references(block.refs, source, evidence, false, `小节 ${block.id} 的引用`),
@@ -279,11 +299,14 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
       return result
     })
 
-    check(blocks[0].type !== 'heading', `章节 ${planned.id} 的第一块应是段落或步骤，不能是小节标题。`)
+    check(!['heading', 'module-case'].includes(blocks[0].type), `章节 ${planned.id} 的第一块应是段落或步骤，不能从小节标题或模块实例开始。`)
     check(blocks.filter(block => block.type === 'heading').length <= 4, `章节 ${planned.id} 最多 4 个小节标题，请合并过于零碎的部分。`)
     if (planned.role === 'module') {
       check(blocks.some(block => block.type === 'paragraph'), `核心模块章 ${planned.id} 需要段落说明这个模块解决什么问题。`)
       check(blocks.some(block => block.type === 'table'), `核心模块章 ${planned.id} 需要一张表格列出主要文件与职责。`)
+      const cases = blocks.filter(block => block.type === 'module-case').length
+      check(cases <= 1, `核心模块章 ${planned.id} 最多包含一个 module-case。`)
+      check(plan.moduleCases !== true || cases === 1, `核心模块章 ${planned.id} 缺少 module-case，请补全实现步骤、边界、修改位置和验证。`)
     } else if (planned.role !== 'architecture') {
       check(blocks.some(block => block.type === 'table' || block.type === 'diagram'),
         `章节 ${planned.id} 需要至少一张表格或一张图，纯文字章节读者很难建立结构。`)
@@ -387,11 +410,22 @@ export function renderWikiDocument(draft, source) {
   const chapters = draft.chapters.map(chapter => {
     const used = new Map()
     const links = refs => { for (const ref of refs) used.set(ref.url, ref); return cite(refs) }
+    const ordered = (items, terms) => items.map((item, i) => `${i + 1}. ${inline(item.text, terms)} ${links(item.refs)}`).join('\n')
     const rendered = chapter.blocks.map(block => {
       if (block.type === 'heading') return '### ' + inline(block.text, block.inlineCode)
+      if (block.type === 'module-case') {
+        const { boundary, change, verification } = block
+        const steps = ordered(block.items)
+        const rows = [
+          ['边界', boundary.condition, boundary.result, boundary.refs],
+          ['修改', change.goal, change.location, change.refs],
+          ['验证', verification.action, verification.expected, verification.refs],
+        ].map(([label, action, result, refs]) => `| ${label} | ${escape(action)} | ${escape(result)} ${links(refs)} |`)
+        return `### ${escape(block.title)}\n\n${steps}\n\n| 内容 | 条件或操作 | 结果或位置 |\n| --- | --- | --- |\n${rows.join('\n')}`
+      }
       const citation = links(block.refs)
       if (block.type === 'paragraph') return inline(block.text, block.inlineCode) + ' ' + citation
-      if (block.type === 'steps') return block.items.map((item, i) => `${i + 1}. ${inline(item.text, block.inlineCode)} ${links(item.refs)}`).join('\n')
+      if (block.type === 'steps') return ordered(block.items, block.inlineCode)
       if (block.type === 'table') return '| ' + block.columns.map(cell => inline(cell, block.inlineCode)).join(' | ') + ' |\n| ' + block.columns.map(() => '---').join(' | ') + ' |\n'
         + block.rows.map(row => '| ' + row.map(cell => inline(cell, block.inlineCode)).join(' | ') + ' |').join('\n') + '\n\n' + citation
       if (block.type === 'diagram') {
@@ -564,7 +598,8 @@ export function wikiReviewMaterial(draft, plan, evidence) {
   ] : []
   const selected = [...new Map([...draft.coverage.flatMap(item => item.refs), ...draft.chapters.flatMap(chapter => chapter.blocks.flatMap(block =>
     [...(block.refs ?? []), ...(block.items?.flatMap(item => item.refs) ?? []), ...(block.nodes?.flatMap(node => node.refs) ?? []),
-      ...(block.edges?.flatMap(edge => edge.refs) ?? [])])), ...draft.graph.layers.flatMap(layer => layer.nodes.flatMap(node => node.refs)),
+      ...(block.edges?.flatMap(edge => edge.refs) ?? []), ...(block.boundary?.refs ?? []), ...(block.change?.refs ?? []),
+      ...(block.verification?.refs ?? [])])), ...draft.graph.layers.flatMap(layer => layer.nodes.flatMap(node => node.refs)),
   ...draft.graph.edges.flatMap(edge => edge.refs), ...walkthroughRefs].map(ref => [`${ref.evidence}:${ref.start}:${ref.end}`, ref])).values()]
   let remaining = 65_000
   const excerpts = reviewExcerpts(selected, evidence)

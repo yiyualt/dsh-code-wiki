@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { exploreArchitecture } from '../src/architecture.js'
 import { normalizeWikiPlan, normalizeWikiDraft, renderWikiDocument, reviseWikiDraft, wikiReviewMaterial } from '../src/wiki-document.js'
 import { reviewWikiDraft, wikiPublicationSchema, wikiResearchInstructions } from '../src/wiki-editor.js'
-import { wikiPlanFixture, wikiDraftFixture, wikiDiagramFixture, approvedWikiReview } from '../fixtures/wiki-editorial.js'
+import { wikiPlanFixture, wikiDraftFixture, wikiDiagramFixture, approvedWikiReview, withWikiModuleCases } from '../fixtures/wiki-editorial.js'
 
 function fixture() {
   const contents = { 'README.md': '# 示例\n项目提供可重复调用的模块示例。',
@@ -39,7 +39,7 @@ function draftWithWalkthrough(spans) {
   const ref = ({ evidence, start, end }) => ({ evidence, start, end })
   const step = (id, module, title, action, outcome, value, span) => ({ id, module, title, action, outcome, refs: [ref(span)],
     data: { title, columns: ['阶段', '示例值'], rows: [[title, value]], refs: [ref(span)] } })
-  return { ...wikiDraftFixture(spans), walkthrough: {
+  return { ...withWikiModuleCases(wikiDraftFixture(spans), spans), walkthrough: {
     title: '执行示例', objective: '检查一次调用返回的值。',
     modules: [
       { node: 'entry', chapter: 'execution', entry: 'main.js', change: '在入口检查调用参数。', refs: [ref(entry)] },
@@ -82,6 +82,10 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
     [draft.graph.properties.layers, [2, 5]], [draft.graph.properties.layers.items.properties.nodes, [1, 8]],
     [draft.graph.properties.edges, [2, 24]],
   ]) assert.deepEqual(bounds(schema), expected)
+  assert(block.type.enum.includes('module-case'))
+  assert.deepEqual(block.boundary.required, ['condition', 'result', 'refs'])
+  assert.deepEqual(block.change.required, ['goal', 'location', 'refs'])
+  assert.deepEqual(block.verification.required, ['action', 'expected', 'refs'])
   let refLocations = 0
   const visit = schema => {
     if (schema.type === 'array') {
@@ -94,7 +98,7 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
     }
   }
   visit(wikiPublicationSchema)
-  assert.equal(refLocations, 11)
+  assert.equal(refLocations, 14)
   assert.match(wikiResearchInstructions, /超过 25 行会按 25 行拆分且拆分后总数仍不能超过 6 项/)
   const { raw, source, evidence, plan: acceptedPlan, spans } = fixture()
   raw.chapters[0].blocks[0].refs = Array(7).fill(spans.docs)
@@ -575,6 +579,9 @@ function pipelineFixture({ reviewerFailure } = {}) {
         statuses.push((await publish.execute({ kind: 'draft', draft })).status)
         statuses.push((await publish.execute({ kind: 'plan', plan: wikiPlanFixture() })).status)
         statuses.push((await publish.execute({ kind: 'plan', plan: planWithWalkthrough() })).status)
+        const shallow = { ...draft, chapters: draft.chapters.map(chapter => chapter.id === 'execution'
+          ? { ...chapter, blocks: chapter.blocks.filter(block => block.type !== 'module-case') } : chapter) }
+        statuses.push((await publish.execute({ kind: 'draft', draft: shallow })).status)
         statuses.push((await publish.execute({ kind: 'draft', draft })).status)
       })()
     }, whenIdle: () => run, cancel() {} }, async dispose() { disposed++ } }
@@ -582,14 +589,15 @@ function pipelineFixture({ reviewerFailure } = {}) {
   return { source, ctx, phases, reads, reviews, statuses, rounds: () => rounds, disposed: () => disposed }
 }
 
-test('Wiki publication requires structural validation and preserves both advisory findings', async () => {
+test('new Wiki publication requires module cases and preserves both advisory findings', async () => {
   const f = pipelineFixture()
   const result = await exploreArchitecture(f.ctx, f.source, { provider: 'fixture', model: 'fixture' }, null,
     new AbortController().signal, undefined, phase => f.phases.push(phase))
   assert.match(f.statuses[0], /先提交研究计划/)
   assert.match(f.statuses[1], /新研究计划需要 walkthrough/)
   assert.match(f.statuses[2], /研究计划已接受/)
-  assert.match(f.statuses[3], /草稿已收到/)
+  assert.match(f.statuses[3], /核心模块章 execution 缺少 module-case/)
+  assert.match(f.statuses[4], /草稿已收到/)
   assert.equal(f.rounds(), 1)
   assert.deepEqual(f.reads, ['README.md', 'main.js', 'core.js'])
   assert.deepEqual(f.reviews.map(review => review.semantic).sort(), [false, true])
@@ -600,6 +608,7 @@ test('Wiki publication requires structural validation and preserves both advisor
     { reviewer: 'editorial', reason: '补充项目适用的读者。' },
   ] })
   assert.match(result.markdown, /export const run/)
+  assert.match(result.markdown, /核对核心函数的返回值/)
   assert.equal(result.walkthrough.steps.length, 3)
   assert.equal(f.disposed(), 1)
   assert(f.phases.includes('planning') && f.phases.includes('researching') && f.phases.includes('writing') && f.phases.includes('reviewing'))
@@ -662,7 +671,7 @@ test('research failures and timeouts retain accepted evidence for a fresh draft 
           assert.match(prompt, /研究计划已被接受，尚无可用草稿/)
           assert.match(prompt, /kind=draft/)
           const restored = JSON.parse(prompt.split('\n').at(-1))
-          assert.deepEqual(restored.plan, normalizeWikiPlan(planWithWalkthrough(), f.source))
+          assert.deepEqual(restored.plan, { ...normalizeWikiPlan(planWithWalkthrough(), f.source), moduleCases: true })
           assert.deepEqual(restored.evidence, f.evidence.map((file, index) => ({ id: index + 1, ...file })))
           assert.equal(reviews, 0)
           assert.match((await tools.get('wiki_publish').execute({ kind: 'draft', draft: draftWithWalkthrough(f.spans) })).status, /草稿已收到/)

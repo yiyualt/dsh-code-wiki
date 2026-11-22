@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 
 import { apply } from '../index.js'
-import { wikiDraftFixture, wikiPlanFixture } from '../fixtures/wiki-editorial.js'
+import { wikiDraftFixture, wikiModuleCaseFixture, wikiPlanFixture, withWikiModuleCases } from '../fixtures/wiki-editorial.js'
 import { createWikiStorage } from '../src/wiki-storage.js'
 import { createWikiCheckpoints } from '../src/wiki-checkpoint.js'
 
@@ -310,9 +310,11 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
           chapters: [
             { id: 'overview', title: 'Overview', blocks: [paragraph('purpose', 'A small command runner.', readme, 'purpose'), table('layout', readme, 'usage')] },
             { id: 'architecture', title: 'Architecture', blocks: [paragraph('architecture', 'The entry hands the call to core.', entry)] },
-            { id: 'entry', title: 'Entry', blocks: [paragraph('entry-call', 'Uses committed source to call run.', entry), table('entry-table', entry)] },
+            { id: 'entry', title: 'Entry', blocks: [paragraph('entry-call', 'Uses committed source to call run.', entry), table('entry-table', entry),
+              wikiModuleCaseFixture('entry', entry, core)] },
             { id: 'core', title: 'Core', blocks: [paragraph('core-return', 'Returns a value.', core), table('core-table', core),
-              { id: 'core-code', type: 'code', claimType: 'implementation', caption: 'The committed implementation.', refs: cite(core) }] },
+              { id: 'core-code', type: 'code', claimType: 'implementation', caption: 'The committed implementation.', refs: cite(core) },
+              wikiModuleCaseFixture('core', entry, core)] },
           ],
           coverage: [{ area: 'purpose', refs: cite(readme) }, { area: 'behavior', refs: [...cite(entry), ...cite(core)] }],
           graph: {
@@ -442,7 +444,7 @@ test('a GitHub checkpoint survives restart and can replan with the same numbered
           assert.deepEqual(restored.evidence.map(({ id, path }) => [id, path]), [[1, 'README.md'], [2, 'main.js'], [3, 'core.js']])
           const submit = tools.get('wiki_publish')
           assert.match((await submit.execute({ kind: 'plan', plan })).status, /研究计划已接受/)
-          assert.match((await submit.execute({ kind: 'draft', draft })).status, /草稿已收到/)
+          assert.match((await submit.execute({ kind: 'draft', draft: withWikiModuleCases(draft, { entry: spans[1], core: spans[2] }) })).status, /草稿已收到/)
         })()
       }, whenIdle: () => draftTurn, cancel() {} }, dispose() {} }
     } },
