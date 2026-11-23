@@ -1,11 +1,14 @@
-import { execFile } from 'node:child_process'
-import { realpath } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { realpath, stat } from 'node:fs/promises'
 import { basename, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 
 const execGit = promisify(execFile)
-const treeLimit = 12 * 1024 * 1024
+const githubTreeLimit = 12 * 1024 * 1024
 const fileLimit = 128 * 1024
+const pathLimit = 512
+const treeEntryLimit = pathLimit * 3 + '100644 blob \t'.length + 64
+const gitArgs = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null']
 const gitHubId = /^[a-f0-9]{40}$/i
 const gitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
 const regularModes = new Set(['100644', '100755'])
@@ -27,7 +30,7 @@ function unreadable() {
 }
 
 function eligiblePath(path) {
-  if (typeof path !== 'string' || path.length > 512 || !path.isWellFormed() || /[\\\u0000-\u001f\u007f]/.test(path)) return false
+  if (typeof path !== 'string' || path.length > pathLimit || !path.isWellFormed() || /[\\\u0000-\u001f\u007f]/.test(path)) return false
   const parts = path.split('/')
   if (parts.some(part => !part || part === '.' || part === '..' || sensitivePart.test(part))) return false
   const name = parts.at(-1)
@@ -107,7 +110,7 @@ async function openGitHub(repositoryUrl, signal, revision) {
   const treeId = (revision ? head?.tree : head?.commit?.tree)?.sha
   if (typeof commit !== 'string' || !gitHubId.test(commit) || typeof treeId !== 'string' || !gitHubId.test(treeId)) throw noEvidence()
   if (revision && commit !== revision) throw noEvidence()
-  const { tree, truncated } = await readGitHub(`${api}/git/trees/${treeId}?recursive=1`, signal, treeLimit)
+  const { tree, truncated } = await readGitHub(`${api}/git/trees/${treeId}?recursive=1`, signal, githubTreeLimit)
   const files = new Map((Array.isArray(tree) ? tree : []).filter(entry => entry.type === 'blob'
     && regularModes.has(entry.mode) && entry.size !== 0 && eligiblePath(entry.path)).map(entry => [entry.path, entry.path]))
   if (!files.size) throw noEvidence()
@@ -121,42 +124,169 @@ async function openGitHub(repositoryUrl, signal, revision) {
   }
 }
 
-function git(cwd, args, signal, maxBuffer = treeLimit, encoding = 'utf8') {
+function gitOptions(cwd, signal) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|SSH_ASKPASS$)/i.test(key)))
   Object.assign(env, {
+    LC_ALL: 'C',
     GIT_ALLOW_PROTOCOL: '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_NO_LAZY_FETCH: '1',
     GIT_NO_REPLACE_OBJECTS: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0',
   })
-  return execGit('git', ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args], {
-    cwd, env, signal, encoding, maxBuffer, windowsHide: true,
+  return { cwd, env, signal, windowsHide: true }
+}
+
+function git(cwd, args, signal, maxBuffer, encoding = 'utf8') {
+  return execGit('git', [...gitArgs, ...args], {
+    ...gitOptions(cwd, signal), encoding, ...(maxBuffer !== undefined && { maxBuffer }),
   }).then(({ stdout }) => stdout)
+}
+
+function localGitEnvironmentError(error) {
+  if (['ENOENT', 'ENOEXEC'].includes(error?.code)) {
+    return repositoryError('local-git-unavailable', 'DSH 无法启动 Git，请检查运行 DSH 的环境是否已安装 Git。')
+  }
+  const stderr = String(error?.stderr ?? '')
+  if (/detected dubious ownership|unsafe repository/i.test(stderr)) {
+    return repositoryError('local-git-forbidden', 'Git 拒绝读取此仓库，请检查仓库所有者是否与运行 DSH 的用户一致。')
+  }
+  if (['EACCES', 'EPERM'].includes(error?.code) || /permission denied|operation not permitted/i.test(stderr)) {
+    return repositoryError('local-git-forbidden', 'DSH 没有读取此 Git 仓库所需的权限，请检查目录和 Git 的访问权限。')
+  }
+  return null
+}
+
+async function localRepositoryRoot(directory, signal) {
+  try {
+    return (await git(directory, ['rev-parse', '--show-toplevel'], signal)).replace(/\r?\n$/, '')
+  } catch (error) {
+    if (!String(error.stderr ?? '').includes('must be run in a work tree')) throw error
+    if ((await git(directory, ['rev-parse', '--is-bare-repository'], signal)).trim() !== 'true') throw error
+    return (await git(directory, ['rev-parse', '--absolute-git-dir'], signal)).replace(/\r?\n$/, '')
+  }
+}
+
+async function missingBranchCommit(root, signal) {
+  let branch
+  try {
+    branch = (await git(root, ['symbolic-ref', '--quiet', 'HEAD'], signal)).trim()
+  } catch {
+    signal?.throwIfAborted()
+    return false
+  }
+  if (!branch.startsWith('refs/heads/')) return false
+  try {
+    await git(root, ['show-ref', '--verify', '--quiet', branch], signal)
+    return false
+  } catch (error) {
+    signal?.throwIfAborted()
+    return error.code === 1 && !String(error.stderr ?? '').trim()
+  }
+}
+
+async function collectTreeFiles(stdout) {
+  const files = new Map()
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  const empty = Buffer.alloc(0)
+  let remainder = empty
+  let skipEntry = false
+  for await (const chunk of stdout) {
+    let start = 0
+    for (let end = chunk.indexOf(0); end !== -1; end = chunk.indexOf(0, start)) {
+      const bytes = chunk.subarray(start, end)
+      if (!skipEntry && remainder.length + bytes.length <= treeEntryLimit) {
+        let entry
+        try {
+          entry = decoder.decode(remainder.length ? Buffer.concat([remainder, bytes]) : bytes)
+        } catch {
+          entry = ''
+        }
+        const match = /^(?:100644|100755) blob ([a-f0-9]+)\t(.*)$/.exec(entry)
+        if (match && gitId.test(match[1]) && eligiblePath(match[2])) files.set(match[2], match[1])
+      }
+      remainder = empty
+      skipEntry = false
+      start = end + 1
+    }
+    const tail = chunk.subarray(start)
+    // An entry longer than the longest eligible path can be skipped through its next NUL.
+    skipEntry ||= remainder.length + tail.length > treeEntryLimit
+    remainder = skipEntry ? empty : remainder.length ? Buffer.concat([remainder, tail]) : tail
+  }
+  return { files, complete: !skipEntry && remainder.length === 0 }
+}
+
+async function readLocalTree(root, commit, signal) {
+  const child = spawn('git', [...gitArgs, 'ls-tree', '-r', '-z', '--full-tree', commit], {
+    ...gitOptions(root, signal), stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', chunk => { stderr += chunk.slice(0, 4096 - stderr.length) })
+  const exit = new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', code => {
+      if (code === 0) resolve()
+      else reject(Object.assign(new Error('Git ls-tree failed'), { code, stderr }))
+    })
+  })
+  try {
+    const [, { files, complete }] = await Promise.all([exit, collectTreeFiles(child.stdout)])
+    if (!complete) throw new Error('Incomplete Git tree entry')
+    return files
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+  }
 }
 
 async function openLocal(repositoryPath, signal, revision) {
   if (typeof repositoryPath !== 'string' || !isAbsolute(repositoryPath) || repositoryPath.includes('\0')) {
     throw repositoryError('invalid-local-path', '请选择本地 Git 工作区的绝对路径。')
   }
-  let root, commit, entries
+  let directory
   try {
-    const directory = await realpath(repositoryPath)
-    root = (await git(directory, ['rev-parse', '--show-toplevel'], signal)).replace(/\r?\n$/, '')
-    if (!isAbsolute(root)) throw new Error('Missing worktree root')
-    commit = (await git(root, ['rev-parse', '--verify', `${revision ?? 'HEAD'}^{commit}`], signal)).trim()
-    if (!gitId.test(commit) || (revision && commit !== revision)) throw new Error('Unexpected Git commit')
-    entries = await git(root, ['ls-tree', '-r', '-z', '--full-tree', commit], signal)
-  } catch {
+    directory = await realpath(repositoryPath)
+    if (!(await stat(directory)).isDirectory()) throw new Error('Expected a directory')
+  } catch (error) {
     signal?.throwIfAborted()
-    const message = revision
-      ? '无法读取目录对应的 Git 提交，请检查仓库目录或重新生成目录。'
-      : '无法打开本地 Git 仓库的 HEAD 提交，请检查目录及提交状态。'
-    throw repositoryError('repository-unavailable', message)
+    if (['EACCES', 'EPERM'].includes(error.code)) throw localGitEnvironmentError(error)
+    throw repositoryError('local-directory-unavailable', 'DSH 找不到或无法打开所选目录，请重新选择仓库文件夹。')
   }
 
-  const files = new Map()
-  for (const line of entries.split('\0')) {
-    const match = /^(100644|100755) blob ([a-f0-9]+)\t(.*)$/.exec(line)
-    if (match && gitId.test(match[2]) && eligiblePath(match[3])) files.set(match[3], match[2])
+  let root
+  try {
+    root = await localRepositoryRoot(directory, signal)
+    if (!isAbsolute(root)) throw new Error('Missing Git repository root')
+  } catch (error) {
+    signal?.throwIfAborted()
+    throw localGitEnvironmentError(error) ?? repositoryError('local-not-git-repository',
+      '无法从所选目录定位 Git 仓库，请选择实际的 Git 仓库文件夹。')
   }
+
+  let commit
+  try {
+    commit = (await git(root, ['rev-parse', '--verify', `${revision ?? 'HEAD'}^{commit}`], signal)).trim()
+    if (!gitId.test(commit) || (revision && commit !== revision)) throw new Error('Unexpected Git commit')
+  } catch (error) {
+    signal?.throwIfAborted()
+    const environmentError = localGitEnvironmentError(error)
+    if (environmentError) throw environmentError
+    if (revision) {
+      throw repositoryError('local-git-commit-unavailable', '本地仓库缺少这份 Wiki 对应的 Git 提交。请确认该版本在本地可用，或从当前版本生成一份新 Wiki。')
+    }
+    if (await missingBranchCommit(root, signal)) {
+      throw repositoryError('local-git-unborn-head', '当前 Git 分支还没有提交，请先完成第一次提交，再生成 Wiki。')
+    }
+    throw repositoryError('local-git-invalid-head', 'Git 无法将当前 HEAD 解析为有效提交，请检查当前分支或提交对象。')
+  }
+
+  let files
+  try {
+    files = await readLocalTree(root, commit, signal)
+  } catch (error) {
+    signal?.throwIfAborted()
+    throw localGitEnvironmentError(error) ?? repositoryError('local-git-tree-unavailable',
+      'Git 已找到提交，但无法列出该提交中的文件，请确认本地仓库的 Git 对象完整且可读取。')
+  }
+  signal?.throwIfAborted()
   if (!files.size) throw noEvidence()
   return {
     label: basename(root), commit, paths: [...files.keys()].sort(), treeComplete: true,

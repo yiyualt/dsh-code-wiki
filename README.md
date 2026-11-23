@@ -10,7 +10,7 @@
 npm ci
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.30.0.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.30.1.tgz
 ```
 
 所选仓库的源码片段会交给当前模型用于拟定目录和撰写正文。Skill 根据本章内容选图，并把图形数据绘成附源码引用的 SVG。插件负责在阅读页显示。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。
