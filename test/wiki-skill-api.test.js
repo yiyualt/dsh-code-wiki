@@ -156,7 +156,11 @@ test('the generation route uses the installed Skill and retains accepted chapter
     invalid.blocks[0].refs[0].end = 99
     assert.match((await tools.get('wiki_submit_chapter').execute(invalid)).status, /提交未通过/)
     await submitChapters(tools, chapters.slice(1))
-    assert.match((await tools.get('wiki_finish').execute({ ...metadata, walkthrough: walkthrough(spans) })).status, /草稿已收到/)
+    const finish = tools.get('wiki_finish')
+    const final = { ...metadata, walkthrough: walkthrough(spans) }
+    const rejected = await finish.execute({ ...final, coverage: final.coverage.slice(0, 1) })
+    assert.match(rejected.status, /提交未通过.*coverage\.area.*purpose、execution/)
+    assert.match((await finish.execute(final)).status, /草稿已收到/)
   })
   const accepted = await api.post('generation')
   assert.equal(accepted.status, 202)

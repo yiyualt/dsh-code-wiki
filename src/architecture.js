@@ -19,7 +19,12 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
   let currentRaw, skill
   const staged = new Map()
   const pending = () => plan?.chapters.filter(chapter => !staged.has(chapter.id)).map(chapter => chapter.id) ?? []
-  const chapterStatus = () => pending().length ? '待提交章节：' + pending().join('、') : '所有章节已接受。调用 wiki_finish 完成存档。'
+  const chapterStatus = () => {
+    const missing = pending()
+    if (missing.length) return '待提交章节：' + missing.join('、')
+    return '所有章节已接受。调用 wiki_finish 完成存档。coverage.area 使用研究领域编号：'
+      + plan.research.map(area => area.id).join('、') + '。'
+  }
   let checkpointWrites = Promise.resolve(), publicationWrites = Promise.resolve(), lastCheckpoint
   async function saveCheckpoint(draft = currentRaw) {
     if (!plan || !onCheckpoint) return
@@ -125,7 +130,8 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
         rejections++
         lastRetry = { reasonCategory: 'validation', retryMessage: lastRejection }
         progress('writing', 'submission-retry', { plan })
-        return { status: '提交未通过。' + lastRejection }
+        return { status: '提交未通过。' + lastRejection
+          + (skill && args?.kind === 'finish' && plan && !pending().length ? chapterStatus() : '') }
       }
     },
   }
