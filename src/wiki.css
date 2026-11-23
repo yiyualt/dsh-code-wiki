@@ -284,6 +284,25 @@
   gap: 12px;
 }
 
+.dsh-code-wiki-mainline {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 9px;
+  background: var(--wiki-paper);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-mainline strong {
+  margin-inline-end: 6px;
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .dsh-code-wiki-rail-label,
 .dsh-code-wiki-chapter-list { display: none; }
 

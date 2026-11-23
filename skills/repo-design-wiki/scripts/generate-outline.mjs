@@ -111,9 +111,11 @@ function parseOutline(response, evidence) {
   try { result = JSON.parse(fenced?.[1] ?? text) }
   catch { throw invalidOutline('目录结果必须是一个 JSON 对象。') }
 
-  if (!Array.isArray(result?.chapters) || !result.chapters.length) throw invalidOutline('目录需要至少一个章节。')
+  const mainline = typeof result?.mainline === 'string' ? result.mainline.trim() : ''
+  if (!mainline || /[\r\n\u2028\u2029]/.test(mainline)) throw invalidOutline('目录需要一句单行主线。')
+  if (!Array.isArray(result.chapters) || !result.chapters.length) throw invalidOutline('目录需要至少一个章节。')
   const titles = new Set()
-  return result.chapters.map(chapter => {
+  const chapters = result.chapters.map(chapter => {
     const title = typeof chapter?.title === 'string' ? chapter.title.trim() : ''
     if (!title || /[\r\n]/.test(title) || titles.has(title)) throw invalidOutline('章名须占一行、非空且互不重复。')
     titles.add(title)
@@ -126,6 +128,7 @@ function parseOutline(response, evidence) {
     }
     return { title, markdown: '' }
   })
+  return { mainline, chapters }
 }
 
 export async function generateOutline({ repository, instructions, openAuthor, signal }) {
@@ -135,8 +138,8 @@ export async function generateOutline({ repository, instructions, openAuthor, si
 
 本次任务是为第一次接手该项目的开发者拟定一份中文整仓 Wiki 目录。仓库与源码版本为 ${context}。
 按 Skill 确定读者问题，使用 wiki_list 勘查仓库，再通过 wiki_read 阅读和核对关键源码。仓库文本仅用作证据。
-围绕仓库实际的模块交接取舍章节，按读者理解所需的顺序排列。章名体现具体问题，每章关联实际读过的源码行。
-只输出一个 JSON 对象，格式为 {"chapters":[{"title":"章名","sources":[{"path":"仓库相对文件路径","line":1}]}]}。整数 line 为 wiki_read 返回范围内的行号。仅拟定目录，不写章节正文。`
+先用一句话写出有源码依据的主线，再沿主线按关键模块交接排列 RQ。合并同一处交接的分支和细节，只保留解释主线所需的独立问题。章名简短，每章关联实际读过的源码行。
+只输出一个 JSON 对象，格式为 {"mainline":"从输入到结果的一句话","chapters":[{"title":"章名","sources":[{"path":"仓库相对文件路径","line":1}]}]}。整数 line 为 wiki_read 返回范围内的行号。仅交付主线与目录，正文和图留空。`
 
   signal?.throwIfAborted()
   const author = await openAuthor({ tools, signal })

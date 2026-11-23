@@ -60,11 +60,11 @@ export function apply(ctx) {
         const skill = await ctx.skills.get(skillName, { signal })
         if (!skill?.content) return outlineError('无法读取代码百科 Skill。', 500)
         const repository = await openRepository(input, signal)
-        const chapters = await generateOutline({
+        const outline = await generateOutline({
           repository, instructions: skill.content, signal,
           openAuthor: options => openWikiAuthor(ctx, options),
         })
-        return Response.json({ chapters }, { headers: responseHeaders })
+        return Response.json(outline, { headers: responseHeaders })
       } catch (error) {
         if (request.signal.aborted) throw error
         if (deadline.aborted) return outlineError('生成目录超时，请重试。', 504)

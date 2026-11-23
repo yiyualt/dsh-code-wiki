@@ -1,6 +1,6 @@
 # DSH 代码百科
 
-在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据所选仓库已提交的源码拟定目录。本阶段展示章名，正文留空。
+在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据所选仓库已提交的源码拟定一句主线，再按关键模块交接生成目录。本阶段展示主线和章名，正文和图留空。
 
 ## 本地安装
 

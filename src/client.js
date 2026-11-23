@@ -42,12 +42,13 @@ window.__ModuleLoader__.load({
       if (!response.ok) {
         return { error: typeof result?.error === 'string' && result.error.trim() ? result.error : outlineError }
       }
+      const mainline = typeof result?.mainline === 'string' ? result.mainline.trim() : ''
       const chapters = result?.chapters
-      if (!Array.isArray(chapters) || !chapters.length || chapters.some(chapter =>
+      if (!mainline || !Array.isArray(chapters) || !chapters.length || chapters.some(chapter =>
         typeof chapter?.title !== 'string' || !chapter.title.trim() || typeof chapter.markdown !== 'string')) {
         return { error: outlineError }
       }
-      return { chapters }
+      return { mainline, chapters }
     }
 
     function createWikiStore(pickDirectory) {
@@ -107,12 +108,12 @@ window.__ModuleLoader__.load({
 
           update({ generatingOutline: true, error: '' })
           try {
-            const { chapters, error } = await loadOutline(repository)
+            const { mainline, chapters, error } = await loadOutline(repository)
             if (error) {
               update({ generatingOutline: false, error })
               return
             }
-            update({ document: { ...repository, chapters }, chapterIndex: 0, view: 'reader', generatingOutline: false })
+            update({ document: { ...repository, mainline, chapters }, chapterIndex: 0, view: 'reader', generatingOutline: false })
           } catch {
             update({ generatingOutline: false, error: outlineError })
           }
@@ -209,9 +210,9 @@ window.__ModuleLoader__.load({
         })))
     }
 
-    function ChapterDirectory({ chapters, chapterIndex, onSelect }) {
+    function ChapterDirectory({ chapters, chapterIndex, mainlineId, onSelect }) {
       const selectId = useId()
-      return h('nav', { 'aria-label': '章节目录', className: 'dsh-code-wiki-sidebar' },
+      return h('nav', { 'aria-label': '章节目录', 'aria-describedby': mainlineId, className: 'dsh-code-wiki-sidebar' },
         h('h2', { className: 'dsh-code-wiki-rail-label' }, '章节目录'),
         h('ol', { className: 'dsh-code-wiki-chapter-list', role: 'list' },
           chapters.map(({ title }, index) => h('li', { key: index },
@@ -230,6 +231,7 @@ window.__ModuleLoader__.load({
     function CodeWikiPage({ store, listDirectory }) {
       const { draft, view, document, chapterIndex, picker, generatingOutline, error } = useSyncExternalStore(store.subscribe, store.getSnapshot)
       const formId = useId()
+      const mainlineId = useId()
       const page = useRef(null)
       const articleHeading = useRef(null)
       const reading = view === 'reader'
@@ -262,7 +264,9 @@ window.__ModuleLoader__.load({
               onClick: store.toggleForm,
             }, formOpen ? '取消新建' : '新建 Wiki')),
           reading ? h('div', { className: 'dsh-code-wiki-columns' },
-            h(ChapterDirectory, { chapters: document.chapters, chapterIndex, onSelect: store.selectChapter }),
+            h('p', { id: mainlineId, className: 'dsh-code-wiki-mainline' },
+              h('strong', null, '主线'), ' ', h('span', null, document.mainline)),
+            h(ChapterDirectory, { chapters: document.chapters, chapterIndex, mainlineId, onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
               h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
               chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
