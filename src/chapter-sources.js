@@ -1,3 +1,5 @@
+import { replaceOutsideCode } from '../skills/repo-design-wiki/scripts/chapter-figures.mjs'
+
 const citationRun = /【[1-9]\d*】(?:[ \t]*【[1-9]\d*】)*/gu
 const citationMarker = /([ \t]*)【([1-9]\d*)】/gu
 
@@ -14,7 +16,7 @@ export function chapterSources({ markdown, sources, diagrams }) {
   if (!files.length) return { markdown, diagrams, files }
 
   const fileNumber = sourceNumber => fileNumbers[Number(sourceNumber) - 1]
-  const numberedMarkdown = markdown.replace(citationRun, run => {
+  const numberedMarkdown = replaceOutsideCode(markdown, text => text.replace(citationRun, run => {
     const seen = new Set()
     return run.replace(citationMarker, (reference, space, sourceNumber) => {
       const number = fileNumber(sourceNumber)
@@ -23,7 +25,7 @@ export function chapterSources({ markdown, sources, diagrams }) {
       seen.add(number)
       return `${space}【${number}】`
     })
-  })
+  }))
   const numberedDiagrams = diagrams.map(diagram => {
     const svg = diagram.svg.replace(diagramCitation, (citation, start, sourceNumber, path, _line, text) => {
       const number = fileNumber(sourceNumber)

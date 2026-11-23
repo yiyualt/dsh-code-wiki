@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { link, lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises'
 import { isAbsolute, join, parse, relative, resolve, sep, win32 } from 'node:path'
+import { chapterFigureSlots, isFigureSlot } from '../skills/repo-design-wiki/scripts/chapter-figures.mjs'
 
 const documentId = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/
 const gitCommit = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
@@ -66,12 +67,13 @@ function readDocument(input) {
 }
 
 function readDiagram(value) {
-  const { kind, label, title, width, height, svg } = value ?? {}
+  const { kind, label, title, width, height, svg, slot } = value ?? {}
   if (!hasText(kind) || !hasText(label) || !hasText(title)
     || !Number.isInteger(width) || width < 1 || width > 4096
     || !Number.isInteger(height) || height < 1 || height > 4096
+    || (slot !== undefined && !isFigureSlot(slot))
     || typeof svg !== 'string' || !svg.isWellFormed() || svg.length > 160_000 || !/^<svg(?:\s|>)[\s\S]*<\/svg>$/.test(svg.trim())) return null
-  return { kind, label, title, width, height, svg }
+  return { kind, label, title, width, height, svg, ...(slot !== undefined && { slot }) }
 }
 
 function readChapterWork(value) {
@@ -82,6 +84,10 @@ function readChapterWork(value) {
     || (warning !== undefined && typeof warning !== 'string')) return null
   const diagrams = Array.from(content.diagrams, readDiagram)
   if (diagrams.includes(null)) return null
+  if (diagrams.some(diagram => diagram.slot !== undefined)) {
+    const slots = new Set(chapterFigureSlots(markdown).map(({ slot }) => slot))
+    if (diagrams.some(diagram => !slots.delete(diagram.slot))) return null
+  }
   return { content: { markdown, handoff, sources, diagrams }, ...(warning !== undefined && { warning }) }
 }
 

@@ -437,6 +437,19 @@
 .dsh-code-wiki-chapter-notice { padding: 12px var(--wiki-article-pad) 0; }
 .dsh-code-wiki-prose { min-width: 0; }
 .dsh-code-wiki-prose > div { font-size: calc(var(--dsh-content-font-size, 14px) + 1px); line-height: 1.75; }
+.dsh-code-wiki-prose > div > p:first-child { margin-block-start: 0; }
+.dsh-code-wiki-prose > div > :is(h2, h3) { margin-block: 1.5em 0.5em; }
+
+.dsh-code-wiki-inline-diagram { margin-block: 12px 22px; }
+
+.dsh-code-wiki-inline-diagram > .dsh-code-wiki-diagram-status {
+  margin: 0;
+  padding: 11px 14px;
+  border: 1px dashed var(--wiki-line);
+  border-radius: 9px;
+  color: var(--wiki-muted);
+  font-size: 13px;
+}
 
 .dsh-code-wiki-announcement {
   position: absolute;
@@ -460,6 +473,8 @@
   border-radius: 9px;
   background: var(--wiki-canvas);
 }
+
+.dsh-code-wiki-prose > .dsh-code-wiki-diagram { margin-block-start: 24px; }
 
 .dsh-code-wiki-diagram figcaption,
 .dsh-code-wiki-sources h2 {

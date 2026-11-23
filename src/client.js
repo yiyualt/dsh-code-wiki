@@ -1,10 +1,12 @@
 import wikiStyles from './wiki.css'
 import { chapterSources } from './chapter-sources.js'
+import { chapterFigureSlots } from '../skills/repo-design-wiki/scripts/chapter-figures.mjs'
 
 window.__ModuleLoader__.load({
   id: 'dsh-code-wiki',
   factory(require) {
-    const { createElement: h, Fragment, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } = require('react')
+    const { createElement: h, Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } = require('react')
+    const { createPortal } = require('react-dom')
     const {
       Button, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCodeOutlineRegular,
       IconCloseOutlineRegular, IconFolderCloseRegular, IconFolderOpenOutlineRegular, IconFullscreenOutlineRegular,
@@ -96,8 +98,9 @@ window.__ModuleLoader__.load({
     }
 
     function validDiagram(diagram) {
-      const { label, title, width, height, svg } = diagram ?? {}
+      const { label, title, width, height, svg, slot } = diagram ?? {}
       return hasText(label) && hasText(title) &&
+        (slot === undefined || (Number.isSafeInteger(slot) && slot > 0)) &&
         Number.isInteger(width) && width > 0 && width <= 4096 &&
         Number.isInteger(height) && height > 0 && height <= 4096 &&
         typeof svg === 'string' && svg.length <= 160_000 && /^<svg(?:\s|>)[\s\S]*<\/svg>$/.test(svg.trim())
@@ -167,6 +170,7 @@ window.__ModuleLoader__.load({
 
     async function loadChapterStream(stream, onContent) {
       let content
+      let remainingSlots
       try {
         for await (const line of chapterLines(stream)) {
           let message
@@ -181,10 +185,13 @@ window.__ModuleLoader__.load({
                 return { error: chapterDataError }
               }
               content = message.content
+              const slots = chapterFigureSlots(content.markdown)
+              if (slots.length) remainingSlots = new Set(slots.map(({ slot }) => slot))
               onContent(content)
               break
             case 'diagram':
               if (!content || !validDiagram(message.diagram) || !validSources(message.sources) ||
+                (remainingSlots ? !remainingSlots.delete(message.diagram.slot) : message.diagram.slot !== undefined) ||
                 content.sources.some(({ path, line }, index) =>
                   message.sources[index]?.path !== path || message.sources[index]?.line !== line)) {
                 return { error: chapterDataError }
@@ -579,13 +586,13 @@ window.__ModuleLoader__.load({
     }
 
     function ChapterDiagram({ diagram }) {
-      const { label, title } = diagram
+      const { label, title, slot } = diagram
       const titleId = useId()
       const [preview, setPreview] = useState(false)
 
       return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId },
         h('figcaption', { id: titleId },
-          h('span', { className: 'dsh-code-wiki-diagram-kind' }, label), ' ', title),
+          h('span', { className: 'dsh-code-wiki-diagram-kind' }, slot === undefined ? label : `图 ${slot}`), ' ', title),
         h(Button, { type: 'button', size: 'sm', variant: 'ghost', 'aria-haspopup': 'dialog',
           icon: h(IconFullscreenOutlineRegular, { size: 15 }),
           onClick: () => setPreview(true) }, '查看大图'),
@@ -593,12 +600,69 @@ window.__ModuleLoader__.load({
         preview && h(DiagramPreview, { diagram, onClose: () => setPreview(false) }))
     }
 
-    function ChapterContent({ repository, content }) {
+    function ChapterProse({ markdown, diagrams, pending }) {
+      const prose = useRef(null)
+      const markerPrefix = `CodeWikiFigure${useId().replace(/[^a-z\d]/gi, '')}Slot`
+      const { text, markers } = useMemo(() => {
+        let prefix = markerPrefix
+        while (markdown.includes(prefix)) prefix += 'X'
+        const markers = new Map()
+        const parts = []
+        let offset = 0
+        for (const { slot, start, end } of chapterFigureSlots(markdown)) {
+          const marker = `${prefix}${slot}`
+          markers.set(marker, slot)
+          parts.push(markdown.slice(offset, start), marker)
+          offset = end
+        }
+        return { text: parts.join('') + markdown.slice(offset), markers }
+      }, [markdown, markerPrefix])
+      const [mounted, setMounted] = useState(null)
+
+      useLayoutEffect(() => {
+        if (!markers.size) return
+        // Keep one Markdown render so tables, code, links and footnotes share the chapter context.
+        const placements = new Map()
+        for (const node of [...prose.current.firstElementChild.children]) {
+          const slot = node.tagName === 'P' && markers.get(node.textContent)
+          if (!slot) continue
+          const target = node.ownerDocument.createElement('div')
+          target.className = 'dsh-code-wiki-inline-diagram'
+          node.hidden = true
+          node.after(target)
+          placements.set(slot, { node, target })
+        }
+        setMounted({ text, placements })
+        return () => {
+          for (const { node, target } of placements.values()) {
+            target.remove()
+            node.hidden = false
+          }
+        }
+      }, [text, markers])
+
+      const placements = mounted?.text === text ? mounted.placements : null
+      const diagramBySlot = new Map(diagrams.filter(diagram => diagram.slot !== undefined).map(diagram => [diagram.slot, diagram]))
+      return h('div', { className: 'dsh-code-wiki-prose', ref: prose },
+        h(MarkdownText, { text, labels: markdownLabels, omitHtml: true }),
+        placements && [...placements].map(([slot, { target }]) => {
+          const diagram = diagramBySlot.get(slot)
+          const figure = diagram ? h(ChapterDiagram, { diagram })
+            : h('p', { className: 'dsh-code-wiki-diagram-status', role: 'status' },
+              pending ? `正在生成图 ${slot}…` : `图 ${slot}未生成。`)
+          return createPortal(figure, target, slot)
+        }),
+        diagrams.filter(diagram => diagram.slot === undefined || (placements && !placements.has(diagram.slot)))
+          .map((diagram, index) => h(ChapterDiagram, { key: index, diagram })))
+    }
+
+    function ChapterContent({ repository, content, pending, title }) {
       const { markdown, diagrams, files } = chapterSources(content)
+      const heading = /^#[ \t]+([^\r\n]+)\r?\n/.exec(markdown)
+      const prose = heading?.[1].replace(/[ \t]+#+[ \t]*$/, '').trim() === title
+        ? markdown.slice(heading[0].length).trimStart() : markdown
       return h('div', { className: 'dsh-code-wiki-chapter-content' },
-        h('div', { className: 'dsh-code-wiki-prose' },
-          h(MarkdownText, { text: markdown, labels: markdownLabels, omitHtml: true })),
-        diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, diagram })),
+        h(ChapterProse, { markdown: prose, diagrams, pending }),
         files.length > 0 && h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
           h('ol', null, files.map(path => h(ChapterSource, { key: path, repository, path })))))
@@ -686,7 +750,7 @@ window.__ModuleLoader__.load({
                 className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
                 role: chapterNotice && chapterFailure ? 'alert' : 'status',
               }, chapterNotice || chapterAnnouncement),
-              content ? h(ChapterContent, { key: chapterIndex, repository: document, content })
+              content ? h(ChapterContent, { key: chapterIndex, repository: document, content, pending, title: chapter.title })
                 : h('div', { className: 'dsh-code-wiki-chapter-action' }, legacy
                   ? h('p', { className: 'dsh-code-wiki-feedback' }, '这份历史文档未保存本章正文。')
                   : h(Fragment, null,
