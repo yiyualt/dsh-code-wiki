@@ -1,5 +1,4 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import { mockChapters } from '../src/mock-chapters.js'
 
 const [client, styles] = (await Promise.all([
   readFile(new URL('../src/client.js', import.meta.url), 'utf8'),
@@ -7,7 +6,6 @@ const [client, styles] = (await Promise.all([
 ])).map(content => content.replace(/\r\n?/g, '\n'))
 
 const bundle = `;(() => {
-const mockChapters = ${JSON.stringify(mockChapters)}
 const wikiStyles = ${JSON.stringify(styles)}
 ${client}
 })()\n`

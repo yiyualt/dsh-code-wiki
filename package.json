@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-wiki",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "A repository wiki panel for DeepSeek Harness.",
   "type": "module",
   "engines": {
@@ -14,12 +14,13 @@
   "files": [
     "index.js",
     "client.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "skills/repo-design-wiki"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepack": "npm run build",
-    "check": "npm run build && node --check client.js"
+    "check": "npm run build && node --check client.js && node --check index.js && node --check skills/repo-design-wiki/scripts/read-preview.mjs"
   },
   "dsh": {
     "bundle": {
