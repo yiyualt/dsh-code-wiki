@@ -553,7 +553,6 @@
 }
 
 .dsh-code-wiki-sources code { white-space: normal; overflow-wrap: anywhere; }
-.dsh-code-wiki-source-lines { margin-inline-start: 8px; }
 
 @container code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {

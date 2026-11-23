@@ -1,22 +1,16 @@
 const citationRun = /【[1-9]\d*】(?:[ \t]*【[1-9]\d*】)*/gu
 const citationMarker = /([ \t]*)【([1-9]\d*)】/gu
 
-// Match the citation group emitted by the diagram renderer, leaving other SVG labels and links intact.
-const diagramCitation = /(<(?:a|g) [^<>]*?aria-label="源码)【([1-9]\d*)】( [^<>]*"><title>源码)【\2】( [^<>]*<\/title><text [^<>]*><tspan [^<>]*>)【\2】(?=<\/tspan>)/gu
+// Match only the citation markup emitted by the diagram renderer, with the same position in both labels.
+const diagramCitation = /(<(?:a|g) [^<>]*?aria-label="源码)【([1-9]\d*)】 ([^<>"\n]+):([1-9]\d*)"><title>源码【\2】 \3:\4(<\/title><text [^<>]*><tspan [^<>]*>)【\2】(?=<\/tspan>)/gu
 
 export function chapterSources({ markdown, sources, diagrams }) {
-  const filesByPath = new Map()
-  const fileNumbers = sources.map(({ path, line }) => {
-    if (!filesByPath.has(path)) {
-      filesByPath.set(path, { path, number: filesByPath.size + 1, lines: new Set() })
-    }
-    const file = filesByPath.get(path)
-    file.lines.add(line)
-    return file.number
+  const numbersByPath = new Map()
+  const fileNumbers = sources.map(({ path }) => {
+    if (!numbersByPath.has(path)) numbersByPath.set(path, numbersByPath.size + 1)
+    return numbersByPath.get(path)
   })
-  const files = Array.from(filesByPath.values(), ({ path, lines }) => ({
-    path, lines: [...lines].sort((a, b) => a - b),
-  }))
+  const files = [...numbersByPath.keys()]
   if (!files.length) return { markdown, diagrams, files }
 
   const fileNumber = sourceNumber => fileNumbers[Number(sourceNumber) - 1]
@@ -30,14 +24,14 @@ export function chapterSources({ markdown, sources, diagrams }) {
       return `${space}【${number}】`
     })
   })
-  if (files.length === sources.length) return { markdown: numberedMarkdown, diagrams, files }
-
   const numberedDiagrams = diagrams.map(diagram => {
-    const svg = diagram.svg.replace(diagramCitation, (citation, label, sourceNumber, title, text) => {
+    const svg = diagram.svg.replace(diagramCitation, (citation, start, sourceNumber, path, _line, text) => {
       const number = fileNumber(sourceNumber)
-      if (!number || number === Number(sourceNumber)) return citation
+      if (!number) return citation
       const marker = `【${number}】`
-      return `${label}${marker}${title}${marker}${text}${marker}`
+      const label = `${marker} ${path}`
+      const fileLink = start.replace(/#L[1-9]\d*(?=" target="_blank")/u, '')
+      return `${fileLink}${label}"><title>源码${label}${text}${marker}`
     })
     return svg === diagram.svg ? diagram : { ...diagram, svg }
   })

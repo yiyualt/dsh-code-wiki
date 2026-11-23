@@ -503,16 +503,14 @@ window.__ModuleLoader__.load({
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
 
-    function ChapterSource({ repository, file }) {
-      const path = file.path.split('/').map(encodeURIComponent).join('/')
-      return h('li', null, h('code', null, file.path),
-        h('span', { className: 'dsh-code-wiki-source-lines' }, '第 ', file.lines.map((line, index) =>
-          h(Fragment, { key: line }, index > 0 && '、', repository.source === 'github'
-            ? h('a', {
-              href: `${repository.location}/blob/${repository.commit}/${path}#L${line}`,
-              target: '_blank', rel: 'noreferrer', 'aria-label': `${file.path}:${line}`,
-            }, line)
-            : line)), ' 行'))
+    function ChapterSource({ repository, path }) {
+      const label = h('code', null, path)
+      if (repository.source === 'local') return h('li', null, label)
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+      return h('li', null, h('a', {
+        href: `${repository.location}/blob/${repository.commit}/${encodedPath}`,
+        target: '_blank', rel: 'noreferrer',
+      }, label))
     }
 
     function diagramDocument(svg) {
@@ -603,7 +601,7 @@ window.__ModuleLoader__.load({
         diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, diagram })),
         files.length > 0 && h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
-          h('ol', null, files.map(file => h(ChapterSource, { key: file.path, repository, file })))))
+          h('ol', null, files.map(path => h(ChapterSource, { key: path, repository, path })))))
     }
 
     function DocumentLibrary({ summaries, temporary, loading, loadError, openError, openingId, disabled, formOpen, onOpen, onRefresh }) {
