@@ -9,7 +9,7 @@ import { Script } from 'node:vm'
 
 const exec = promisify(execFile)
 const inputs = ['scripts/build.mjs', 'src/client.js', 'src/folder-browser.js', 'src/wiki-styles.css',
-  'src/video-scene.js', 'src/video-client.js', 'src/video-motion.js', 'src/wiki-view.js',
+  'src/video-scene.js', 'src/video-client.js', 'src/video-motion.js', 'src/wiki-view.js', 'src/wiki-mermaid.js',
   'src/wiki-walkthrough-data.js', 'src/wiki-walkthrough.js']
 
 test('the actual browser build produces identical valid bundles from LF and CRLF inputs', async t => {

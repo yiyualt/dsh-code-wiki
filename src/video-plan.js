@@ -1,4 +1,4 @@
-import { modelError } from './generate-wiki.js'
+import { modelError } from './model-error.js'
 import { videoReferences } from './video-evidence.js'
 import { generateMotionPlan } from './video-director.js'
 

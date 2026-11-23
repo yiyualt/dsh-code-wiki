@@ -106,7 +106,7 @@ const wikiViews = (() => {
     }
     const levels = ranks(view), groups = []
     for (const node of nodes) (groups[levels.get(node.id)] ??= []).push(node)
-    const horizontal = isHorizontal(view.kind) && groups.length <= 3
+    const horizontal = view.direction === 'LR' || (view.direction === undefined && isHorizontal(view.kind) && groups.length <= 3)
     const breadth = Math.max(...groups.map(group => group.length))
     const pitch = (horizontal ? Math.max(118, ...nodes.map(node => node.h + 38)) : Math.max(195, ...nodes.map(node => node.w + 32))) * spacing
     const width = horizontal ? groups.reduce((sum, group) => sum + Math.max(...group.map(node => node.w)), 62)
@@ -206,7 +206,8 @@ const wikiViews = (() => {
       let points
       if (view.kind === 'sequence') {
         const x = center(from)[0], target = center(to)[0]
-        const messageRows = lines((i + 1) + '. ' + edge.label, Math.max(120, Math.abs(x - target) - 20), 13)
+        const message = view.numbered === false ? edge.label : (i + 1) + '. ' + edge.label
+        const messageRows = lines(message, Math.max(120, Math.abs(x - target) - 20), 13)
         const messageY = messageTop, y = messageY + (messageRows.length - 1) * 17 + 22
         messageTop = y + (from === to ? 58 : 38)
         points = from === to ? [[x, y], [x + 48, y], [x + 48, y + 24], [x, y + 24]] : [[x, y], [target, y]]
@@ -217,7 +218,7 @@ const wikiViews = (() => {
       } else {
         const [ax, ay] = center(from), [bx, by] = center(to)
         const horizontal = Math.abs(bx - ax) > (from.w + to.w) / 2 + 12
-          && (isHorizontal(view.kind) || Math.abs(bx - ax) > Math.abs(by - ay) * 1.3)
+          && (view.direction === 'LR' || isHorizontal(view.kind) || Math.abs(bx - ax) > Math.abs(by - ay) * 1.3)
         const sign = Math.sign(horizontal ? bx - ax : by - ay)
         const outgoing = view.edges.filter(item => item.from === edge.from)
         const incoming = view.edges.filter(item => item.to === edge.to)
@@ -228,7 +229,7 @@ const wikiViews = (() => {
           : [bx + offset(incoming, to.w), by - sign * (to.h / 2 + 4)]
         points = route(start, end, result.nodes, from, to, horizontal)
       }
-      const labelBox = view.kind === 'sequence' ? null : labelOnPath(points, edge.label, result, occupied)
+      const labelBox = edge.label ? labelOnPath(points, edge.label, result, occupied) : null
       return { ...edge, id: 'edge-' + i, points, labelBox }
     })
     return { ...result, height: view.kind === 'sequence' ? messageTop + 12 : result.height, edges }
@@ -238,13 +239,13 @@ const wikiViews = (() => {
     let result = layoutAtSpacing(view, 1)
     if (view.kind === 'sequence') return result
     for (const spacing of [1.3, 1.65]) {
-      if (result.edges.every(edge => edge.labelBox)) break
+      if (result.edges.every(edge => !edge.label || edge.labelBox)) break
       const candidate = layoutAtSpacing(view, spacing)
       if (candidate.edges.filter(edge => edge.labelBox).length > result.edges.filter(edge => edge.labelBox).length) result = candidate
     }
     const occupied = [...result.nodes, ...result.edges.flatMap(edge => edge.labelBox ? [edge.labelBox] : [])]
     result.edges.forEach((edge, i) => {
-      if (edge.labelBox) return
+      if (!edge.label || edge.labelBox) return
       edge.number = i + 1
       edge.numberBox = labelOnPath(edge.points, String(edge.number), result, occupied)
       if (!edge.numberBox) {
@@ -317,7 +318,7 @@ const wikiViews = (() => {
     function relationArrows(prefix, relation) {
       if (relation === 'composition') return { markerStart: `url(#${prefix}-diamond)` }
       if (relation === 'association') return {}
-      const head = relation === 'inheritance' ? 'triangle' : ['return', 'async'].includes(relation) ? 'open' : 'arrow'
+      const head = relation === 'inheritance' ? 'triangle' : ['return', 'async', 'async-dashed'].includes(relation) ? 'open' : 'arrow'
       return { markerEnd: `url(#${prefix}-${head})` }
     }
 
@@ -333,6 +334,10 @@ const wikiViews = (() => {
               className: 'dsh-code-wiki-view-contract-entry' }, h('code', null, edge.contract.entry)),
             h('dl', null, h('dt', null, '输入'), h('dd', null, edge.contract.input),
               h('dt', null, '输出'), h('dd', null, edge.contract.output))))))
+    }
+
+    function sourceAttributes(href, label) {
+      return href ? { href, target: '_blank', rel: 'noreferrer', 'aria-label': label + '，查看源码' } : {}
     }
 
     return function WikiView({ view }) {
@@ -357,21 +362,24 @@ const wikiViews = (() => {
         observer.observe(element)
         return () => observer.disconnect()
       }, [view.kind, readableWidth, fit])
+      const title = view.title ?? names[view.kind]
       const byId = new Map(view.nodes.map(node => [node.id, node]))
+      const edgeLabel = edge => byId.get(edge.from).label + ' → ' + byId.get(edge.to).label + (edge.label ? '：' + edge.label : '')
       const references = [...view.nodes.map(node => ({ label: node.label, detail: node.detail,
         members: node.members, refs: node.refs })),
-        ...view.edges.map(edge => ({ label: byId.get(edge.from).label + ' → ' + byId.get(edge.to).label + '：' + edge.label, refs: edge.refs }))]
-      return h('figure', { className: 'dsh-code-wiki-view', 'data-kind': view.kind, 'aria-label': view.title },
+        ...view.edges.map(edge => ({ label: edgeLabel(edge), refs: edge.refs }))].filter(item => item.refs?.length)
+      return h('figure', { className: 'dsh-code-wiki-view', 'data-kind': view.kind, 'aria-label': title },
         h('figcaption', { className: 'dsh-code-wiki-view-header' },
           h('strong', { className: 'dsh-code-wiki-view-type' }, names[view.kind]),
           overflow && h('button', { type: 'button', 'aria-pressed': fit, 'aria-controls': prefix + '-viewport',
             onClick: () => setFit(previous => !previous) }, '适应宽度')),
         h('div', { id: prefix + '-viewport', className: 'dsh-code-wiki-view-scroll', ref: viewport,
-          tabIndex: overflow && !fit ? 0 : undefined, role: 'region', 'aria-label': view.title + '图示' },
+          tabIndex: overflow && !fit ? 0 : undefined, role: 'region', 'aria-label': title + '图示' },
           h('svg', { className: 'dsh-code-wiki-view-svg', width: geometry.width, height: geometry.height,
-            viewBox: `0 0 ${geometry.width} ${geometry.height}`, role: 'img', 'aria-labelledby': prefix + '-title ' + prefix + '-description',
+            viewBox: `0 0 ${geometry.width} ${geometry.height}`, role: 'img', 'aria-labelledby': prefix + '-title',
+            'aria-describedby': view.purpose ? prefix + '-description' : undefined,
             style: { minWidth: fit ? 0 : readableWidth, maxWidth: geometry.width } },
-          h('title', { id: prefix + '-title' }, view.title), h('desc', { id: prefix + '-description' }, view.purpose),
+          h('title', { id: prefix + '-title' }, title), view.purpose && h('desc', { id: prefix + '-description' }, view.purpose),
           arrowheads(prefix),
           view.kind === 'sequence' && geometry.nodes.map((node, i) => h('g', { key: 'life-' + node.id },
             i % 2 === 0 && h('rect', { x: node.x - 7, y: node.y, width: node.w + 14, height: geometry.height - node.y - 14,
@@ -380,26 +388,30 @@ const wikiViews = (() => {
           geometry.edges.map(edge => {
             const d = edge.points.map(([x, y], index) => (index ? 'L' : 'M') + x + ' ' + y).join(' ')
             const box = edge.labelBox ?? edge.numberBox
-            const label = byId.get(edge.from).label + ' → ' + byId.get(edge.to).label + '：' + edge.label
-            return h('a', { key: edge.id, href: edge.refs[0].href, target: '_blank', rel: 'noreferrer',
-              className: 'dsh-wiki-view-edge-link', 'data-edge-id': edge.id, 'data-relation': edge.relation, 'aria-label': label + '，查看源码' },
-              h('title', null, label), h('path', { d, className: 'dsh-wiki-view-edge-region' }),
+            const label = edgeLabel(edge)
+            const href = edge.refs?.[0]?.href
+            return h(href ? 'a' : 'g', { key: edge.id, ...sourceAttributes(href, label),
+              className: 'dsh-wiki-view-edge-link', 'data-edge-id': edge.id, 'data-relation': edge.relation },
+              h('title', null, label), href && h('path', { d, className: 'dsh-wiki-view-edge-region' }),
               h('path', { d, ...relationArrows(prefix, edge.relation), className: 'dsh-wiki-view-edge' }),
               view.kind === 'sequence' ? textRows(edge.messageRows,
                 (edge.points[0][0] + edge.points.at(-1)[0]) / 2, edge.messageY, 13, 'dsh-wiki-view-message')
-                : h('g', { className: 'dsh-wiki-view-edge-label', 'data-relation-number': edge.number },
+                : box && h('g', { className: 'dsh-wiki-view-edge-label', 'data-relation-number': edge.number },
                   h('rect', { x: box.x, y: box.y, width: box.w, height: box.h, rx: 4 }),
                   textRows(box.rows, box.x + box.w / 2, box.y + 15, 12)))
           }),
-          geometry.nodes.map(node => h('a', { key: node.id, href: node.refs[0].href, target: '_blank', rel: 'noreferrer',
-            className: 'dsh-wiki-view-node', 'data-node-id': node.id, 'data-node-role': node.role, 'aria-label': node.label + '，查看源码' },
-            h('title', null, [node.label, node.detail, ...(node.members ?? []), ...node.refs.map(ref => ref.label)].filter(Boolean).join('\n')),
-            shape(node, view.kind), nodeText(node, view.kind))))),
+          geometry.nodes.map(node => {
+            const href = node.refs?.[0]?.href
+            return h(href ? 'a' : 'g', { key: node.id, ...sourceAttributes(href, node.label),
+              className: 'dsh-wiki-view-node', 'data-node-id': node.id, 'data-node-role': node.role },
+              h('title', null, [node.label, node.detail, ...(node.members ?? []), ...(node.refs ?? []).map(ref => ref.label)].filter(Boolean).join('\n')),
+              shape(node, view.kind), nodeText(node, view.kind))
+          }))),
         geometry.edges.some(edge => edge.number) && h('ol', { className: 'dsh-code-wiki-view-relations', 'aria-label': '图中编号关系' },
           geometry.edges.filter(edge => edge.number).map(edge => h('li', { key: edge.id, value: edge.number },
             h('strong', null, byId.get(edge.from).label + ' → ' + byId.get(edge.to).label), h('span', null, edge.label)))),
         interfaceContracts(geometry.edges, byId),
-        h('details', { className: 'dsh-code-wiki-view-sources' }, h('summary', null, '视图源码依据'),
+        references.length > 0 && h('details', { className: 'dsh-code-wiki-view-sources' }, h('summary', null, '视图源码依据'),
           h('ul', null, references.map((item, i) => h('li', { key: i }, h('span', null, item.label),
             item.detail && h('p', null, item.detail), item.members?.length && h('ul', null,
               item.members.map((member, index) => h('li', { key: index }, h('code', null, member)))),

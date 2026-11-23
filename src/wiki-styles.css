@@ -660,7 +660,7 @@
 
 .dsh-code-wiki-generation-stages {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: clamp(8px, 2cqi, 18px);
   margin: 13px 0 0;
   padding: 0;
@@ -707,15 +707,18 @@
 
 .dsh-code-wiki-generation-detail,
 .dsh-code-wiki-generation-background {
-  margin: 19px 0 0;
+  margin: 12px 0 0;
   color: var(--wiki-muted);
   font-size: 13px;
   line-height: 1.55;
 }
 
 .dsh-code-wiki-generation-background {
-  margin-block-start: 4px;
   font-size: 12px;
+}
+
+:is(.dsh-code-wiki-generation-detail, .dsh-code-wiki-generation-source) + .dsh-code-wiki-generation-background {
+  margin-block-start: 4px;
 }
 
 .dsh-code-wiki-generation-done {
@@ -1024,22 +1027,22 @@ a.dsh-code-wiki-revision:hover {
 .dsh-code-wiki-view-svg { display: block; width: 100%; height: auto; margin-inline: auto; font-family: var(--dsw-font-family); }
 .dsh-wiki-view-edge { fill: none; stroke: var(--view-edge); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .dsh-wiki-view-edge-region { fill: none; stroke: transparent; stroke-width: 15; }
-.dsh-wiki-view-edge-link { cursor: pointer; text-decoration: none; }
-.dsh-wiki-view-edge-link:hover .dsh-wiki-view-edge,
-.dsh-wiki-view-edge-link:focus-visible .dsh-wiki-view-edge { stroke: var(--view-strong); stroke-width: 2.8; }
-.dsh-wiki-view-edge-link:hover text,
-.dsh-wiki-view-edge-link:focus-visible text { text-decoration: underline; }
-.dsh-wiki-view-edge-link[data-relation='return'] .dsh-wiki-view-edge { stroke-dasharray: 5 4; }
+a.dsh-wiki-view-edge-link { cursor: pointer; text-decoration: none; }
+a.dsh-wiki-view-edge-link:hover .dsh-wiki-view-edge,
+a.dsh-wiki-view-edge-link:focus-visible .dsh-wiki-view-edge { stroke: var(--view-strong); stroke-width: 2.8; }
+a.dsh-wiki-view-edge-link:hover text,
+a.dsh-wiki-view-edge-link:focus-visible text { text-decoration: underline; }
+.dsh-wiki-view-edge-link:is([data-relation='return'], [data-relation='dashed'], [data-relation='async-dashed']) .dsh-wiki-view-edge { stroke-dasharray: 5 4; }
 .dsh-wiki-view-arrowhead { fill: var(--view-edge); }
 .dsh-wiki-view-open-arrowhead { fill: var(--wiki-paper); stroke: var(--view-edge); stroke-width: 1.35; }
 .dsh-wiki-view-lifeline { stroke: var(--view-edge); stroke-width: 1.2; stroke-dasharray: 5 5; opacity: .56; }
 .dsh-wiki-view-lane { fill: color-mix(in srgb, var(--view-hue) 4%, transparent); }
-.dsh-wiki-view-node { cursor: pointer; text-decoration: none; }
+a.dsh-wiki-view-node { cursor: pointer; text-decoration: none; }
 .dsh-wiki-view-node :is(rect, ellipse, polygon, path, circle) { fill: var(--view-fill); stroke: var(--view-strong); stroke-width: 1.4; }
 .dsh-wiki-view-node[data-node-role='decision'] { --view-fill: color-mix(in srgb, #b46b32 13%, var(--wiki-paper)); }
 .dsh-wiki-view-node[data-node-role='store'] { --view-fill: color-mix(in srgb, #27836b 13%, var(--wiki-paper)); }
-.dsh-wiki-view-node:hover :is(rect, ellipse, polygon, path, circle),
-.dsh-wiki-view-node:focus-visible :is(rect, ellipse, polygon, path, circle) { stroke-width: 2.6; }
+a.dsh-wiki-view-node:hover :is(rect, ellipse, polygon, path, circle),
+a.dsh-wiki-view-node:focus-visible :is(rect, ellipse, polygon, path, circle) { stroke-width: 2.6; }
 .dsh-wiki-view-actor path { fill: none; }
 .dsh-wiki-view-node-label { fill: var(--wiki-ink); font-weight: 600; }
 .dsh-wiki-view-node-detail { fill: var(--wiki-muted); }
@@ -1155,6 +1158,7 @@ a.dsh-code-wiki-revision:hover {
 
   .dsh-code-wiki-history-row { grid-template-columns: minmax(0, 1fr) 36px; }
   .dsh-code-wiki-history .dsh-code-wiki-history-item { gap: 9px; padding-inline-start: 7px; }
+  .dsh-code-wiki-generation-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .dsh-code-wiki-generation-source {

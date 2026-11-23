@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { readConfiguredModel } from './src/configured-model.js'
-import { exploreArchitecture } from './src/architecture.js'
-import { collectGithubSource, openGithubRepository, sameGithubRepository } from './src/github-source.js'
-import { generateWiki, modelError, renderSourceWiki } from './src/generate-wiki.js'
-import { collectLocalSource, openLocalRepository } from './src/local-source.js'
+import { runWikiSkill } from './src/wiki-skill-runner.js'
+import { openGithubRepository, sameGithubRepository } from './src/github-source.js'
+import { modelError } from './src/model-error.js'
+import { openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
 import { createWikiCheckpoints } from './src/wiki-checkpoint.js'
 import { createWikiProgress } from './src/wiki-progress.js'
@@ -60,14 +60,6 @@ async function localSourceResponse(request, storage) {
   } catch {
     return plainText('无法读取本地源码引用。', 500)
   }
-}
-
-function modelNote(error) {
-  if (error.code === 'model-output-invalid') return '模型未返回有效引用，以下为源码摘录。'
-  if (error.providerCode === 'MODEL_CONFIG') return '无法读取本地模型配置，以下为源码摘录。'
-  const details = [error.providerCode, error.providerStatus && `HTTP ${error.providerStatus}`].filter(Boolean)
-  const suffix = details.length ? `（${details.join(' · ')}）` : ''
-  return `模型调用失败${suffix}，以下为源码摘录。`
 }
 
 function researchFailure(error, resumable) {
@@ -156,7 +148,7 @@ export function apply(ctx, config) {
     return active ? progress(active) : jobs.size ? null : checkpointProgress(checkpoint?.id, checkpoint)
   }
 
-  async function runGeneration(job, body, github, architecture, requestSignal) {
+  async function runGeneration(job, body, github, requestSignal) {
     const tracking = createWikiProgress(job)
     diagnostics.set(job, tracking)
     const signal = AbortSignal.any([lifetime.signal, ...(requestSignal ? [requestSignal] : [])])
@@ -172,8 +164,7 @@ export function apply(ctx, config) {
         || (body.commit !== undefined && checkpoint.commit !== body.commit))) {
         return fail('找不到这个仓库版本的研究记录，请重新生成。', 400)
       }
-      const readRepository = github ? architecture ? openGithubRepository : collectGithubSource
-        : architecture ? openLocalRepository : collectLocalSource
+      const readRepository = github ? openGithubRepository : openLocalRepository
       const source = await readRepository(github ? body.repositoryUrl : body.repositoryPath,
         { signal, ...((body.commit || (github && checkpoint?.commit)) && { commit: body.commit || checkpoint.commit }) })
       if (checkpoint && checkpoint.commit !== source.commit) return fail('仓库版本已经变化，请重新生成。', 409)
@@ -181,40 +172,22 @@ export function apply(ctx, config) {
       job.commit = source.commit
       tracking.phase('writing')
       if (!github) source.sourceKey = job.id
-      let markdown
-      let graph
-      let views
-      let walkthrough
-      let review
-      let files = source.files
-      let note
       let model
+      let result
       try {
         const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal,
           { toolCallLimit: 64, streamResponses: true, transportRetries: 2, onProgress: tracking.model })
-        if (architecture) {
-          const loadSkill = typeof ctx.profileContext.home === 'string' || checkpoint?.chapters !== undefined
-            ? () => loadWikiSkill(ctx.profileContext.home, signal) : undefined
-          const result = await exploreArchitecture(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
-            signal, (count, path) => { job.filesRead = count; job.currentFile = path; tracking.activity('source-read') },
-            tracking.phase, { checkpoint, loadSkill,
-              async onCheckpoint(material) {
-                await checkpoints.save(job.id, { version: 1,
-                  ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
-                  commit: source.commit, ...material })
-                job.canResume = true
-                tracking.activity('checkpoint', { evidenceCount: material.evidence.length, hasDraft: Boolean(material.draft) })
-              },
-            })
-          markdown = result.markdown
-          graph = result.architecture
-          views = result.views
-          walkthrough = result.walkthrough
-          review = result.review
-          files = result.files.map(file => ({ path: file.path, text: file.text, startLine: file.start }))
-        } else {
-          markdown = await generateWiki(llm, selection, source, signal)
-        }
+        result = await runWikiSkill(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
+          signal, (count, path) => { job.filesRead = count; job.currentFile = path; tracking.activity('source-read') },
+          tracking.phase, { checkpoint, loadSkill: () => loadWikiSkill(ctx.profileContext.home, signal),
+            async onCheckpoint(material) {
+              await checkpoints.save(job.id, { version: 1,
+                ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
+                commit: source.commit, ...material })
+              job.canResume = true
+              tracking.activity('checkpoint', { evidenceCount: material.evidence.length, hasDraft: material.textDraft.complete })
+            },
+          })
         model = selection.model
       } catch (error) {
         if (!signal.aborted && error?.code === 'wiki-skill-invalid') {
@@ -225,31 +198,24 @@ export function apply(ctx, config) {
           return fail(error.message, 422, 'model-error')
         }
         if (signal.aborted || !['model-unavailable', 'model-output-invalid'].includes(error?.code)) throw error
-        if (architecture) {
-          if (error.providerCode) job.failureCode = error.providerCode
-          return fail(error.code === 'model-output-invalid' ? '文档内容校验未通过。' + error.message
-            : researchFailure(error, job.canResume), 502, error.code === 'model-output-invalid' ? 'validation-error' : 'model-error')
-        }
-        markdown = renderSourceWiki(source)
-        note = modelNote(error)
+        if (error.providerCode) job.failureCode = error.providerCode
+        return fail(error.code === 'model-output-invalid' ? '文档未能存档。' + error.message
+          : researchFailure(error, job.canResume), 502, error.code === 'model-output-invalid' ? 'validation-error' : 'model-error')
       }
       signal.throwIfAborted()
       tracking.phase('saving')
+      const { files: evidence, ...content } = result
       const document = {
         id: job.id,
         createdAt: new Date().toISOString(),
         durationMs: Math.max(0, Date.now() - job.startedAt),
         source: github ? 'github' : 'local',
         ...(github ? { repoUrl: `https://github.com/${source.owner}/${source.repo}` }
-          : { repositoryPath: source.repositoryPath, repoName: source.repo, files }),
+          : { repositoryPath: source.repositoryPath, repoName: source.repo,
+            files: evidence.map(({ path, text, start }) => ({ path, text, startLine: start })) }),
         commit: source.commit,
-        markdown,
-        ...(graph && { architecture: graph }),
-        ...(views?.length && { views }),
-        ...(walkthrough && { walkthrough }),
-        ...(review && { review }),
+        ...content,
         model,
-        note,
       }
       try {
         const result = withoutEvidence(await storage.save(document))
@@ -271,7 +237,7 @@ export function apply(ctx, config) {
     }
   }
 
-  async function startGeneration(request, background, architecture = false) {
+  async function startGeneration(request, background) {
     if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
       return json({ error: '请求必须是 JSON。' }, 415)
     }
@@ -282,11 +248,11 @@ export function apply(ctx, config) {
     if (local === github) {
       return json({ error: '请提供一个 GitHub 仓库地址或本地 Git 仓库路径。' }, 400)
     }
-    if (body.commit !== undefined && (!github || !architecture || typeof body.commit !== 'string'
+    if (body.commit !== undefined && (!github || typeof body.commit !== 'string'
       || !/^[a-f0-9]{40}$/.test(body.commit))) {
       return json({ error: '固定版本需要 GitHub 仓库和完整的 40 位提交编号。' }, 400)
     }
-    if (body.resumeFrom !== undefined && (!architecture || typeof body.resumeFrom !== 'string'
+    if (body.resumeFrom !== undefined && (typeof body.resumeFrom !== 'string'
       || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(body.resumeFrom))) {
       return json({ error: '研究记录编号无效。' }, 400)
     }
@@ -300,10 +266,10 @@ export function apply(ctx, config) {
     if (jobs.size > 8) jobs.delete(jobs.keys().next().value)
     active = job
     if (background) {
-      void runGeneration(job, body, github, architecture)
+      void runGeneration(job, body, github)
       return json({ job: progress(job) }, 202)
     }
-    return runGeneration(job, body, github, architecture, request.signal)
+    return runGeneration(job, body, github, request.signal)
   }
 
   ctx.effect(() => () => lifetime.abort())
@@ -312,7 +278,7 @@ export function apply(ctx, config) {
     methods: ['GET', 'POST'],
     requestBody: 'buffered',
     async fetch(request) {
-      if (request.method === 'POST') return startGeneration(request, true, true)
+      if (request.method === 'POST') return startGeneration(request, true)
       const id = new URL(request.url).searchParams.get('id')
       try { return json({ job: await generationStatus(id) }) }
       catch { return json({ error: '无法读取生成进度，请重试。' }, 500) }
@@ -356,6 +322,6 @@ export function apply(ctx, config) {
     path: generateRoute,
     methods: ['POST'],
     requestBody: 'buffered',
-    fetch: request => startGeneration(request, request.headers.get('prefer') === 'respond-async', true),
+    fetch: request => startGeneration(request, request.headers.get('prefer') === 'respond-async'),
   })
 }

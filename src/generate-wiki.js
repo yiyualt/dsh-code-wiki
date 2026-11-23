@@ -1,3 +1,6 @@
+import { modelError } from './model-error.js'
+export { modelError } from './model-error.js'
+
 const chapters = [
   { id: 'overview', title: '仓库概览', topicLimit: 3 },
   { id: 'modules', title: '核心模块', topicLimit: 6 },
@@ -22,22 +25,6 @@ function plainMarkdown(text) {
 
 function resultError(code) {
   return Object.assign(new Error(code), { code })
-}
-
-const providerCodes = new Set([
-  'MODEL_CONFIG', 'NO_ADAPTER', 'MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH',
-  'INVALID_MODEL', 'INVALID_REQUEST', 'UNSUPPORTED_CONTENT', 'UNSUPPORTED_REASONING_EFFORT', 'CONTEXT_WINDOW_EXCEEDED',
-  'RATE_LIMIT', 'QUOTA', 'ACCOUNT_QUOTA', 'TIMEOUT', 'TRANSPORT', 'SERVER', 'EMPTY_RESPONSE',
-  'MALFORMED_RESPONSE', 'STREAM_CLOSED', 'PI_AI_ERROR', 'UNKNOWN',
-])
-
-export function modelError(failure) {
-  const error = resultError('model-unavailable')
-  if (providerCodes.has(failure?.code)) error.providerCode = failure.code
-  if (Number.isInteger(failure?.status) && failure.status >= 400 && failure.status <= 599) {
-    error.providerStatus = failure.status
-  }
-  return error
 }
 
 function referenceLink(source, reference) {

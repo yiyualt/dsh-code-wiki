@@ -19,15 +19,13 @@ window.__ModuleLoader__.load({
     const historyLoadError = '无法读取文档历史，请重试。'
     const documentLoadError = '无法打开这篇文档，请重试。'
     const generationStages = [
-      { phase: 'reading', label: '读取仓库', status: '正在读取仓库', detail: '正在定位当前提交并读取生成文档所需的源码。' },
-      { phase: 'planning', label: '规划内容', status: '正在确定文档重点', detail: '正在根据项目资料确定用途、主要能力和需要解释的问题。' },
-      { phase: 'researching', label: '核对源码', status: '正在核对源码', detail: '正在读取关键实现，核对组件关系和实际运行过程。' },
-      { phase: 'writing', label: '撰写正文', status: '正在撰写文档', detail: '正在组织章节、示例和源码引用。' },
-      { phase: 'reviewing', label: '检查文档', status: '正在检查文档', detail: '检查完成后将保存到文档库。' },
-      { phase: 'saving', label: '保存文档', status: '正在保存文档', detail: '正在把文档写入已保存文档列表。' },
+      { phases: ['reading'], label: '读取仓库' },
+      { phases: ['researching', 'planning'], label: '读取源码' },
+      { phases: ['writing', 'reviewing'], label: '生成文档' },
+      { phases: ['saving'], label: '保存文档' },
     ]
     const terminalPhases = new Set(['completed', 'failed'])
-    const generationPhases = new Set([...generationStages.map(stage => stage.phase), ...terminalPhases])
+    const generationPhases = new Set([...generationStages.flatMap(stage => stage.phases), ...terminalPhases])
     const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
     const historyDateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
     const labels = {
@@ -197,26 +195,35 @@ window.__ModuleLoader__.load({
       return diagramEnd
     }
 
-    function approvedViewBlocks(markdown, views) {
+    function approvedViewBlocks(markdown, views, skillMarkdown) {
       const approved = new Map(views.map(view => [view.mermaid, view]))
       const lines = markdown.split(/\r?\n/), blocks = [], pending = []
+      let inComment = false
       for (let i = 0; i < lines.length; i++) {
+        if (skillMarkdown && (inComment || /^ {0,3}<!--/.test(lines[i]))) {
+          pending.push(lines[i])
+          inComment = !lines[i].includes('-->')
+          continue
+        }
         const marker = markdownFence(lines[i])
         if (!marker) { pending.push(lines[i]); continue }
+        const standalone = Boolean(markdownFence(lines[i], false))
         let end = i + 1
         for (; end < lines.length; end++) {
-          const close = markdownFence(lines[end])
+          const close = markdownFence(lines[end], !skillMarkdown || !standalone)
           if (close && close[1][0] === marker[1][0] && close[1].length >= marker[1].length && !close[2].trim()) break
         }
         const mermaid = marker[2].trim().toLowerCase() === 'mermaid'
-        if (marker[2].trim().toLowerCase() === 'dsh-architecture') {
+        if (!skillMarkdown && marker[2].trim().toLowerCase() === 'dsh-architecture') {
           if (pending.length) blocks.push({ markdown: pending.splice(0).join('\n') })
           blocks.push({ architecture: true })
           i = end
           continue
         }
-        const view = mermaid && end < lines.length && /^ {0,3}(`{3,}|~{3,})/.test(lines[i])
-          && approved.get(lines.slice(i + 1, end).join('\n'))
+        const source = mermaid && end < lines.length && standalone
+          && lines.slice(i + 1, end).join('\n')
+        const verified = source && approved.get(source)
+        const view = verified || (source && skillMarkdown && parseWikiMermaid(source))
         if (view) {
           if (pending.length) blocks.push({ markdown: pending.splice(0).join('\n') })
           blocks.push({ view })
@@ -224,18 +231,19 @@ window.__ModuleLoader__.load({
           pending.push(mermaid ? lines[i].replace(/(`{3,}|~{3,})[ \t]*mermaid[ \t]*$/i, '$1text') : lines[i],
             ...lines.slice(i + 1, Math.min(end + 1, lines.length)))
         }
-        i = view ? portableInterfaceEnd(lines, end, view) : end
+        i = verified ? portableInterfaceEnd(lines, end, verified) : end
       }
       if (pending.length) blocks.push({ markdown: pending.join('\n') })
       return blocks
     }
 
-    function markdownFence(line) {
-      for (;;) {
+    function markdownFence(line, allowContainers = true) {
+      while (allowContainers) {
         const container = /^ {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)
-        if (!container) return /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+        if (!container) break
         line = line.slice(container[0].length)
       }
+      return /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
     }
 
     function outsideCode(markdown, transform) {
@@ -376,6 +384,7 @@ window.__ModuleLoader__.load({
       return {
         ...metadata,
         ...content, chapters,
+        format: data.format === 'skill-markdown' ? data.format : undefined,
         views: readViews(data.views, metadata, chapters.length),
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
@@ -929,7 +938,7 @@ window.__ModuleLoader__.load({
       h(Button, {
         type: 'submit', variant: 'primary', disabled: !ready || busy,
       }, retry ? retry.canResume ? '继续生成' : '重新尝试' : '生成文档'),
-      retry?.canResume && h('p', { className: 'dsh-code-wiki-hint' }, '已保存研究进度，将继续完成这篇文档。'),
+      retry?.canResume && h('p', { className: 'dsh-code-wiki-hint' }, '已保存进度，可继续生成。'),
       local && h('p', { className: 'dsh-code-wiki-hint' },
         '只读取当前 HEAD 提交中的 Git 跟踪文件。选中的源码片段会发送给已配置的模型。')),
       local && browserOpen && h(FolderBrowser, {
@@ -945,37 +954,6 @@ window.__ModuleLoader__.load({
       const seconds = Math.floor(milliseconds / 1000)
       const minutes = Math.floor(seconds / 60)
       return (minutes ? `${minutes} 分 ` : '') + `${seconds % 60} 秒`
-    }
-
-    function generationPresentation(generation, stage) {
-      let status = stage?.status ?? '正在提交任务'
-      let detail = stage?.detail ?? '任务开始后会显示当前阶段。'
-      const repair = Number.isSafeInteger(generation.repair) && generation.repair > 0 && generation.repair <= 3
-        ? `（第 ${generation.repair} 轮）` : ''
-      const rejections = Number.isSafeInteger(generation.rejections) && generation.rejections > 0 ? generation.rejections : 0
-      if (generation.phase === 'writing') {
-        if (generation.step === 'revising') {
-          status = '按审核意见修订' + repair
-          detail = '正在修改审核指出的内容，完成后会复核这些问题和改动。'
-        } else if (generation.step === 'submission-retry') {
-          status = rejections ? `提交校验未通过，正在修正（累计 ${rejections} 次）` : '正在重新提交草稿'
-          detail = '正在按校验反馈调整草稿，尚未保存正式文档。'
-        } else if (generation.step === 'validating') {
-          status = '正在校验草稿'
-          detail = '正在检查正文结构、图示和源码引用。'
-        } else if (generation.step === 'agent-finishing') {
-          status = '草稿已收到，等待模型结束当前回复'
-          detail = '草稿已通过提交校验，随后会进行独立审核。'
-        } else if (generation.step === 'drafting') {
-          status = '正在撰写初稿'
-        }
-      } else if (generation.step === 'review-reading' && generation.phase === 'researching') {
-        status = '按审核意见补读源码' + repair
-        detail = '正在补充核对审核指出的实现依据。'
-      }
-      const feedback = generation.phase === 'writing' && generation.step === 'submission-retry' && typeof generation.retryMessage === 'string'
-        ? generation.retryMessage.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180) : ''
-      return { status, detail, feedback }
     }
 
     function generationTransportRetry(transport) {
@@ -1007,14 +985,14 @@ window.__ModuleLoader__.load({
 
     function GenerationProgress({ generation, progressOffline, openDocument }) {
       const titleId = useId()
-      const index = generationStages.findIndex(stage => stage.phase === generation.phase)
+      const index = generationStages.findIndex(stage => stage.phases.includes(generation.phase))
       const stage = generationStages[index]
-      const presentation = generationPresentation(generation, stage)
-      const reviewing = generation.phase === 'reviewing'
-      const transportRetry = !progressOffline && !reviewing && generationTransportRetry(generation.transport)
-      const attempt = !reviewing && Number.isSafeInteger(generation.attempt) && Number.isSafeInteger(generation.attemptLimit)
-        && generation.attempt > 1 && generation.attempt <= generation.attemptLimit && generation.attemptLimit <= 10
-        ? `草稿提交：第 ${generation.attempt} / ${generation.attemptLimit} 次尝试。` : ''
+      const status = stage ? '正在' + stage.label : '正在提交任务'
+      const transportRetry = ['researching', 'writing'].includes(generation.phase) && generationTransportRetry(generation.transport)
+      const responseRetry = generation.phase === 'writing' && generation.reasonCategory === 'model-response'
+        && generation.step === 'submission-retry'
+      const detail = progressOffline ? '连接中断，稍后会同步进度。'
+        : transportRetry || (responseRetry && '正在重新请求模型回复。')
       if (generation.phase === 'completed') {
         return h('div', { className: 'dsh-code-wiki-generation-done' },
           h('p', { role: 'status' }, h(IconCheckOutlineRegular, { size: 16, 'aria-hidden': true }),
@@ -1027,14 +1005,14 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-code-wiki-generation-header' },
           h('div', null,
             h('p', { className: 'dsh-code-wiki-generation-repo' }, generation.repository),
-            h('h2', { id: titleId, role: 'status' }, progressOffline ? '正在重新连接' : presentation.status),
+            h('h2', { id: titleId, role: 'status' }, progressOffline ? '正在重新连接' : status),
           ),
           h(GenerationClock, { elapsedMs: generation.elapsedMs, receivedAt: generation.receivedAt }),
         ),
         h('div', { className: 'dsh-code-wiki-progressbar', role: 'progressbar', 'aria-labelledby': titleId }),
         h('ol', { className: 'dsh-code-wiki-generation-stages', 'aria-label': '生成阶段' },
-          generationStages.map(({ phase, label }, i) => h('li', {
-            key: phase, 'data-state': i < index ? 'done' : i === index ? 'active' : 'waiting',
+          generationStages.map(({ label }, i) => h('li', {
+            key: label, 'data-state': i < index ? 'done' : i === index ? 'active' : 'waiting',
             'aria-current': i === index ? 'step' : undefined,
           },
           h('span', { className: 'dsh-code-wiki-stage-marker', 'aria-hidden': true },
@@ -1042,12 +1020,7 @@ window.__ModuleLoader__.load({
           label,
           )),
         ),
-        h('p', { className: 'dsh-code-wiki-generation-detail' },
-          progressOffline ? '正在重新连接，稍后会同步进度。' : presentation.detail),
-        !progressOffline && presentation.feedback && h('p', { className: 'dsh-code-wiki-generation-detail' },
-          '校验反馈：' + presentation.feedback),
-        transportRetry && h('p', { className: 'dsh-code-wiki-generation-detail' }, transportRetry),
-        !progressOffline && attempt && h('p', { className: 'dsh-code-wiki-generation-background' }, attempt),
+        detail && h('p', { className: 'dsh-code-wiki-generation-detail' }, detail),
         generation.filesRead > 0 && h('p', { className: 'dsh-code-wiki-generation-source' },
           '已读取 ' + generation.filesRead + ' 个文件', generation.currentFile && ' · 最近读取：',
           generation.currentFile && h('code', null, generation.currentFile)),
@@ -1361,10 +1334,10 @@ window.__ModuleLoader__.load({
         ? introductionBeforeGraph(chapter.markdown) : null
       const chapterViews = result.views.filter(view => view.chapter === undefined || view.chapter === chapterIndex)
       const prose = markdown => markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
-        approvedViewBlocks(markdown, chapterViews).map((block, i) => block.architecture
+        approvedViewBlocks(markdown, chapterViews, result.format === 'skill-markdown').map((block, i) => block.architecture
           ? result.architecture && h(ArchitectureGraph, { key: 'architecture-' + i, graph: result.architecture })
           : block.view
-            ? h(WikiView, { key: block.view.id + '-' + i, view: block.view })
+            ? h(WikiView, { key: (block.view.id ?? 'mermaid') + '-' + i, view: block.view })
             : block.markdown.trim() && h(MarkdownText, { key: i, text: block.markdown, labels, omitHtml: true })))
       const sections = chapterSections(chapter.markdown)
       const revision = h(React.Fragment, null,

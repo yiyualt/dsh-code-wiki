@@ -8,7 +8,7 @@ const maxBytes = 8 * 1024 * 1024
 const validId = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value)
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const nonempty = (value, limit) => typeof value === 'string' && value.trim().length > 0 && value.length <= limit && !value.includes('\0')
-const fields = new Set(['version', 'repositoryUrl', 'repositoryPath', 'commit', 'plan', 'draft', 'chapters', 'evidence'])
+const fields = new Set(['version', 'repositoryUrl', 'repositoryPath', 'commit', 'plan', 'draft', 'chapters', 'textDraft', 'evidence'])
 const kinds = new Set(['source', 'documentation', 'config'])
 const pendingWrites = new Map()
 
@@ -26,8 +26,13 @@ async function replaceCheckpoint(temporary, target) {
 function validPayload(value) {
   if (!object(value) || Object.keys(value).some(key => !fields.has(key)) || value.version !== 1
     || typeof value.commit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value.commit)
-    || !object(value.plan) || (value.draft !== undefined && !object(value.draft))
+    || (value.textDraft === undefined && !object(value.plan))
+    || (value.plan !== undefined && !object(value.plan)) || (value.draft !== undefined && !object(value.draft))
     || !Array.isArray(value.evidence) || value.evidence.length > 240) return false
+  if (value.textDraft !== undefined && (!object(value.textDraft) || value.plan !== undefined || value.draft !== undefined || value.chapters !== undefined
+    || Object.keys(value.textDraft).length !== 2 || typeof value.textDraft.markdown !== 'string'
+    || value.textDraft.markdown.length > 160_000 || value.textDraft.markdown.includes('\0') || typeof value.textDraft.complete !== 'boolean'
+    || (value.textDraft.complete && !value.textDraft.markdown.trim()))) return false
   if (value.chapters !== undefined && (!Array.isArray(value.chapters) || value.chapters.length > 8
     || !value.chapters.every(chapter => object(chapter) && /^[a-z][a-z0-9_-]{0,43}$/.test(chapter.id)
       && Array.isArray(chapter.blocks) && chapter.blocks.length >= 1 && chapter.blocks.length <= 14)

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
+import { parseWikiMermaid } from '../src/wiki-mermaid.js'
 import { readWikiWalkthrough } from '../src/wiki-walkthrough-data.js'
 import { createWikiWalkthroughRenderer } from '../src/wiki-walkthrough.js'
 
@@ -26,7 +27,7 @@ async function client(fetchRequest) {
     document: { baseURI: 'http://localhost/' }, URL, Intl, AbortController, AbortSignal, performance,
     setTimeout: callback => { callback(); return 0 },
     codeWikiStyles: '', createCodeWikiFolderBrowser: () => () => null, createCodeWikiVideo: () => () => null,
-    createWikiViewRenderer: () => function WikiView() {},
+    createWikiViewRenderer: () => function WikiView() {}, parseWikiMermaid,
     createWikiWalkthroughRenderer, readWikiWalkthrough,
     fetch: async (url, options = {}) => { requests.push(String(url)); calls.push({ url: String(url), ...options }); return fetchRequest(new URL(url), options) },
   })
@@ -132,7 +133,7 @@ test('the first chapter introduces the system before its graph and keeps source 
     generation: { id: 'pending', repository: 'example/project', phase: 'researching', elapsedMs: 0 } }) }
   const progress = find(Page({ wiki: pending }), node => node.type?.name === 'GenerationProgress')
   const rendered = progress.type(progress.props)
-  assert.equal(find(rendered, node => node.props.role === 'status').children[0], '正在核对源码')
+  assert.equal(find(rendered, node => node.props.role === 'status').children[0], '正在读取源码')
 })
 
 test('an architecture placeholder keeps the graph inside its own chapter and chapter sections become navigation', async () => {
@@ -241,6 +242,32 @@ test('only exact approved diagram fences become controlled views and all other M
   const fallback = await reader({ ...record(markdown), views: [wrongSource] })
   const fallbackElement = find(fallback.Page({ wiki: fallback.wiki }), node => node.type?.name === 'WikiArticle')
   assert.equal(find(fallbackElement.type(fallbackElement.props), node => node.type?.name === 'WikiView'), undefined)
+})
+
+test('plain Skill chapters render supported diagrams while legacy and unsupported fences stay as code', async () => {
+  const source = 'flowchart LR\n  A[入口] -->|dispatch(job)| B[任务]'
+  const unsupported = source + '\n  click A "https://example.test/"'
+  const citation = '[src/main\\.js\\:10–20](' + sourceUrl + ')'
+  const fence = input => '\n\n```mermaid\n' + input + '\n```'
+  const markdown = '# Wiki\n\n## 接口\n\n调用入口记录任务。' + citation + fence(source) + fence(unsupported)
+  for (const format of ['skill-markdown', undefined]) {
+    const { wiki, Page } = await reader({ ...record(markdown), format })
+    const element = find(Page({ wiki }), node => node.type?.name === 'WikiArticle')
+    const article = element.type(element.props)
+    const drawn = find(article, node => node.type?.name === 'WikiView')
+    assert.equal(drawn?.props.view.edges[0].label, format ? 'dispatch(job)' : undefined)
+    assert(find(article, node => node.type === 'markdown' && node.props.text.includes('[1](' + sourceUrl + ')')))
+    const fallback = find(article, node => node.type === 'markdown' && node.props.text.includes('click A'))
+    assert(fallback.props.text.includes('```text\n' + unsupported + '\n```'))
+    assert(!fallback.props.text.includes('```mermaid'))
+  }
+
+  for (const literal of ['<!--' + fence(source) + '\n-->', '\n```mermaid\n' + source + '\n> ```']) {
+    const { wiki, Page } = await reader({ ...record('# Wiki\n\n## 接口\n\n接口详情。\n\n' + literal), format: 'skill-markdown' })
+    const element = find(Page({ wiki }), node => node.type?.name === 'WikiArticle')
+    const article = element.type(element.props)
+    assert.equal(find(article, node => node.type?.name === 'WikiView'), undefined)
+  }
 })
 
 test('chapter diagrams retain repeated kinds across sections and show validated interface contracts', async () => {
@@ -442,39 +469,33 @@ async function progressRenderer() {
   }
 }
 
-test('Wiki progress distinguishes revision, rejected submissions and waiting for the model without changing its six stages', async () => {
+test('Wiki progress presents four technical stages and hides editorial feedback and counters', async () => {
   const render = await progressRenderer()
+  const labels = ['读取仓库', '读取源码', '生成文档', '保存文档']
   const cases = [
-    [{ step: 'drafting' }, '正在撰写初稿'],
-    [{ step: 'revising', repair: 1 }, '按审核意见修订（第 1 轮）'],
-    [{ step: 'revising', repair: 2 }, '按审核意见修订（第 2 轮）'],
-    [{ step: 'revising', repair: 3 }, '按审核意见修订（第 3 轮）'],
-    [{ step: 'submission-retry', rejections: 3 }, '提交校验未通过，正在修正（累计 3 次）'],
-    [{ step: 'validating' }, '正在校验草稿'],
-    [{ step: 'agent-finishing' }, '草稿已收到，等待模型结束当前回复'],
-    [{ phase: 'researching', step: 'review-reading', repair: 1 }, '按审核意见补读源码（第 1 轮）'],
-    [{ phase: 'reviewing', step: 'reviewing' }, '正在检查文档'],
-    [{ phase: 'reviewing', step: 'submission-retry', attempt: 2, attemptLimit: 2 }, '正在检查文档'],
+    [{ phase: 'reading' }, 0],
+    [{ phase: 'researching' }, 1],
+    [{ step: 'drafting' }, 2],
+    [{ phase: 'saving' }, 3],
+    [{ phase: 'planning' }, 1],
+    [{ phase: 'reviewing' }, 2],
+    [{ phase: 'researching', step: 'review-reading', repair: 1 }, 1],
+    [{ step: 'submission-retry', reasonCategory: 'review', rejections: 2, attempt: 2, attemptLimit: 3,
+      retryMessage: '引用范围需要调整。' }, 2],
   ]
-  for (const [generation, expected] of cases) {
+  for (const [generation, index] of cases) {
     const tree = render(generation)
-    assert.equal(content(find(tree, node => node.props.role === 'status')), expected)
+    assert.equal(content(find(tree, node => node.props.role === 'status')), '正在' + labels[index])
     const stages = find(tree, node => node.type === 'ol')
-    assert.equal(stages.children.length, 6)
-    assert.equal(stages.children.filter(node => node.props['aria-current'] === 'step').length, 1)
+    assert.deepEqual(stages.children.map(content), labels)
+    assert.deepEqual(stages.children.map(node => node.props['data-state']),
+      labels.map((_, i) => i < index ? 'done' : i === index ? 'active' : 'waiting'))
+    assert.equal(stages.children[index].props['aria-current'], 'step')
+    assert.doesNotMatch(content(tree), /审核|草稿|校验|引用范围需要调整/)
   }
-  const retry = render({ step: 'submission-retry', rejections: 2, attempt: 2, attemptLimit: 3,
-    retryMessage: '引用范围需要调整。'.repeat(40) })
-  assert(content(retry).includes('草稿提交：第 2 / 3 次尝试。'))
-  const feedback = find(retry, node => node.type === 'p' && content(node).startsWith('校验反馈：'))
-  assert.equal(content(feedback).length, '校验反馈：'.length + 180)
-  assert.equal(find(render({ step: 'agent-finishing', retryMessage: '已经解决的反馈' }),
-    node => node.type === 'p' && content(node).startsWith('校验反馈：')), undefined)
-  const reviewerRetry = render({ phase: 'reviewing', step: 'submission-retry', rejections: 1,
-    attempt: 2, attemptLimit: 2, retryMessage: '审核补读范围需要调整。',
-    transport: { event: 'request-retry', retryCode: 'TRANSPORT', attempt: 1, attemptLimit: 3 } })
-  assert.match(content(reviewerRetry), /检查完成后将保存到文档库。/)
-  assert.doesNotMatch(content(reviewerRetry), /审核反馈|校验反馈|草稿提交|重试模型请求/)
+  const retry = render({ step: 'submission-retry', reasonCategory: 'model-response', retryMessage: '不展示内部反馈。' })
+  assert.match(content(retry), /正在重新请求模型回复/)
+  assert.doesNotMatch(content(retry), /不展示内部反馈/)
 })
 
 test('Wiki transport retries show the upcoming or current attempt and only translated safe reasons', async () => {
@@ -482,7 +503,7 @@ test('Wiki transport retries show the upcoming or current attempt and only trans
   const transport = { event: 'request-retry', requestId: 'PRIVATE_REQUEST_ID', attempt: 1, attemptLimit: 3,
     retryCode: 'TRANSPORT', url: 'https://private.invalid', error: 'PRIVATE_RAW_ERROR', providerStatus: 503 }
   const pending = render({ step: 'revising', repair: 1, transport })
-  assert(content(pending).includes('按审核意见修订（第 1 轮）'))
+  assert(content(pending).includes('正在生成文档'))
   assert(content(pending).includes('连接暂时中断，即将重试模型请求（第 2 / 3 次尝试）。'))
   for (const event of ['request-start', 'request-receiving']) {
     assert(content(render({ transport: { ...transport, event, attempt: 2 } }))
@@ -530,7 +551,7 @@ test('legacy progress and cancelled or completed transport events retain the exi
       transport: { event, attempt: 2, attemptLimit: 3, retryCode: 'PRIVATE_CODE' },
     }))]) {
     const tree = render(generation)
-    assert.equal(content(find(tree, node => node.props.role === 'status')), '正在撰写文档')
+    assert.equal(content(find(tree, node => node.props.role === 'status')), '正在生成文档')
     assert.doesNotMatch(content(tree), /重试模型请求|PRIVATE_CODE/)
   }
   const starting = render({ phase: 'starting' })

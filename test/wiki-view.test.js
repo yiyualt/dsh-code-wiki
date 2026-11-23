@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createWikiViewRenderer, layoutWikiView } from '../src/wiki-view.js'
+import { parseWikiMermaid } from '../src/wiki-mermaid.js'
 
 const refs = [{ label: 'src/main.js:1–10', href: 'https://example.test/source', url: 'https://example.test/source' }]
 const node = (id, role = 'component') => ({ id, role, label: id, refs })
@@ -47,6 +48,53 @@ test('sequence views retain message order and direction with participants on dis
     assert.equal(message.points.at(-1)[0], to.x + to.w / 2)
     if (i) assert(message.points[0][1] > result.edges[i - 1].points[0][1])
   }
+})
+
+test('Skill diagrams retain calls and returns, flow direction, and lifecycle terminals', () => {
+  const flow = parseWikiMermaid(`flowchart LR
+    Client["客户端"] -->|request| Worker(处理请求) -.-> Store[(存储)]`)
+  assert.deepEqual(flow.nodes.map(node => node.role), ['component', 'process', 'store'])
+  assert.equal(flow.edges[1].relation, 'dashed')
+  const flowGeometry = layoutWikiView(flow)
+  assert(flowGeometry.nodes.every((node, i, nodes) => i === 0 || node.x > nodes[i - 1].x))
+  assert.equal(flowGeometry.edges[1].labelBox, null)
+  assert.equal(flowGeometry.edges[1].number, undefined)
+
+  const sequence = parseWikiMermaid(`sequenceDiagram
+    actor User as 用户
+    participant API as Gateway
+    User->>API: start(input)
+    API-->>User: return jobId`)
+  assert.deepEqual(sequence.nodes.map(node => node.label), ['用户', 'Gateway'])
+  assert.deepEqual(sequence.edges.map(edge => edge.relation), [undefined, 'return'])
+  assert.equal(layoutWikiView(sequence).edges[0].messageRows.join(''), 'start(input)')
+  assert.equal(parseWikiMermaid('sequenceDiagram\nautonumber\nA->>B: call').numbered, true)
+
+  const state = parseWikiMermaid(`stateDiagram-v2
+    state "等待运行" as Pending
+    [*] --> Pending
+    Pending --> Running: start
+    Running --> [*]: return`)
+  assert.deepEqual(state.nodes.map(node => node.role), ['component', 'start', 'component', 'end'])
+  assert.equal(state.nodes[0].label, '等待运行')
+  assert.equal(state.edges[2].label, 'return')
+})
+
+test('Skill SVG has inert labels, no inferred hyperlinks, and safe fallbacks for unsupported directives', () => {
+  const source = 'flowchart TD\nA["<img src=x onerror=alert(1)>"] --> B[Result]'
+  for (const statement of ['click A "https://example.test/"', '%%{init: {securityLevel: "loose"}}%%', 'subgraph Together']) {
+    assert.equal(parseWikiMermaid(source + '\n' + statement), null)
+  }
+  assert.equal(parseWikiMermaid('flowchart TD\n' + Array.from({ length: 12 }, (_, i) => `n${i} --> n${i + 1}`).join('\n')), null)
+  const React = { useId: () => 'plain', useRef: () => ({ current: null }), useLayoutEffect() {}, useState: value => [value, () => {}],
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) }
+  const output = createWikiViewRenderer(React)({ view: parseWikiMermaid(source) }), nodes = []
+  function collect(value) { if (value && typeof value === 'object') { nodes.push(value); value.children?.forEach(collect) } }
+  collect(output)
+  assert(nodes.some(item => item.type === 'svg' && item.props.style.minWidth === 0))
+  assert(nodes.some(item => item.type === 'title' && item.children.includes('<img src=x onerror=alert(1)>')))
+  assert(!nodes.some(item => ['a', 'details', 'img', 'script', 'foreignObject'].includes(item.type)))
+  assert(nodes.every(item => !('dangerouslySetInnerHTML' in item.props)))
 })
 
 test('SVG rendering preserves labels as React text and exposes source links without an HTML execution API', () => {
