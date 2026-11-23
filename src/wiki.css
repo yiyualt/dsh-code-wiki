@@ -248,8 +248,26 @@
   overflow-wrap: anywhere;
 }
 
+.dsh-code-wiki-document-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dsh-code-wiki-library-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dsh-code-wiki-library-feedback > p { flex: 1 1 220px; }
+
 .dsh-code-wiki-document {
   display: grid;
+  width: 100%;
   grid-template-columns: 37px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
@@ -261,7 +279,8 @@
   cursor: pointer;
 }
 
-.dsh-code-wiki-document:hover { background: var(--wiki-selected); }
+.dsh-code-wiki-document:hover:not(:disabled) { background: var(--wiki-selected); }
+.dsh-code-wiki-document:disabled { cursor: default; }
 
 .dsh-code-wiki-document small {
   display: block;

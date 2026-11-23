@@ -14,7 +14,11 @@ window.__ModuleLoader__.load({
     const chapterError = '无法生成本章，请重试。'
     const chapterDataError = '章节生成返回了无法读取的数据。'
     const chapterInterrupted = '读取章节生成结果时连接中断。'
+    const libraryError = '无法读取文档库，请重试。'
+    const documentError = '无法打开这份文档，请重试。'
     const commitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
+    const documentIdPattern = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i
+    const libraryDate = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
     const markdownLabels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
@@ -45,8 +49,8 @@ window.__ModuleLoader__.load({
       return typeof value === 'string' && Boolean(value.trim())
     }
 
-    function validSources(sources) {
-      return Array.isArray(sources) && sources.length > 0 && sources.every(source =>
+    function validSources(sources, allowEmpty = false) {
+      return Array.isArray(sources) && (allowEmpty || sources.length > 0) && sources.every(source =>
         hasText(source?.path) && source.path.isWellFormed() && !/[\\\u0000-\u001f\u007f]/.test(source.path) &&
         source.path.split('/').every(part => part && part !== '.' && part !== '..') &&
         Number.isSafeInteger(source.line) && source.line > 0)
@@ -66,18 +70,27 @@ window.__ModuleLoader__.load({
       return { result }
     }
 
+    function validDocumentId(id) {
+      return typeof id === 'string' && documentIdPattern.test(id)
+    }
+
+    function validOutline(outline, source, legacy = false) {
+      const { mainline, commit, chapters } = outline ?? {}
+      return (legacy ? typeof mainline === 'string' : hasText(mainline)) &&
+        typeof commit === 'string' && commitId.test(commit) && (source !== 'github' || commit.length === 40) &&
+        Array.isArray(chapters) && chapters.length > 0 && chapters.every(chapter =>
+          hasText(chapter?.title) && validSources(chapter.sources, legacy))
+    }
+
     async function loadOutline(repository) {
       const response = await requestWiki('outline', repositoryInput(repository))
       const { result, error } = await wikiJson(response, outlineError)
       if (error) return { error }
-      const { mainline, commit, chapters } = result ?? {}
-      if (!hasText(mainline) || typeof commit !== 'string' || !commitId.test(commit) ||
-        (repository.source === 'github' && commit.length !== 40) ||
-        !Array.isArray(chapters) || !chapters.length || chapters.some(chapter =>
-          !hasText(chapter?.title) || !validSources(chapter.sources))) {
+      if (!validOutline(result, repository.source) || (result.id !== undefined && !validDocumentId(result.id))) {
         return { error: outlineError }
       }
-      return { mainline: mainline.trim(), commit, chapters }
+      const { id = null, mainline, commit, chapters } = result
+      return { id, mainline: mainline.trim(), commit, chapters }
     }
 
     function validDiagram(diagram) {
@@ -88,9 +101,45 @@ window.__ModuleLoader__.load({
         typeof svg === 'string' && svg.length <= 160_000 && /^<svg(?:\s|>)[\s\S]*<\/svg>$/.test(svg.trim())
     }
 
-    function validChapterContent(content) {
-      return hasText(content?.markdown) && typeof content.handoff === 'string' && validSources(content.sources) &&
+    function validChapterContent(content, legacy = false) {
+      return hasText(content?.markdown) && typeof content.handoff === 'string' && validSources(content.sources, legacy) &&
         Array.isArray(content.diagrams) && content.diagrams.every(validDiagram)
+    }
+
+    async function requestDocuments(id, fallbackError) {
+      const url = new URL('api/dsh-code-wiki/documents', document.baseURI)
+      if (id) url.searchParams.set('id', id)
+      const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' })
+      return wikiJson(response, fallbackError)
+    }
+
+    function validDocumentSummary(summary) {
+      return validDocumentId(summary?.id) && hasText(summary.title) && ['github', 'local'].includes(summary.source) &&
+        Number.isSafeInteger(summary.chapterCount) && summary.chapterCount > 0 &&
+        Number.isSafeInteger(summary.generatedCount) && summary.generatedCount >= 0 && summary.generatedCount <= summary.chapterCount
+    }
+
+    async function loadLibrary() {
+      const { result, error } = await requestDocuments(null, libraryError)
+      if (error) return { error }
+      const summaries = result?.documents
+      if (!Array.isArray(summaries) || !summaries.every(validDocumentSummary)) return { error: libraryError }
+      return { summaries }
+    }
+
+    async function loadDocument(id) {
+      const { result, error } = await requestDocuments(id, documentError)
+      if (error) return { error }
+      const { document, chapterWork, legacy } = result ?? {}
+      if (result?.id !== id || !hasText(document?.title) || !hasText(document.location) ||
+        (document.source !== 'local' && !(document.source === 'github' && githubRepository(document.location))) ||
+        !validOutline(document, document.source, legacy === true) ||
+        !Array.isArray(chapterWork) || chapterWork.length > document.chapters.length ||
+        chapterWork.some(work => work !== null && (!validChapterContent(work?.content, legacy === true) ||
+          (work.warning !== undefined && typeof work.warning !== 'string')))) {
+        return { error: documentError }
+      }
+      return { record: { id, document, chapterWork, legacy: legacy === true } }
     }
 
     async function* chapterLines(stream) {
@@ -158,13 +207,14 @@ window.__ModuleLoader__.load({
       return { error: chapterInterrupted }
     }
 
-    async function loadChapter(repository, chapterIndex, previousHandoff, onContent) {
+    async function loadChapter(repository, documentId, chapterIndex, previousHandoff, onContent) {
       const { commit, mainline, chapters } = repository
       const { title, sources } = chapters[chapterIndex]
       const previous = chapters[chapterIndex - 1]
       const next = chapters[chapterIndex + 1]
       const response = await requestWiki('chapter', {
         ...repositoryInput(repository), commit, mainline, chapter: { title, sources },
+        ...(documentId ? { documentId, chapterIndex } : {}),
         previous: previous ? { title: previous.title, handoff: previousHandoff } : null,
         next: next?.title ?? null,
       }, 'application/x-ndjson')
@@ -178,12 +228,31 @@ window.__ModuleLoader__.load({
       return validChapterContent(result) ? { content: result } : { error: chapterError }
     }
 
+    function generatedCount(record) {
+      return record.chapterWork.filter(work => work?.content).length
+    }
+
+    function keepChapterErrors(record, cached) {
+      if (!cached) return record
+      const chapterWork = record.document.chapters.map((_, index) => {
+        const saved = record.chapterWork[index]
+        const local = cached.chapterWork[index]
+        return local?.error && !saved?.warning && saved?.content?.diagrams.length === local.content?.diagrams.length
+          ? { ...saved, error: local.error } : saved ?? null
+      })
+      return { ...record, chapterWork }
+    }
+
     function createWikiStore(pickDirectory) {
       let snapshot = {
         draft: { source: 'github', repositoryUrl: '', repositoryPath: '' },
-        view: 'library', document: null, chapterIndex: 0, chapterWork: [], picker: null, generatingOutline: false, error: '',
+        view: 'library', opened: null, chapterIndex: 0, picker: null, generatingOutline: false, error: '',
+        summaries: [], temporary: null, loadingLibrary: true, libraryError: '', openingId: null, openError: '',
       }
       const listeners = new Set()
+      const records = new Map()
+      let libraryVersion = 0
+      let openVersion = 0
 
       function update(patch) {
         snapshot = { ...snapshot, ...patch }
@@ -192,6 +261,22 @@ window.__ModuleLoader__.load({
 
       function changeDraft(patch) {
         update({ draft: { ...snapshot.draft, ...patch }, picker: null, error: '' })
+      }
+
+      function withLocalProgress(summaries) {
+        return summaries.map(summary => {
+          const record = records.get(summary.id)
+          const count = record ? generatedCount(record) : 0
+          return count > summary.generatedCount ? { ...summary, generatedCount: count } : summary
+        })
+      }
+
+      function showDocument(record, patch) {
+        records.set(record.id, record)
+        update({
+          ...patch, opened: record, chapterIndex: 0, view: 'reader', openingId: null, openError: '',
+          temporary: record.id === null ? record : snapshot.temporary,
+        })
       }
 
       return {
@@ -203,12 +288,40 @@ window.__ModuleLoader__.load({
         changeDraft,
         toggleForm() {
           if (snapshot.generatingOutline) return
-          update({ view: snapshot.view === 'form' ? 'library' : 'form', error: '' })
+          openVersion++
+          update({ view: snapshot.view === 'form' ? 'library' : 'form', error: '', openingId: null, openError: '' })
         },
-        returnToLibrary: () => update({ view: 'library' }),
-        openDocument: () => update({ chapterIndex: 0, view: 'reader' }),
+        returnToLibrary() {
+          openVersion++
+          update({ view: 'library', opened: null, openingId: null, openError: '' })
+        },
+        async refreshLibrary() {
+          const version = ++libraryVersion
+          update({ loadingLibrary: true, libraryError: '' })
+          const result = await loadLibrary().catch(() => ({ error: libraryError }))
+          if (version !== libraryVersion) return
+          update(result.error ? { loadingLibrary: false, libraryError: result.error }
+            : { loadingLibrary: false, summaries: withLocalProgress(result.summaries) })
+        },
+        async openDocument(id = null) {
+          if (snapshot.view === 'reader' || snapshot.generatingOutline || snapshot.picker ||
+            (id !== null && (!validDocumentId(id) || snapshot.openingId === id))) return
+          const cached = records.get(id)
+          if (id === null && !cached) return
+          const version = ++openVersion
+          if (id === null || cached?.chapterWork.some(work => work?.pending)) {
+            showDocument(cached)
+            return
+          }
+
+          update({ openingId: id, openError: '' })
+          const result = await loadDocument(id).catch(() => ({ error: documentError }))
+          if (version !== openVersion) return
+          if (result.error) update({ openingId: null, openError: result.error })
+          else showDocument(keepChapterErrors(result.record, cached))
+        },
         selectChapter(chapterIndex) {
-          if (snapshot.document?.chapters[chapterIndex] && snapshot.chapterIndex !== chapterIndex) update({ chapterIndex })
+          if (snapshot.opened?.document.chapters[chapterIndex] && snapshot.chapterIndex !== chapterIndex) update({ chapterIndex })
         },
         async chooseFolder() {
           if (snapshot.picker || snapshot.generatingOutline) return
@@ -233,34 +346,46 @@ window.__ModuleLoader__.load({
             return
           }
 
-          update({ generatingOutline: true, error: '' })
+          openVersion++
+          update({ generatingOutline: true, error: '', openingId: null, openError: '' })
           try {
-            const { mainline, commit, chapters, error } = await loadOutline(repository)
+            const { id, mainline, commit, chapters, error } = await loadOutline(repository)
             if (error) {
               update({ generatingOutline: false, error })
               return
             }
-            update({ document: { ...repository, mainline, commit, chapters }, chapterIndex: 0, chapterWork: [], view: 'reader', generatingOutline: false })
+            showDocument({ id, document: { ...repository, mainline, commit, chapters }, chapterWork: [], legacy: false },
+              { generatingOutline: false })
           } catch {
             update({ generatingOutline: false, error: outlineError })
           }
         },
         async generateChapter() {
-          const { document, chapterIndex, chapterWork, view } = snapshot
+          const { opened, chapterIndex, view } = snapshot
+          if (view !== 'reader' || !opened || opened.legacy) return
+          const { id, document, chapterWork } = opened
           const current = chapterWork[chapterIndex]
-          if (view !== 'reader' || !document?.chapters[chapterIndex] || current?.pending || current?.content) return
+          if (!document.chapters[chapterIndex] || current?.pending || current?.content) return
 
           function updateChapter(patch) {
-            if (snapshot.document !== document) return
-            const chapters = [...snapshot.chapterWork]
+            const record = records.get(id)
+            if (record?.document !== document) return
+            const chapters = [...record.chapterWork]
+            const acceptedBody = patch.content && !chapters[chapterIndex]?.content
             chapters[chapterIndex] = { ...chapters[chapterIndex], ...patch }
-            update({ chapterWork: chapters })
+            const updated = { ...record, chapterWork: chapters }
+            records.set(id, updated)
+            update({
+              opened: snapshot.opened?.document === document ? updated : snapshot.opened,
+              summaries: acceptedBody && id ? withLocalProgress(snapshot.summaries) : snapshot.summaries,
+              temporary: id === null ? updated : snapshot.temporary,
+            })
           }
 
           updateChapter({ pending: true, error: '', warning: '' })
           try {
             const previousHandoff = chapterWork[chapterIndex - 1]?.content?.handoff ?? ''
-            const result = await loadChapter(document, chapterIndex, previousHandoff, content => updateChapter({ content }))
+            const result = await loadChapter(document, id, chapterIndex, previousHandoff, content => updateChapter({ content }))
             updateChapter({ ...result, pending: false })
           } catch {
             updateChapter({ error: chapterError, pending: false })
@@ -435,19 +560,52 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-code-wiki-prose' },
           h(MarkdownText, { text: content.markdown, labels: markdownLabels, omitHtml: true })),
         content.diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, diagram })),
-        h('section', { className: 'dsh-code-wiki-sources' },
+        content.sources.length > 0 && h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
           h('ol', null, content.sources.map((source, index) => h('li', { key: index }, h(ChapterSource, { repository, source }))))))
     }
 
+    function DocumentLibrary({ summaries, temporary, loading, loadError, openError, openingId, disabled, formOpen, onOpen, onRefresh }) {
+      const documents = temporary ? [{ id: null, ...temporary.document,
+        chapterCount: temporary.document.chapters.length, generatedCount: generatedCount(temporary) }, ...summaries] : summaries
+      return h(Fragment, null,
+        loadError && h('div', { className: 'dsh-code-wiki-library-feedback' },
+          h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, loadError),
+          h(Button, { type: 'button', size: 'sm', onClick: onRefresh }, '重试读取')),
+        openError && h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, openError),
+        loading && h('p', { className: documents.length ? 'dsh-code-wiki-announcement' : 'dsh-code-wiki-empty', role: 'status' }, '正在读取文档库…'),
+        !loading && !loadError && !formOpen && !documents.length && h('p', { className: 'dsh-code-wiki-empty' }, '还没有 Wiki'),
+        documents.length > 0 && h('ul', { className: 'dsh-code-wiki-document-list', role: 'list' },
+          documents.map(({ id, title, source, chapterCount, generatedCount, updatedAt, legacy }) => {
+            const opening = id !== null && id === openingId
+            const date = Date.parse(updatedAt)
+            const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章` : '目录草稿'
+            return h('li', { key: id ?? 'temporary' }, h('button', {
+              type: 'button', className: 'dsh-code-wiki-document', disabled: disabled || opening, onClick: () => onOpen(id),
+            },
+              h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
+                h(source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
+              h('span', null, h('strong', null, title), h('small', { role: opening ? 'status' : undefined },
+                opening ? '正在打开…' : summary,
+                !opening && Number.isFinite(date) && h(Fragment, null, ' · ', h('time', { dateTime: updatedAt }, libraryDate.format(date))))),
+              h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true })))
+          })))
+    }
+
     function CodeWikiPage({ store, listDirectory }) {
-      const { draft, view, document, chapterIndex, chapterWork, picker, generatingOutline, error } = useSyncExternalStore(store.subscribe, store.getSnapshot)
+      const { draft, view, opened, chapterIndex, picker, generatingOutline, error,
+        summaries, temporary, loadingLibrary, libraryError, openingId, openError } = useSyncExternalStore(store.subscribe, store.getSnapshot)
+      const { document, chapterWork, legacy } = opened ?? {}
       const formId = useId()
       const mainlineId = useId()
       const page = useRef(null)
       const articleHeading = useRef(null)
       const reading = view === 'reader'
       const formOpen = view === 'form'
+
+      useEffect(() => {
+        if (view === 'library') void store.refreshLibrary()
+      }, [store, view])
 
       useEffect(() => {
         if (reading) {
@@ -457,10 +615,9 @@ window.__ModuleLoader__.load({
       }, [chapterIndex, reading])
 
       const chapter = document?.chapters[chapterIndex]
-      const { pending, content, error: chapterFailure, warning } = chapterWork[chapterIndex] ?? {}
+      const { pending, content, error: chapterFailure, warning } = chapterWork?.[chapterIndex] ?? {}
       const chapterNotice = content && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…'))
       const chapterAnnouncement = pending ? '正在生成本章…' : content ? '本章已生成。' : ''
-      const generated = chapterWork.filter(work => work?.content).length
       return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': reading ? '' : undefined, ref: page },
         h('style', null, wikiStyles),
         h('div', { className: 'dsh-code-wiki-shell' },
@@ -480,29 +637,28 @@ window.__ModuleLoader__.load({
               onClick: store.toggleForm,
             }, formOpen ? '取消新建' : '新建 Wiki')),
           reading ? h('div', { className: 'dsh-code-wiki-columns' },
-            h('p', { id: mainlineId, className: 'dsh-code-wiki-mainline' },
+            document.mainline.trim() && h('p', { id: mainlineId, className: 'dsh-code-wiki-mainline' },
               h('strong', null, '主线'), ' ', h('span', null, document.mainline)),
-            h(ChapterDirectory, { chapters: document.chapters, chapterIndex, mainlineId, onSelect: store.selectChapter }),
+            h(ChapterDirectory, { chapters: document.chapters, chapterIndex, mainlineId: document.mainline.trim() ? mainlineId : undefined,
+              onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
               h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
               h('p', {
                 className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
                 role: chapterNotice && chapterFailure ? 'alert' : 'status',
               }, chapterNotice || chapterAnnouncement),
-              content ? h(ChapterContent, { repository: document, content }) : h('div', { className: 'dsh-code-wiki-chapter-action' },
-                h(Button, { type: 'button', variant: 'primary', disabled: Boolean(pending), onClick: store.generateChapter },
-                  pending ? '正在生成本章…' : chapterFailure ? '重试生成本章' : '生成本章'),
-                chapterFailure && h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, chapterFailure))))
+              content ? h(ChapterContent, { repository: document, content })
+                : h('div', { className: 'dsh-code-wiki-chapter-action' }, legacy
+                  ? h('p', { className: 'dsh-code-wiki-feedback' }, '这份历史文档未保存本章正文。')
+                  : h(Fragment, null,
+                    h(Button, { type: 'button', variant: 'primary', disabled: Boolean(pending), onClick: store.generateChapter },
+                      pending ? '正在生成本章…' : chapterFailure ? '重试生成本章' : '生成本章'),
+                    chapterFailure && h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, chapterFailure)))))
             : h('div', { className: 'dsh-code-wiki-library' },
               formOpen && h(SourceForm, { id: formId, draft, onChange: store.changeDraft, onSubmit: store.generateDocument,
                 error, picker, generatingOutline, onChooseFolder: store.chooseFolder, listDirectory }),
-              document ? h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: generatingOutline, onClick: store.openDocument },
-                h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
-                  h(document.source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
-                h('span', null, h('strong', null, document.title),
-                  h('small', null, generated ? `已生成 ${generated} / ${document.chapters.length} 章` : '目录草稿')),
-                h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true }))
-                : !formOpen && h('p', { className: 'dsh-code-wiki-empty' }, '还没有 Wiki'))))
+              h(DocumentLibrary, { summaries, temporary, loading: loadingLibrary, loadError: libraryError, openError, openingId,
+                formOpen, disabled: Boolean(picker) || generatingOutline, onOpen: store.openDocument, onRefresh: store.refreshLibrary }))))
     }
 
     return {

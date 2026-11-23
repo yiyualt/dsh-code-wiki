@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { dirname, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { generateChapter } from './skills/repo-design-wiki/scripts/generate-chapter.mjs'
 import { generateOutline } from './skills/repo-design-wiki/scripts/generate-outline.mjs'
 import { openRepository } from './skills/repo-design-wiki/scripts/read-repository.mjs'
 import { singleLine } from './skills/repo-design-wiki/scripts/wiki-generation.mjs'
 import { openWikiAuthor } from './src/wiki-author.js'
+import { createWikiStorage } from './src/wiki-storage.js'
 
 export const name = 'dsh-code-wiki'
-export const inject = ['connection', 'skills', 'agents', 'agentDefaultModel']
+export const inject = ['connection', 'skills', 'agents', 'agentDefaultModel', 'profileContext']
 
 const skillName = 'repo-design-wiki'
 const skillPath = fileURLToPath(new URL('./skills/repo-design-wiki/SKILL.md', import.meta.url))
@@ -20,7 +21,14 @@ const sourceErrors = new Map([
   ['invalid-repository-commit', 400], ['invalid-chapter-request', 400],
   ['repository-unavailable', 404], ['repository-no-evidence', 422],
   ['github-rate-limited', 429], ['github-request-failed', 502],
+  ['wiki-document-not-found', 404], ['wiki-chapter-not-found', 404],
+  ['wiki-document-read-only', 409], ['wiki-chapter-busy', 409],
+  ['wiki-storage-invalid', 500],
 ])
+
+function wikiProblem(code, message) {
+  return Object.assign(new Error(message), { code })
+}
 
 function generationFailure(error, route, label) {
   const sourceStatus = sourceErrors.get(error?.code)
@@ -85,14 +93,102 @@ function chapterRequest(input) {
     || (previous !== null && (!singleLine(previous?.title, 500)
       || typeof previous.handoff !== 'string' || previous.handoff.length > 1200))
     || (next !== null && !singleLine(next, 500))) {
-    throw Object.assign(new Error('章节因缺少目录、版本或源码位置，无法生成。请重新生成目录。'), {
-      code: 'invalid-chapter-request',
-    })
+    throw wikiProblem('invalid-chapter-request', '章节因缺少目录、版本或源码位置，无法生成。请重新生成目录。')
   }
   return {
     source, commit, mainline, next,
     chapter: { title: chapter.title, sources: chapter.sources.map(({ path, line }) => ({ path, line })) },
     previous: previous && { title: previous.title, handoff: previous.handoff },
+  }
+}
+
+function repositoryInput({ source, location }) {
+  return source === 'github' ? { repositoryUrl: location } : { repositoryPath: location }
+}
+
+function registerDocuments(ctx, storage) {
+  ctx.connection.fetch.register({
+    path: '/api/dsh-code-wiki/documents',
+    methods: ['GET'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      const id = new URL(request.url).searchParams.get('id')
+      try {
+        if (id === null) return Response.json({ documents: await storage.list() }, { headers: responseHeaders })
+        const record = await storage.get(id)
+        if (record) return Response.json(record, { headers: responseHeaders })
+        return Response.json({ error: '找不到这篇文档。' }, { status: 404, headers: responseHeaders })
+      } catch {
+        return Response.json({ error: '无法读取已保存的文档。请重试。' }, { status: 500, headers: responseHeaders })
+      }
+    },
+  })
+}
+
+async function generateSavedChapter({ documentId, chapterIndex }, storage, active, options) {
+  if (typeof documentId !== 'string' || !Number.isSafeInteger(chapterIndex) || chapterIndex < 0) {
+    throw wikiProblem('invalid-chapter-request', '请打开文档并选择要生成的章节。')
+  }
+  const key = documentId + ':' + chapterIndex
+  if (active.has(key)) throw wikiProblem('wiki-chapter-busy', '本章正在另一个请求中生成，请稍后重新打开。')
+  active.add(key)
+  try {
+    const record = await storage.get(documentId)
+    if (!record) throw wikiProblem('wiki-document-not-found', '找不到这篇文档。')
+    if (record.legacy) throw wikiProblem('wiki-document-read-only', '这篇归档文档可在文档库中阅读。')
+    const { document, chapterWork } = record
+    const { mainline, commit, chapters } = document
+    const chapter = chapters[chapterIndex]
+    if (!chapter) throw wikiProblem('wiki-chapter-not-found', '找不到这个章节。')
+
+    const saved = chapterWork[chapterIndex]
+    if (saved?.content) {
+      const { diagrams, sources } = saved.content
+      options.onEvent?.({ type: 'body', content: { ...saved.content, diagrams: [] } })
+      for (const diagram of diagrams) options.onEvent?.({ type: 'diagram', diagram, sources })
+      return { ...saved.content, ...(saved.warning ? { warning: saved.warning } : {}) }
+    }
+
+    const repository = await openRepository(repositoryInput(document), options.signal, commit)
+    const previousChapter = chapters[chapterIndex - 1]
+    const previous = previousChapter ? {
+      title: previousChapter.title,
+      handoff: chapterWork[chapterIndex - 1]?.content?.handoff ?? '',
+    } : null
+    const next = chapters[chapterIndex + 1]?.title ?? null
+    let writes = Promise.resolve()
+    const onEvent = event => {
+      writes = writes.then(async () => {
+        await storage.updateChapter(documentId, chapterIndex, current => event.type === 'body'
+          ? { content: event.content }
+          : {
+              ...current,
+              content: {
+                ...current.content,
+                sources: event.sources,
+                diagrams: [...current.content.diagrams, event.diagram],
+              },
+            })
+        options.onEvent?.(event)
+      })
+      // Keep accepted output queued for storage even if the browser disconnects.
+      void writes.catch(() => {})
+    }
+
+    let result
+    try {
+      result = await generateChapter({ repository, mainline, chapter, previous, next, ...options, onEvent })
+    } finally {
+      await writes
+    }
+    if (result.warning) {
+      await storage.updateChapter(documentId, chapterIndex, current => ({
+        ...current, warning: result.warning,
+      }))
+    }
+    return result
+  } finally {
+    active.delete(key)
   }
 }
 
@@ -142,6 +238,9 @@ function registerGeneration(ctx, route, label, run) {
 }
 
 export function apply(ctx) {
+  const storage = createWikiStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'documents'))
+  const active = new Set()
+  registerDocuments(ctx, storage)
   ctx.skills.registerProvider(() => ({
     name,
     async list({ signal }) {
@@ -160,10 +259,18 @@ export function apply(ctx) {
 
   registerGeneration(ctx, 'outline', '目录', async (input, options) => {
     const repository = await openRepository(input, options.signal)
-    return generateOutline({ repository, ...options })
+    const outline = await generateOutline({ repository, ...options })
+    const origin = repository.webUrl
+      ? { source: 'github', location: repository.webUrl }
+      : { source: 'local', location: input.repositoryPath }
+    const record = await storage.create({ ...origin, title: repository.label, ...outline })
+    return { id: record.id, ...outline }
   })
 
   registerGeneration(ctx, 'chapter', '章节正文和图', async (input, options) => {
+    if (input?.documentId !== undefined || input?.chapterIndex !== undefined) {
+      return generateSavedChapter(input, storage, active, options)
+    }
     const { source, commit, ...context } = chapterRequest(input)
     const repository = await openRepository(source, options.signal, commit)
     return generateChapter({ repository, ...context, ...options })
