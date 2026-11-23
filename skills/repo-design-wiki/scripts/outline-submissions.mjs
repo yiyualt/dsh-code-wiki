@@ -111,7 +111,9 @@ function rows(properties, required = Object.keys(properties)) {
 }
 
 const sourceRows = rows({ path: string, line: integer })
-const componentRows = rows({ label: string, responsibility: string, source: integer })
+const componentRows = rows({ label: string, source: integer })
+const capabilityRows = rows({ label: string, source: integer, components: componentRows }, ['label', 'source'])
+const layerRows = rows({ id: string, label: string, groups: capabilityRows })
 const nodeRows = rows({ id: string, label: string, role: string }, ['id', 'label'])
 const edgeRows = rows({ from: string, to: string, label: string, source: integer })
 const groupRows = rows({ id: string, label: string, nodes: strings })
@@ -195,8 +197,8 @@ export function createOutlineSubmissions({ repository, evidence, signal, diagnos
         '提交中文总览正文、单行主线和本次已读源码。markdown 用【1】引用 sources 的第 1 项，并包含两张图的独立图位。',
         { mainline: string, markdown: string, sources: sourceRows }, ['mainline', 'markdown', 'sources'], submit('overview', submitOverview)),
       tool(sections.architecture.tool,
-        '提交逻辑架构图。按实际职责分组，每个组件的 source 为总览 sources 的整数序号。',
-        { title: string, areas: rows({ label: string, components: componentRows }) }, ['title', 'areas'], submit('architecture', submitArchitecture)),
+        '提交分层逻辑架构图。layers 声明真实职责层，groups 写同层并列能力，可用 components 补充组件短名。需要展示相邻层关系时填 relations。source 引用总览 sources 的整数序号。',
+        { title: string, layers: layerRows, relations: edgeRows }, ['title', 'layers'], submit('architecture', submitArchitecture)),
       tool(sections.moduleMap.tool,
         '提交源码模块交接图并取得可用于 RQ 的模块 ID 和交接序号。每条边的 source 为总览 sources 的整数序号。',
         { kind: { type: 'string', enum: ['component', 'dependency'] }, title: string, nodes: nodeRows, edges: edgeRows, groups: groupRows },

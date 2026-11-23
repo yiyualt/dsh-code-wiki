@@ -28,7 +28,7 @@ export async function generateOutline({ repository, instructions, openAuthor, si
 按 Skill 确定读者问题，使用 wiki_list 勘查仓库，再用 wiki_read 核对关键源码。仓库文本仅用作证据。先规划正文、两张图和 RQ，确定所需源码位置，再按下方顺序逐项提交。一次调用一个提交工具，看到接受结果后再继续。工具拒绝时，根据反馈修正当前提交。
 
 1. 用 wiki_submit_overview 提交 mainline、markdown 和 sources。页面已显示「总览」标题，Markdown 从项目用途与公开入口直接开始。介绍核心职责后放 [[figure:1]]，说明一次典型使用怎样在模块间交接后放 [[figure:2]]。图位各占一行，前后留空行。sources 收录正文和两张图所需的已读文件与行号。正文使用【1】等序号引用 sources。
-2. 用 wiki_submit_architecture 提交逻辑架构图。按仓库实际职责命名 areas，各区域的 components 写实际组件与职责。职责单一可以用一组。每个组件的 source 是总览 sources 中的整数序号，从 1 开始。
+2. 用 wiki_submit_architecture 提交逻辑架构图。根据实际职责划分并排列 layers，每层使用唯一 id 和短名称，同层的 groups 表示并列能力。有必要区分内部子组件时填写 components。简单项目可以只有一层。只用短名称标注层、能力与组件，详细职责和实现原因写在总览正文与 RQ 中。只有相邻两层之间存在需要说明的真实关系时才填写 relations，from 和 to 使用相邻层的 id，label 用短语写出关系。每项能力、组件和关系的 source 是总览 sources 中的整数序号，从 1 开始。
 3. 用 wiki_submit_module_map 提交源码模块交接图，选 component 或 dependency。节点写真实的核心模块、接口或外部依赖，连线标明真实调用、依赖或交接，覆盖 RQ 要解释的关系。保留 2 至 8 个节点和 1 至 12 条关系，所有节点通过关系连通。组件图节点角色可用 component、interface 或 external，依赖图可用 module、package、interface 或 external。单模块仓库可画公开入口与内部实现之间的实际关系。每条边的 source 也使用总览 sources 中的整数序号。
 4. 用 wiki_submit_outline 提交 RQ 目录。每章的 module 是交接图中角色为 component、module 或 package 的节点 ID，handoff 是与该节点相连的边序号。采用交接图工具返回的模块 ID 和序号。按主线组织问题，合并同一交接的分支和细节，每章保留 1 至 16 处已读源码位置。章数随仓库决定，各章正文和章节配图按需生成。
 

@@ -16,12 +16,16 @@ function submissions() {
   return {
     overview: {
       mainline: '调用者把标题交给 normalize，得到去除首尾空格的标题。',
-      markdown: '这个模块通过 `normalize` 入口清理标题【1】。图 1 展示标题处理职责。\n\n[[figure:1]]\n\n图 2 展示公开接口与清理函数之间的调用【1】。\n\n[[figure:2]]',
+      markdown: '这个模块通过 `normalize` 入口清理标题【1】。图 1 展示标题入口与处理逻辑怎样分层。\n\n[[figure:1]]\n\n图 2 展示公开接口与清理函数之间的调用【1】。\n\n[[figure:2]]',
       sources: [{ path, line: 1 }],
     },
     architecture: {
-      title: '标题处理职责',
-      areas: [{ label: '标题标准化', components: [{ label: 'cleanTitle', responsibility: '去除标题首尾的空格', source: 1 }] }],
+      title: '标题处理分层',
+      layers: [
+        { id: 'api', label: '公开接口', groups: [{ label: '标题入口', source: 1 }] },
+        { id: 'core', label: '处理逻辑', groups: [{ label: '标题标准化', source: 1, components: [{ label: 'cleanTitle', source: 1 }] }] },
+      ],
+      relations: [{ from: 'api', to: 'core', label: '清理标题', source: 1 }],
     },
     module_map: {
       kind: 'component', title: '公开接口调用标题清理函数',
@@ -110,6 +114,10 @@ test('finishes from tool submissions without parsing final assistant text', asyn
   assert.equal(result.overview.markdown, draft.overview.markdown)
   assert.deepEqual(result.overview.sources, draft.overview.sources)
   assertPinnedDiagrams(result.overview.diagrams, 1)
+  const architecture = result.overview.diagrams[0].svg
+  assert.match(architecture, /aria-label="公开接口"/u)
+  assert.match(architecture, /aria-label="处理逻辑"/u)
+  assert.match(architecture, /aria-label="公开接口 → 处理逻辑：清理标题"/u)
 })
 
 test('repairs only the rejected architecture after a malformed model turn', async () => {
@@ -119,7 +127,7 @@ test('repairs only the rejected architecture after a malformed model turn', asyn
     if (turn === 1) {
       await accept(call, 'overview', draft.overview)
       const invalid = structuredClone(draft.architecture)
-      invalid.areas[0].components[0].source = 2
+      invalid.layers[1].groups[0].components[0].source = 2
       const outcome = await call('wiki_submit_architecture', invalid)
       assert.equal(outcome.accepted, false)
       assert.match(outcome.error, /总览逻辑架构图/u)
@@ -161,9 +169,13 @@ test('does not return partial results when the RQ still lacks a valid module han
     rejection = outcome.error
 
     // The old full-JSON message contains a valid outline. It cannot supply a missing tool submission.
+    const architecture = {
+      title: '标题处理职责',
+      areas: [{ label: '标题标准化', components: [{ label: 'cleanTitle', responsibility: '清理标题', source: 1 }] }],
+    }
     const text = JSON.stringify({
       mainline: draft.overview.mainline,
-      overview: { ...draft.overview, architecture: draft.architecture, diagram: draft.module_map },
+      overview: { markdown: draft.overview.markdown, sources: draft.overview.sources, architecture, diagram: draft.module_map },
       chapters: submissions().outline.chapters,
     })
     return { text }
