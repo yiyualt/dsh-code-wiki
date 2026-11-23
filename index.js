@@ -61,8 +61,7 @@ function registerGeneration(ctx, route, label, run) {
     requestBody: 'buffered',
     async fetch(request) {
       const input = await request.json().catch(() => null)
-      const deadline = AbortSignal.timeout(180_000)
-      const signal = AbortSignal.any([request.signal, deadline])
+      const { signal } = request
       try {
         const skill = await ctx.skills.get(skillName, { signal })
         if (!skill?.content) return wikiError('无法读取代码百科 Skill。', 500)
@@ -72,8 +71,7 @@ function registerGeneration(ctx, route, label, run) {
         })
         return Response.json(result, { headers: responseHeaders })
       } catch (error) {
-        if (request.signal.aborted) throw error
-        if (deadline.aborted) return wikiError(`生成${label}超时，请重试。`, 504)
+        if (signal.aborted) throw error
         const sourceStatus = sourceErrors.get(error?.code)
         if (sourceStatus) return wikiError(error.message, sourceStatus)
         if (error?.code === 'wiki-model-unavailable') return wikiError('暂时无法使用 DSH 当前模型。', 502)

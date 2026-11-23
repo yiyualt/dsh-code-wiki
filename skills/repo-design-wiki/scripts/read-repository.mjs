@@ -47,11 +47,9 @@ function encodePath(path) {
 }
 
 async function readGitHub(url, signal, limit, raw = false) {
-  const deadline = AbortSignal.timeout(15_000)
-  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline
   try {
     const response = await fetch(url, {
-      signal: requestSignal, redirect: 'manual',
+      signal, redirect: 'manual',
       headers: { Accept: raw ? 'text/plain' : 'application/vnd.github+json', 'User-Agent': 'dsh-code-wiki' },
     })
     if (!response.ok) {
@@ -130,7 +128,7 @@ function git(cwd, args, signal, maxBuffer = treeLimit, encoding = 'utf8') {
     GIT_NO_REPLACE_OBJECTS: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0',
   })
   return execGit('git', ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args], {
-    cwd, env, signal, timeout: 15_000, encoding, maxBuffer, windowsHide: true,
+    cwd, env, signal, encoding, maxBuffer, windowsHide: true,
   }).then(({ stdout }) => stdout)
 }
 
