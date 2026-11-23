@@ -93,7 +93,7 @@ function selectedFile(files, path) {
   return files.get(path)
 }
 
-async function openGitHub(repositoryUrl, signal) {
+async function openGitHub(repositoryUrl, signal, revision) {
   const match = typeof repositoryUrl === 'string'
     && /^https:\/\/github\.com\/([a-z\d](?:[a-z\d-]{0,37}[a-z\d])?)\/([a-z\d_.-]{1,100})\/?$/i.exec(repositoryUrl.trim())
   const repo = match && match[2].replace(/\.git$/i, '')
@@ -102,10 +102,13 @@ async function openGitHub(repositoryUrl, signal) {
   }
   const label = `${match[1]}/${repo}`
   const api = `https://api.github.com/repos/${label}`
-  const [head] = await readGitHub(`${api}/commits?per_page=1`, signal, 512 * 1024)
+  const head = revision
+    ? await readGitHub(`${api}/git/commits/${revision}`, signal, 512 * 1024)
+    : (await readGitHub(`${api}/commits?per_page=1`, signal, 512 * 1024))[0]
   const commit = head?.sha
-  const treeId = head?.commit?.tree?.sha
+  const treeId = (revision ? head?.tree : head?.commit?.tree)?.sha
   if (typeof commit !== 'string' || !gitHubId.test(commit) || typeof treeId !== 'string' || !gitHubId.test(treeId)) throw noEvidence()
+  if (revision && commit !== revision) throw noEvidence()
   const { tree, truncated } = await readGitHub(`${api}/git/trees/${treeId}?recursive=1`, signal, treeLimit)
   const files = new Map((Array.isArray(tree) ? tree : []).filter(entry => entry.type === 'blob'
     && regularModes.has(entry.mode) && entry.size !== 0 && eligiblePath(entry.path)).map(entry => [entry.path, entry.path]))
@@ -130,7 +133,7 @@ function git(cwd, args, signal, maxBuffer = treeLimit, encoding = 'utf8') {
   }).then(({ stdout }) => stdout)
 }
 
-async function openLocal(repositoryPath, signal) {
+async function openLocal(repositoryPath, signal, revision) {
   if (typeof repositoryPath !== 'string' || !isAbsolute(repositoryPath) || repositoryPath.includes('\0')) {
     throw repositoryError('invalid-local-path', '请选择本地 Git 工作区的绝对路径。')
   }
@@ -139,12 +142,15 @@ async function openLocal(repositoryPath, signal) {
     const directory = await realpath(repositoryPath)
     root = (await git(directory, ['rev-parse', '--show-toplevel'], signal)).replace(/\r?\n$/, '')
     if (!isAbsolute(root)) throw new Error('Missing worktree root')
-    commit = (await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'], signal)).trim()
-    if (!gitId.test(commit)) throw new Error('Unexpected Git commit')
+    commit = (await git(root, ['rev-parse', '--verify', `${revision ?? 'HEAD'}^{commit}`], signal)).trim()
+    if (!gitId.test(commit) || (revision && commit !== revision)) throw new Error('Unexpected Git commit')
     entries = await git(root, ['ls-tree', '-r', '-z', '--full-tree', commit], signal)
   } catch {
     signal?.throwIfAborted()
-    throw repositoryError('repository-unavailable', '无法打开本地 Git 仓库的 HEAD 提交，请检查目录及提交状态。')
+    const message = revision
+      ? '无法读取目录对应的 Git 提交，请检查仓库目录或重新生成目录。'
+      : '无法打开本地 Git 仓库的 HEAD 提交，请检查目录及提交状态。'
+    throw repositoryError('repository-unavailable', message)
   }
 
   const files = new Map()
@@ -170,10 +176,17 @@ async function openLocal(repositoryPath, signal) {
   }
 }
 
-export async function openRepository(input, signal) {
+export async function openRepository(input, signal, revision) {
   signal?.throwIfAborted()
+  if (revision !== undefined && (typeof revision !== 'string' || !gitId.test(revision))) {
+    throw repositoryError('invalid-repository-commit', '目录缺少有效的仓库提交，请重新生成目录。')
+  }
+  const commit = revision?.toLowerCase()
   const keys = input && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : []
-  if (keys.length === 1 && keys[0] === 'repositoryUrl') return openGitHub(input.repositoryUrl, signal)
-  if (keys.length === 1 && keys[0] === 'repositoryPath') return openLocal(input.repositoryPath, signal)
+  if (keys.length === 1 && keys[0] === 'repositoryUrl') {
+    if (commit && !gitHubId.test(commit)) throw repositoryError('invalid-repository-commit', '目录缺少有效的 GitHub 提交。')
+    return openGitHub(input.repositoryUrl, signal, commit)
+  }
+  if (keys.length === 1 && keys[0] === 'repositoryPath') return openLocal(input.repositoryPath, signal, commit)
   throw repositoryError('invalid-repository-source', '请提供一个 GitHub 地址或本地 Git 仓库路径。')
 }

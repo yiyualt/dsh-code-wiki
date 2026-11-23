@@ -53,10 +53,10 @@ export async function openWikiAuthor(ctx, { tools, signal }) {
       const turn = events().slice(cursor)
       const end = turn.findLast(event => event.type === 'turn/end')?.data
       if (end?.reason?.error || end?.reason?.failure) throw authorError('wiki-model-unavailable')
-      if (end?.reason?.kind !== 'completed') throw authorError('wiki-outline-invalid')
+      if (end?.reason?.kind !== 'completed') throw authorError('wiki-author-invalid')
       const content = turn.findLast(event => event.type === 'assistant/message' && event.data?.turn === end.turn)
         ?.data?.message?.content
-      if (!Array.isArray(content) || content.some(block => block.type === 'tool-call')) throw authorError('wiki-outline-invalid')
+      if (!Array.isArray(content) || content.some(block => block.type === 'tool-call')) throw authorError('wiki-author-invalid')
       return content.filter(block => block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text).join('\n\n')
     },

@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-wiki",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "description": "A repository wiki panel for DeepSeek Harness.",
   "type": "module",
   "engines": {

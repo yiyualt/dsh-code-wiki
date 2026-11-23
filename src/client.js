@@ -9,6 +9,11 @@ window.__ModuleLoader__.load({
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
     const outlineError = '无法生成目录，请重试。'
+    const chapterError = '无法生成本章，请重试。'
+    const commitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
+    const diagramLabels = new Map([
+      ['flow', '流程图'], ['data', '数据流图'], ['dependency', '依赖图'], ['state', '状态图'],
+    ])
     const markdownLabels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
@@ -29,32 +34,77 @@ window.__ModuleLoader__.load({
       return { source: 'local', title, location }
     }
 
-    async function loadOutline(repository) {
-      const input = repository.source === 'github'
+    function repositoryInput(repository) {
+      return repository.source === 'github'
         ? { repositoryUrl: repository.location }
         : { repositoryPath: repository.location }
-      const response = await fetch(new URL('api/dsh-code-wiki/outline', document.baseURI), {
+    }
+
+    function hasText(value) {
+      return typeof value === 'string' && Boolean(value.trim())
+    }
+
+    function validSources(sources) {
+      return Array.isArray(sources) && sources.length > 0 && sources.every(source =>
+        hasText(source?.path) && source.path.isWellFormed() && !/[\\\u0000-\u001f\u007f]/.test(source.path) &&
+        source.path.split('/').every(part => part && part !== '.' && part !== '..') &&
+        Number.isSafeInteger(source.line) && source.line > 0)
+    }
+
+    async function requestWiki(action, input, fallbackError) {
+      const response = await fetch(new URL(`api/dsh-code-wiki/${action}`, document.baseURI), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(input),
       })
       const result = await response.json().catch(() => null)
-      if (!response.ok) {
-        return { error: typeof result?.error === 'string' && result.error.trim() ? result.error : outlineError }
-      }
-      const mainline = typeof result?.mainline === 'string' ? result.mainline.trim() : ''
-      const chapters = result?.chapters
-      if (!mainline || !Array.isArray(chapters) || !chapters.length || chapters.some(chapter =>
-        typeof chapter?.title !== 'string' || !chapter.title.trim() || typeof chapter.markdown !== 'string')) {
+      if (!response.ok) return { error: hasText(result?.error) ? result.error : fallbackError }
+      return { result }
+    }
+
+    async function loadOutline(repository) {
+      const { result, error } = await requestWiki('outline', repositoryInput(repository), outlineError)
+      if (error) return { error }
+      const { mainline, commit, chapters } = result ?? {}
+      if (!hasText(mainline) || typeof commit !== 'string' || !commitId.test(commit) ||
+        (repository.source === 'github' && commit.length !== 40) ||
+        !Array.isArray(chapters) || !chapters.length || chapters.some(chapter =>
+          !hasText(chapter?.title) || !validSources(chapter.sources))) {
         return { error: outlineError }
       }
-      return { mainline, chapters }
+      return { mainline: mainline.trim(), commit, chapters }
+    }
+
+    function validDiagram(diagram, sourceCount) {
+      if (!diagramLabels.has(diagram?.kind) || !hasText(diagram.title) ||
+        !Array.isArray(diagram.nodes) || !diagram.nodes.length || !Array.isArray(diagram.edges) || !diagram.edges.length ||
+        !diagram.nodes.every(node => hasText(node?.id) && hasText(node.label))) return false
+      const nodes = new Set(diagram.nodes.map(node => node.id))
+      return nodes.size === diagram.nodes.length && diagram.edges.every(edge =>
+        nodes.has(edge?.from) && nodes.has(edge.to) && hasText(edge.label) &&
+        Number.isSafeInteger(edge.source) && edge.source > 0 && edge.source <= sourceCount)
+    }
+
+    async function loadChapter(repository, chapterIndex, previousHandoff) {
+      const { commit, mainline, chapters } = repository
+      const { title, sources } = chapters[chapterIndex]
+      const previous = chapters[chapterIndex - 1]
+      const next = chapters[chapterIndex + 1]
+      const { result, error } = await requestWiki('chapter', {
+        ...repositoryInput(repository), commit, mainline, chapter: { title, sources },
+        previous: previous ? { title: previous.title, handoff: previousHandoff } : null,
+        next: next?.title ?? null,
+      }, chapterError)
+      if (error) return { error }
+      if (!hasText(result?.markdown) || typeof result.handoff !== 'string' || !validSources(result.sources) ||
+        !validDiagram(result.diagram, result.sources.length)) return { error: chapterError }
+      return { content: result }
     }
 
     function createWikiStore(pickDirectory) {
       let snapshot = {
         draft: { source: 'github', repositoryUrl: '', repositoryPath: '' },
-        view: 'library', document: null, chapterIndex: 0, picker: null, generatingOutline: false, error: '',
+        view: 'library', document: null, chapterIndex: 0, chapterWork: [], picker: null, generatingOutline: false, error: '',
       }
       const listeners = new Set()
 
@@ -108,14 +158,33 @@ window.__ModuleLoader__.load({
 
           update({ generatingOutline: true, error: '' })
           try {
-            const { mainline, chapters, error } = await loadOutline(repository)
+            const { mainline, commit, chapters, error } = await loadOutline(repository)
             if (error) {
               update({ generatingOutline: false, error })
               return
             }
-            update({ document: { ...repository, mainline, chapters }, chapterIndex: 0, view: 'reader', generatingOutline: false })
+            update({ document: { ...repository, mainline, commit, chapters }, chapterIndex: 0, chapterWork: [], view: 'reader', generatingOutline: false })
           } catch {
             update({ generatingOutline: false, error: outlineError })
+          }
+        },
+        async generateChapter() {
+          const { document, chapterIndex, chapterWork, view } = snapshot
+          const current = chapterWork[chapterIndex]
+          if (view !== 'reader' || !document?.chapters[chapterIndex] || current?.pending || current?.content) return
+
+          function updateChapter(work) {
+            if (snapshot.document !== document) return
+            const chapters = [...snapshot.chapterWork]
+            chapters[chapterIndex] = work
+            update({ chapterWork: chapters })
+          }
+
+          updateChapter({ pending: true })
+          try {
+            updateChapter(await loadChapter(document, chapterIndex, chapterWork[chapterIndex - 1]?.content?.handoff ?? ''))
+          } catch {
+            updateChapter({ error: chapterError })
           }
         },
       }
@@ -228,8 +297,59 @@ window.__ModuleLoader__.load({
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
 
+    function ChapterSource({ repository, source, number }) {
+      const position = `${source.path}:${source.line}`
+      const label = number ? `【${number}】` : h('code', null, position)
+      if (repository.source === 'local') return number ? h('span', { title: position }, label) : label
+      const path = source.path.split('/').map(part => encodeURIComponent(part)).join('/')
+      return h('a', {
+        href: `${repository.location}/blob/${repository.commit}/${path}#L${source.line}`,
+        target: '_blank', rel: 'noreferrer', title: position,
+        'aria-label': number ? `${label} 在 GitHub 查看 ${position}` : undefined,
+      }, label)
+    }
+
+    function ChapterDiagram({ repository, diagram, sources }) {
+      const titleId = useId()
+      const nodes = new Map(diagram.nodes.map(node => [node.id, node.label]))
+      const outgoing = new Map()
+      const incoming = new Set()
+      for (const edge of diagram.edges) {
+        const edges = outgoing.get(edge.from) ?? []
+        edges.push(edge)
+        outgoing.set(edge.from, edges)
+        incoming.add(edge.to)
+      }
+
+      return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId },
+        h('figcaption', { id: titleId },
+          h('span', { className: 'dsh-code-wiki-diagram-kind' }, diagramLabels.get(diagram.kind)), ' ', diagram.title),
+        h('ul', { className: 'dsh-code-wiki-diagram-groups', role: 'list' },
+          diagram.nodes.filter(node => outgoing.has(node.id) || !incoming.has(node.id)).map(node => {
+            const edges = outgoing.get(node.id)
+            return h('li', { className: 'dsh-code-wiki-diagram-group', key: node.id },
+              h('strong', { className: 'dsh-code-wiki-diagram-node' }, node.label),
+              edges && h('ul', { className: 'dsh-code-wiki-diagram-edges', role: 'list', 'aria-label': '指向' },
+                edges.map((edge, index) => h('li', { className: 'dsh-code-wiki-diagram-edge', key: index },
+                  h('span', { className: 'dsh-code-wiki-diagram-connector' },
+                    h('span', null, edge.label, ' ', h(ChapterSource, { repository, source: sources[edge.source - 1], number: edge.source })),
+                    h('span', { className: 'dsh-code-wiki-diagram-arrow', 'aria-hidden': true })),
+                  h('span', { className: 'dsh-code-wiki-diagram-node' }, nodes.get(edge.to))))))
+          })))
+    }
+
+    function ChapterContent({ repository, content }) {
+      return h('div', { className: 'dsh-code-wiki-chapter-content' },
+        h('div', { className: 'dsh-code-wiki-prose' },
+          h(MarkdownText, { text: content.markdown, labels: markdownLabels, omitHtml: true })),
+        h(ChapterDiagram, { repository, diagram: content.diagram, sources: content.sources }),
+        h('section', { className: 'dsh-code-wiki-sources' },
+          h('h2', null, '源码位置'),
+          h('ol', null, content.sources.map((source, index) => h('li', { key: index }, h(ChapterSource, { repository, source }))))))
+    }
+
     function CodeWikiPage({ store, listDirectory }) {
-      const { draft, view, document, chapterIndex, picker, generatingOutline, error } = useSyncExternalStore(store.subscribe, store.getSnapshot)
+      const { draft, view, document, chapterIndex, chapterWork, picker, generatingOutline, error } = useSyncExternalStore(store.subscribe, store.getSnapshot)
       const formId = useId()
       const mainlineId = useId()
       const page = useRef(null)
@@ -245,6 +365,8 @@ window.__ModuleLoader__.load({
       }, [chapterIndex, reading])
 
       const chapter = document?.chapters[chapterIndex]
+      const { pending, content, error: chapterFailure } = chapterWork[chapterIndex] ?? {}
+      const generated = chapterWork.filter(work => work?.content).length
       return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': reading ? '' : undefined, ref: page },
         h('style', null, wikiStyles),
         h('div', { className: 'dsh-code-wiki-shell' },
@@ -269,15 +391,19 @@ window.__ModuleLoader__.load({
             h(ChapterDirectory, { chapters: document.chapters, chapterIndex, mainlineId, onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
               h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
-              chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
-                h(MarkdownText, { text: chapter.markdown, labels: markdownLabels, omitHtml: true }))))
+              h('p', { className: 'dsh-code-wiki-announcement', role: 'status' }, pending ? '正在生成本章…' : content ? '本章已生成。' : ''),
+              content ? h(ChapterContent, { repository: document, content }) : h('div', { className: 'dsh-code-wiki-chapter-action' },
+                h(Button, { type: 'button', variant: 'primary', disabled: Boolean(pending), onClick: store.generateChapter },
+                  pending ? '正在生成本章…' : chapterFailure ? '重试生成本章' : '生成正文和图'),
+                chapterFailure && h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, chapterFailure))))
             : h('div', { className: 'dsh-code-wiki-library' },
               formOpen && h(SourceForm, { id: formId, draft, onChange: store.changeDraft, onSubmit: store.generateDocument,
                 error, picker, generatingOutline, onChooseFolder: store.chooseFolder, listDirectory }),
               document ? h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: generatingOutline, onClick: store.openDocument },
                 h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
                   h(document.source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
-                h('span', null, h('strong', null, document.title), h('small', null, '目录草稿')),
+                h('span', null, h('strong', null, document.title),
+                  h('small', null, generated ? `已生成 ${generated} / ${document.chapters.length} 章` : '目录草稿')),
                 h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true }))
                 : !formOpen && h('p', { className: 'dsh-code-wiki-empty' }, '还没有 Wiki'))))
     }

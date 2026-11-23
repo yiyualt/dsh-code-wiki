@@ -406,8 +406,195 @@
 .dsh-code-wiki-article h1:focus,
 .dsh-code-wiki-form-card h2:focus { outline: none; }
 
-.dsh-code-wiki-prose { padding: clamp(20px, 3.8cqi, 38px) var(--wiki-article-pad); }
+.dsh-code-wiki-chapter-action,
+.dsh-code-wiki-chapter-content {
+  display: grid;
+  min-width: 0;
+  padding: clamp(20px, 3.8cqi, 38px) var(--wiki-article-pad);
+}
+
+.dsh-code-wiki-chapter-action { justify-items: start; gap: 12px; }
+.dsh-code-wiki-chapter-content { gap: 24px; }
+.dsh-code-wiki-prose { min-width: 0; }
 .dsh-code-wiki-prose > div { font-size: calc(var(--dsh-content-font-size, 14px) + 1px); line-height: 1.75; }
+
+.dsh-code-wiki-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.dsh-code-wiki-diagram {
+  container: code-wiki-diagram / inline-size;
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 9px;
+  background: var(--wiki-canvas);
+}
+
+.dsh-code-wiki-diagram figcaption,
+.dsh-code-wiki-sources h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 670;
+  line-height: 1.5;
+}
+
+.dsh-code-wiki-diagram-kind {
+  margin-inline-end: 5px;
+  color: var(--wiki-muted);
+  font-size: 12px;
+}
+
+.dsh-code-wiki-diagram-groups,
+.dsh-code-wiki-diagram-edges {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dsh-code-wiki-diagram-group,
+.dsh-code-wiki-diagram-edge {
+  display: grid;
+  align-items: center;
+  min-width: 0;
+}
+
+.dsh-code-wiki-diagram-group {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.5fr);
+  padding-block: 8px;
+  border-block-start: 1px solid var(--wiki-line);
+}
+
+.dsh-code-wiki-diagram-node {
+  position: relative;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--wiki-line);
+  border-radius: 6px;
+  background: var(--wiki-paper);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-diagram-group > .dsh-code-wiki-diagram-node {
+  border-color: color-mix(in srgb, var(--wiki-accent) 55%, var(--wiki-line));
+  background: color-mix(in srgb, var(--wiki-accent) 7%, var(--wiki-paper));
+}
+
+.dsh-code-wiki-diagram-group:has(.dsh-code-wiki-diagram-edges) > .dsh-code-wiki-diagram-node {
+  margin-inline-end: 12px;
+}
+
+.dsh-code-wiki-diagram-group:has(.dsh-code-wiki-diagram-edges) > .dsh-code-wiki-diagram-node::after {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 100%;
+  width: 13px;
+  border-block-start: 1px solid var(--wiki-accent);
+  content: '';
+}
+
+.dsh-code-wiki-diagram-edges { border-inline-start: 1px solid var(--wiki-accent); }
+
+.dsh-code-wiki-diagram-edge {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 6px;
+}
+
+.dsh-code-wiki-diagram-connector {
+  display: grid;
+  grid-template-rows: 1fr auto 1fr;
+  align-self: stretch;
+  gap: 3px;
+  min-width: 0;
+  color: var(--wiki-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-diagram-connector > span:first-child { align-self: end; padding-inline: 5px; }
+.dsh-code-wiki-diagram-connector a { white-space: nowrap; }
+
+.dsh-code-wiki-diagram-arrow {
+  position: relative;
+  margin-inline-end: -2px;
+  border-block-start: 1px solid var(--wiki-accent);
+}
+
+.dsh-code-wiki-diagram-arrow::after {
+  position: absolute;
+  inset-block-start: -4px;
+  inset-inline-end: 1px;
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  border: solid var(--wiki-accent);
+  border-width: 1px 1px 0 0;
+  content: '';
+}
+
+.dsh-code-wiki-diagram a,
+.dsh-code-wiki-sources a { color: var(--wiki-accent); }
+
+.dsh-code-wiki-sources ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-inline-start: 26px;
+  list-style: decimal;
+  color: var(--wiki-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dsh-code-wiki-sources code { white-space: normal; overflow-wrap: anywhere; }
+
+@container code-wiki-diagram (max-width: 410px) {
+  .dsh-code-wiki-diagram-group,
+  .dsh-code-wiki-diagram-edge { grid-template-columns: minmax(0, 1fr); gap: 0; }
+
+  .dsh-code-wiki-diagram-node { text-align: start; }
+
+  .dsh-code-wiki-diagram-group:has(.dsh-code-wiki-diagram-edges) > .dsh-code-wiki-diagram-node { margin: 0; }
+  .dsh-code-wiki-diagram-group > .dsh-code-wiki-diagram-node::after { display: none; }
+  .dsh-code-wiki-diagram-edges { margin-inline-start: 12px; padding-inline-start: 9px; }
+
+  .dsh-code-wiki-diagram-connector {
+    display: flex;
+    align-items: center;
+    padding-block: 5px;
+    text-align: start;
+  }
+
+  .dsh-code-wiki-diagram-connector > span:first-child { align-self: center; }
+
+  .dsh-code-wiki-diagram-arrow {
+    flex: none;
+    order: -1;
+    height: 15px;
+    margin: 0 0 0 8px;
+    border: 0;
+    border-inline-start: 1px solid var(--wiki-accent);
+  }
+
+  .dsh-code-wiki-diagram-arrow::after {
+    inset: auto auto 0 -4px;
+    transform: rotate(135deg);
+  }
+}
 
 @container code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {
