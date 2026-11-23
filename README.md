@@ -1,6 +1,6 @@
 # DSH 代码百科
 
-在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据仓库已提交的源码生成整仓总览、逻辑架构图、模块交接图和 RQ 目录。打开新 Wiki 默认显示总览。逻辑架构图用横向层级、能力组和简短组件标签展示系统结构，具体职责在正文里说明。模块交接图展示实际的调用或数据交接。每章开头标明对应模块和交接，可跳到总览里的模块图。点击「生成本章」后按需生成正文、源码引用和需要的图。章节使用拟定目录时的 Git 提交。
+在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据仓库已提交的源码生成整仓总览、逻辑架构图、模块交接图和 RQ 目录。打开新 Wiki 默认显示总览。逻辑架构图用横向层级、能力组和简短组件标签展示系统结构。多个层共同使用的能力可放在侧边竖列，并标明服务的层。具体职责在正文里说明。模块交接图展示实际的调用或数据交接。每章开头标明对应模块和交接，可跳到总览里的模块图。点击「生成本章」后按需生成正文、源码引用和需要的图。章节使用拟定目录时的 Git 提交。
 
 ## 本地安装
 
@@ -10,7 +10,7 @@
 npm ci
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.33.0.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.34.0.tgz
 ```
 
 所选仓库的源码片段会交给当前模型用于生成总览、目录和章节正文。Skill 根据本章内容选图，并把图形数据绘成附源码引用的 SVG。插件负责在阅读页显示。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。
