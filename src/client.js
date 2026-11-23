@@ -1,4 +1,3 @@
-import { layoutDiagram } from './diagram-layout.js'
 import wikiStyles from './wiki.css'
 
 window.__ModuleLoader__.load({
@@ -14,9 +13,6 @@ window.__ModuleLoader__.load({
     const outlineError = '无法生成目录，请重试。'
     const chapterError = '无法生成本章，请重试。'
     const commitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
-    const diagramLabels = new Map([
-      ['flow', '流程图'], ['data', '数据流图'], ['dependency', '依赖图'], ['state', '状态图'],
-    ])
     const markdownLabels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
@@ -78,14 +74,12 @@ window.__ModuleLoader__.load({
       return { mainline: mainline.trim(), commit, chapters }
     }
 
-    function validDiagram(diagram, sourceCount) {
-      if (!diagramLabels.has(diagram?.kind) || !hasText(diagram.title) ||
-        !Array.isArray(diagram.nodes) || !diagram.nodes.length || !Array.isArray(diagram.edges) || !diagram.edges.length ||
-        !diagram.nodes.every(node => hasText(node?.id) && hasText(node.label))) return false
-      const nodes = new Set(diagram.nodes.map(node => node.id))
-      return nodes.size === diagram.nodes.length && diagram.edges.every(edge =>
-        nodes.has(edge?.from) && nodes.has(edge.to) && hasText(edge.label) &&
-        Number.isSafeInteger(edge.source) && edge.source > 0 && edge.source <= sourceCount)
+    function validDiagram(diagram) {
+      const { label, title, width, height, svg } = diagram ?? {}
+      return hasText(label) && hasText(title) &&
+        Number.isInteger(width) && width > 0 && width <= 4096 &&
+        Number.isInteger(height) && height > 0 && height <= 4096 &&
+        typeof svg === 'string' && svg.length <= 160_000 && /^<svg(?:\s|>)[\s\S]*<\/svg>$/.test(svg.trim())
     }
 
     async function loadChapter(repository, chapterIndex, previousHandoff) {
@@ -100,7 +94,7 @@ window.__ModuleLoader__.load({
       }, chapterError)
       if (error) return { error }
       if (!hasText(result?.markdown) || typeof result.handoff !== 'string' || !validSources(result.sources) ||
-        !Array.isArray(result.diagrams) || result.diagrams.some(diagram => !validDiagram(diagram, result.sources.length))) {
+        !Array.isArray(result.diagrams) || !result.diagrams.every(validDiagram)) {
         return { error: chapterError }
       }
       return { content: result }
@@ -302,110 +296,65 @@ window.__ModuleLoader__.load({
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
 
-    function ChapterSource({ repository, source, number, relation }) {
+    function ChapterSource({ repository, source }) {
       const position = `${source.path}:${source.line}`
-      const label = number ? `【${number}】` : h('code', null, position)
-      if (repository.source === 'local') return number ? h('span', { title: position },
-        label, h('span', { className: 'dsh-code-wiki-announcement' }, ` 源码 ${position}`)) : label
+      const label = h('code', null, position)
+      if (repository.source === 'local') return label
       const path = source.path.split('/').map(part => encodeURIComponent(part)).join('/')
       return h('a', {
         href: `${repository.location}/blob/${repository.commit}/${path}#L${source.line}`,
         target: '_blank', rel: 'noreferrer', title: position,
-        'aria-label': number ? `${label} ${relation}，在 GitHub 查看 ${position}` : undefined,
       }, label)
     }
 
-    function graphLabelSize(element) {
-      const { width, height } = element.getBoundingClientRect()
-      return { width: Math.ceil(width), height: Math.ceil(height) }
+    function diagramDocument(svg) {
+      return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light dark">
+  <style>html, body { margin: 0; overflow: hidden; } svg { display: block; }</style>
+</head>
+<body>${svg}</body>
+</html>`
     }
 
-    function graphLabelPosition(position) {
-      return position && { left: position.x, top: position.y }
-    }
-
-    function DiagramLines({ layout, arrowId }) {
-      return h('svg', {
-        className: 'dsh-code-wiki-diagram-lines', width: layout.width, height: layout.height,
-        'aria-hidden': true, focusable: false,
-      },
-      h('defs', null, h('marker', {
-        id: arrowId, markerWidth: 8, markerHeight: 8, refX: 8, refY: 4,
-        orient: 'auto', markerUnits: 'userSpaceOnUse',
-      }, h('path', { d: 'M0,0 L8,4 L0,8 Z', fill: 'currentColor' }))),
-      layout.edges.map(({ path }, index) => h('path', {
-        key: index, d: path, 'data-edge-index': index, markerEnd: `url(#${arrowId})`,
-      })))
-    }
-
-    function ChapterDiagram({ repository, diagram, sources }) {
+    function ChapterDiagram({ diagram }) {
+      const { label, title, width, height, svg } = diagram
       const titleId = useId()
-      const arrowId = useId()
       const viewport = useRef(null)
-      const [measured, setMeasured] = useState(null)
-      const layout = measured?.diagram === diagram ? measured.layout : null
-      const scrolls = layout && layout.width > measured.width
-      const nodeLabels = new Map(diagram.nodes.map(node => [node.id, node.label]))
+      const [scrolls, setScrolls] = useState(false)
 
       useLayoutEffect(() => {
         const region = viewport.current
-        const nodes = Array.from(region.querySelectorAll('[data-node-id]'))
-        const edges = Array.from(region.querySelectorAll('[data-edge-from]'))
-        let lastSize
-
-        function measure() {
-          const width = region.clientWidth
-          if (!width) return
-          const nodeSizes = nodes.map(graphLabelSize)
-          const edgeSizes = edges.map(graphLabelSize)
-          const size = JSON.stringify([width, nodeSizes, edgeSizes])
-          if (lastSize === size) return
-          lastSize = size
-          setMeasured({ diagram, width, layout: layoutDiagram(diagram, nodeSizes, edgeSizes, width) })
-        }
-
+        const measure = () => setScrolls(width > region.clientWidth)
         measure()
         const observer = new ResizeObserver(measure)
         observer.observe(region)
-        for (const element of [...nodes, ...edges]) observer.observe(element)
         return () => observer.disconnect()
-      }, [diagram])
+      }, [width])
 
       return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId },
         h('figcaption', { id: titleId },
-          h('span', { className: 'dsh-code-wiki-diagram-kind' }, diagramLabels.get(diagram.kind)), ' ', diagram.title),
+          h('span', { className: 'dsh-code-wiki-diagram-kind' }, label), ' ', title),
         h('div', {
           className: 'dsh-code-wiki-diagram-scroll', ref: viewport,
           tabIndex: scrolls ? 0 : undefined, role: scrolls ? 'region' : undefined,
           'aria-label': scrolls ? '可横向滚动的图' : undefined,
         },
-          h('div', {
-            className: 'dsh-code-wiki-diagram-canvas', 'data-direction': layout?.direction,
-            style: layout && { width: layout.width, height: layout.height },
-          },
-            layout && h(DiagramLines, { layout, arrowId }),
-            h('ul', { className: 'dsh-code-wiki-diagram-nodes', role: 'list', 'aria-label': '节点' },
-              diagram.nodes.map((node, index) => h('li', {
-                key: node.id, className: 'dsh-code-wiki-diagram-node', 'data-node-id': node.id,
-                style: graphLabelPosition(layout?.nodes[index]),
-              }, node.label))),
-            h('ul', { className: 'dsh-code-wiki-diagram-edges', role: 'list', 'aria-label': '连接关系' },
-              diagram.edges.map((edge, index) => {
-                const endpoints = `${nodeLabels.get(edge.from)} 指向 ${nodeLabels.get(edge.to)}`
-                return h('li', {
-                  key: index, className: 'dsh-code-wiki-diagram-edge', 'data-edge-from': edge.from, 'data-edge-to': edge.to,
-                  style: graphLabelPosition(layout?.edges[index]),
-                },
-                  h('span', { className: 'dsh-code-wiki-announcement' }, `${endpoints}，`), edge.label, ' ',
-                  h(ChapterSource, { repository, source: sources[edge.source - 1], number: edge.source, relation: `${endpoints}，${edge.label}` }))
-              })))))
+          h('iframe', {
+            className: 'dsh-code-wiki-diagram-frame', title: `${label} ${title}`, width, height,
+            sandbox: 'allow-popups allow-popups-to-escape-sandbox', referrerPolicy: 'no-referrer',
+            srcDoc: diagramDocument(svg),
+          })))
     }
 
     function ChapterContent({ repository, content }) {
       return h('div', { className: 'dsh-code-wiki-chapter-content' },
         h('div', { className: 'dsh-code-wiki-prose' },
           h(MarkdownText, { text: content.markdown, labels: markdownLabels, omitHtml: true })),
-        content.diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, repository, diagram, sources: content.sources })),
+        content.diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, diagram })),
         h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
           h('ol', null, content.sources.map((source, index) => h('li', { key: index }, h(ChapterSource, { repository, source }))))))

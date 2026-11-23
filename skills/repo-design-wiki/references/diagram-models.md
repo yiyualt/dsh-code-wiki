@@ -15,6 +15,19 @@
 
 图只画回答本章 RQ 所需的对象和关系，名称沿用正文。每条连线标明含义和方向，并引用本次读过的源码位置。相邻章节可以用同类图，各自解释不同的交接。
 
-## DSH 当前输出规则
+## 图形数据
 
-当前格式用 `flow` 表示步骤和分支，用 `data` 表示数据传递和变化，用 `dependency` 表示静态关系，用 `state` 表示状态迁移。遇到生命线、实体关系基数或部署分组等专用结构时，正文交代关键信息，图呈现当前格式能准确表达的关系，按每张图实际画出的内容填写标题和 `kind`。
+每张图填写 `kind` 和 `title`，再按图型填写对应的结构。名称要简短。每个对象有唯一的 `id`，以 ASCII 字母开头，后续字符使用 ASCII 字母、数字、下划线或连字符。每条关系有 `from`、`to`、`label` 和引用编号 `source`。
+
+| 图型 | `kind` | 数据及含义 |
+| --- | --- | --- |
+| 系统上下文图 | `context` | `nodes: [{id,label,role}]`、`edges`。角色为 `actor`（使用者）、`system`（唯一目标系统）、`external`（外部系统）。边写清交互目的。 |
+| 组件图或依赖图 | `component` 或 `dependency` | `nodes`、`edges`。组件图角色为 `component`、`interface`、`external`，可用 `groups: [{id,label,nodes:[节点 ID]}]` 标出实际模块边界。依赖图角色为 `module`、`package`、`interface`、`external`。 |
+| 时序图 | `sequence` | `participants: [{id,label}]`、`messages: [{from,to,label,source,type}]`。消息按发生顺序排列，`type` 用 `call`（同步调用）、`return`（返回）、`async`（异步消息）。 |
+| 数据流图 | `data` | `nodes`、`edges`。节点角色为 `producer`、`process`、`store`、`consumer`。关系写明传输或转换的数据。 |
+| 流程图 | `flow` | `nodes`、`edges`。节点角色为 `start`、`action`、`decision`、`end`。判断节点的各条边标明条件。 |
+| 状态图 | `state` | `nodes`、`edges`。节点角色为 `start`、`state`、`end`。边写出触发事件或守卫条件。 |
+| 实体关系图 | `er` | `entities: [{id,label,fields:[{name,type,key}]}]`、`relations: [{from,to,label,source,fromCardinality,toCardinality}]`。字段只列相关项，`key` 用 `PK`、`FK`、`UK` 或空字符串。基数可用 `0..1`、`1`、`0..*`、`1..*`，证据不足时用 `?`。 |
+| 部署图 | `deployment` | `nodes`、`edges`、`groups: [{id,label,nodes:[节点 ID]}]`。每个应用、进程或存储分别用 `app`、`process`、`store` 表示，并归入一个有证据的运行位置。 |
+
+每张图保留 2 至 8 个相连的对象，关系最多 12 条，时序消息最多 16 条。实体的字段数组最多 8 项，图只讲关联时可以留空。关系名称和证据以所读源码及配置为准。

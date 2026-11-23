@@ -429,7 +429,6 @@
 }
 
 .dsh-code-wiki-diagram {
-  --wiki-graph-line: color-mix(in srgb, var(--wiki-accent) 55%, var(--wiki-muted));
   min-width: 0;
   margin: 0;
   padding: 14px;
@@ -453,7 +452,7 @@
 }
 
 .dsh-code-wiki-diagram-scroll {
-  container: code-wiki-diagram / inline-size;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -463,83 +462,14 @@
   outline-offset: 2px;
 }
 
-.dsh-code-wiki-diagram-canvas {
-  position: relative;
+.dsh-code-wiki-diagram-frame {
+  display: block;
+  max-width: none;
   margin-inline: auto;
+  border: 0;
+  color-scheme: inherit;
 }
 
-.dsh-code-wiki-diagram-canvas:not([data-direction]) {
-  height: 84px;
-  visibility: hidden;
-}
-
-.dsh-code-wiki-diagram-lines,
-.dsh-code-wiki-diagram-nodes,
-.dsh-code-wiki-diagram-edges {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  pointer-events: none;
-}
-
-.dsh-code-wiki-diagram-lines { color: var(--wiki-graph-line); }
-
-.dsh-code-wiki-diagram-lines path[data-edge-index] {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.dsh-code-wiki-diagram-node,
-.dsh-code-wiki-diagram-edge {
-  position: absolute;
-  box-sizing: border-box;
-  width: max-content;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  pointer-events: auto;
-}
-
-.dsh-code-wiki-diagram-node {
-  display: grid;
-  place-items: center;
-  min-width: 68px;
-  max-width: clamp(108px, 36cqi, 154px);
-  min-height: 34px;
-  padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--wiki-accent) 35%, var(--wiki-line));
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--wiki-accent) 6%, var(--wiki-paper));
-  color: var(--wiki-ink);
-  font-size: 13px;
-  font-weight: 630;
-  line-height: 1.45;
-}
-
-.dsh-code-wiki-diagram-edge {
-  max-width: clamp(96px, 36cqi, 142px);
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: var(--wiki-canvas);
-  color: var(--wiki-ink);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.dsh-code-wiki-diagram-edge a {
-  font-weight: 650;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  white-space: nowrap;
-}
-
-.dsh-code-wiki-diagram a,
 .dsh-code-wiki-sources a { color: var(--wiki-accent); }
 
 .dsh-code-wiki-sources ol {

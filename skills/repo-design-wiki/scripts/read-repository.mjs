@@ -114,7 +114,8 @@ async function openGitHub(repositoryUrl, signal, revision) {
     && regularModes.has(entry.mode) && entry.size !== 0 && eligiblePath(entry.path)).map(entry => [entry.path, entry.path]))
   if (!files.size) throw noEvidence()
   return {
-    label, commit, paths: [...files.keys()].sort(), treeComplete: !truncated,
+    label, commit, webUrl: 'https://github.com/' + label,
+    paths: [...files.keys()].sort(), treeComplete: !truncated,
     read(path, readSignal = signal) {
       const trackedPath = selectedFile(files, path)
       return readGitHub(`https://raw.githubusercontent.com/${label}/${commit}/${encodePath(trackedPath)}`, readSignal, fileLimit, true)
