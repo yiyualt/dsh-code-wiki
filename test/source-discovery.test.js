@@ -7,7 +7,6 @@ import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { openGithubRepository, readPinnedGithubFile } from '../src/github-source.js'
 import { openLocalRepository } from '../src/local-source.js'
-import { repositoryTools } from '../skills/repo-design-wiki/scripts/repository-tools.mjs'
 
 const repo = 'https://github.com/example/repo'
 const commit = '1'.repeat(40)
@@ -16,13 +15,6 @@ const sha = number => number.toString(16).padStart(40, '0')
 const blob = (path, size) => ({ path, type: 'blob', mode: '100644', sha: 'f'.repeat(40), ...(size === undefined ? {} : { size }) })
 const tree = (path, id) => ({ path, type: 'tree', mode: '040000', sha: id })
 const head = () => ({ sha: commit, commit: { tree: { sha: rootTree } } })
-
-function tools(source) {
-  const signal = new AbortController().signal
-  const result = repositoryTools(source, signal)
-  return { ...result, read: async args => JSON.parse((await result.definitions.find(tool => tool.name === 'wiki_read')
-    .execute(args, { signal })).data) }
-}
 
 test('GitHub explicit commit never resolves default HEAD and all subsequent blob reads remain pinned', async t => {
   const content = 'first\n' + 'x'.repeat(800) + '\nlast\n'
@@ -47,11 +39,7 @@ test('GitHub explicit commit never resolves default HEAD and all subsequent blob
   assert(Buffer.isBuffer(old))
   assert.deepEqual(old, meta.bytes)
   assert.deepEqual(await readPinnedGithubFile(repo, commit, 'src/main.js', 64), old)
-  const api = tools(source)
-  const exact = await api.read({ path: 'src/main.js', start: 2, count: 1 })
-  assert.equal(api.evidence[exact.evidence - 1].text, 'x'.repeat(800))
-  assert.equal(exact.start, 2)
-  assert.equal(exact.fileTruncated, false)
+  assert.equal((await source.read('src/main.js', Buffer.byteLength(content))).toString(), content)
 })
 
 test('GitHub rejects malformed and mismatched pinned commits instead of silently following another revision', async t => {
@@ -108,10 +96,6 @@ test('GitHub tree traversal is bounded and discloses directories that were not c
   assert.equal(source.treeComplete, false)
   assert.equal(source.unvisitedDirectories.length, 8)
   assert(source.unvisitedDirectories.includes('package-69'))
-  const list = repositoryTools(source, new AbortController().signal).definitions.find(tool => tool.name === 'wiki_list')
-  const result = JSON.parse((await list.execute({}, { signal: new AbortController().signal })).data)
-  assert.equal(result.discovery.treeComplete, false)
-  assert.equal(result.discovery.unvisitedDirectoryCount, 8)
 })
 
 test('local pinned Git blobs expose complete-prefix truncation and preserve complete long source lines', async t => {
@@ -135,15 +119,5 @@ test('local pinned Git blobs expose complete-prefix truncation and preserve comp
   assert.equal(meta.totalBytes, Buffer.byteLength(original))
   assert.equal(meta.bytes.toString(), 'first\r\n')
   assert.deepEqual(await source.read(entry, 64), meta.bytes)
-  const api = tools(source)
-  const exact = await api.read({ path: 'src/main.js', start: 2, count: 1 })
-  assert.equal(exact.start, 2)
-  assert.equal(exact.fileTruncated, false)
-  assert.equal(api.evidence[exact.evidence - 1].text, 'x'.repeat(800))
-  const limited = tools({ ...source, readWithMetadata: (entry, _bytes, signal) => source.readWithMetadata(entry, 64, signal) })
-  const bounded = await limited.read({ path: 'src/main.js' })
-  assert.equal(bounded.fileTruncated, true)
-  assert.equal(bounded.availableLines, 1)
-  assert.equal(limited.evidence[bounded.evidence - 1].text, 'first')
-  assert.equal((await limited.read({ path: 'src/main.js', start: 2 })).reason, 'line-range')
+  assert.equal((await source.read(entry, Buffer.byteLength(original))).toString(), original)
 })

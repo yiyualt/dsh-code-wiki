@@ -442,21 +442,6 @@ export function restoreWikiDraft(checkpoint, source, evidence) {
   }
 }
 
-export function restoreLegacyWiki(checkpoint, source, evidence) {
-  const { draft, plan } = restoreWikiDraft(checkpoint, source, evidence)
-  if (draft) return { document: renderWikiDocument(draft, source) }
-  if (!plan || !checkpoint.chapters?.length) return {}
-
-  const byId = new Map(checkpoint.chapters.map(chapter => [chapter.id, chapter]))
-  const chapters = plan.chapters.filter(chapter => byId.has(chapter.id))
-    .map(chapter => normalizeWikiChapter(byId.get(chapter.id), source, evidence, plan))
-  // Legacy local URLs belonged to the previous job. Preserve their original evidence index.
-  const markdown = renderWikiDocument({ chapters, graph: { layers: [], edges: [] } }, source).markdown.trim()
-    .replace(/\[\d+\]\(https:\/\/dsh-code-wiki\.invalid\/source\?key=[a-f0-9-]+&file=(\d+)&start=(\d+)&end=(\d+)\)/g,
-      (_match, id, start, end) => `[E${id}:${start}-${end}]`)
-  return { markdown }
-}
-
 export function reviseWikiDraft(raw, revisions) {
   check(raw && revisions && typeof revisions === 'object', '定向修订需要已有草稿和 revisions。')
   const changes = list(revisions.blocks, 0, 16, '正文修订')

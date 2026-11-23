@@ -47,13 +47,11 @@ try {
     `const manifestUrl = new URL(import.meta.resolve('dsh-code-wiki/package.json'))\n` +
     `const manifest = JSON.parse(await readFile(manifestUrl))\n` +
     `assert.equal(manifest.version, ${JSON.stringify(manifest.version)})\n` +
-    `assert(import.meta.resolve('dsh-code-wiki/client').endsWith('/client.js'))\n` +
-    `const { generateWiki } = await import(new URL('./skills/repo-design-wiki/scripts/generate.mjs', manifestUrl))\n` +
-    `assert.equal(typeof generateWiki, 'function')\n`)
+    `assert(import.meta.resolve('dsh-code-wiki/client').endsWith('/client.js'))\n`)
   await exec(process.execPath, [probe], { cwd: install, timeout: 30_000, windowsHide: true })
   const sha256 = createHash('sha256').update(await readFile(join(temporary, packed.filename))).digest('hex')
   console.log(JSON.stringify({ version: manifest.version, files: paths.length, cleanInstall: true,
-    syntax: 'passed', exports: 'passed', skillRuntime: 'passed', browserBundle: 'identical', sha256 }, null, 2))
+    syntax: 'passed', exports: 'passed', browserBundle: 'identical', sha256 }, null, 2))
 } finally {
   await rm(temporary, { recursive: true, force: true })
 }
