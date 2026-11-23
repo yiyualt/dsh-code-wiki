@@ -1,6 +1,6 @@
 # DSH 代码百科
 
-在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据所选仓库已提交的源码拟定一句主线，再按关键模块交接生成目录。打开一个 RQ，点击「生成正文和图」可生成该章的正文、关系图和源码位置。章节使用拟定目录时的 Git 提交。
+在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据所选仓库已提交的源码拟定一句主线，再按关键模块交接生成目录。打开一个 RQ，点击「生成本章」可生成正文和源码引用，并按内容需要生成图。章节使用拟定目录时的 Git 提交。
 
 ## 本地安装
 
@@ -9,7 +9,7 @@
 ```sh
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.24.0.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.25.0.tgz
 ```
 
 所选仓库的源码片段会交给当前模型用于拟定目录和撰写正文。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。

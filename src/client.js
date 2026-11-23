@@ -97,7 +97,9 @@ window.__ModuleLoader__.load({
       }, chapterError)
       if (error) return { error }
       if (!hasText(result?.markdown) || typeof result.handoff !== 'string' || !validSources(result.sources) ||
-        !validDiagram(result.diagram, result.sources.length)) return { error: chapterError }
+        !Array.isArray(result.diagrams) || result.diagrams.some(diagram => !validDiagram(diagram, result.sources.length))) {
+        return { error: chapterError }
+      }
       return { content: result }
     }
 
@@ -342,7 +344,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dsh-code-wiki-chapter-content' },
         h('div', { className: 'dsh-code-wiki-prose' },
           h(MarkdownText, { text: content.markdown, labels: markdownLabels, omitHtml: true })),
-        h(ChapterDiagram, { repository, diagram: content.diagram, sources: content.sources }),
+        content.diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, repository, diagram, sources: content.sources })),
         h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
           h('ol', null, content.sources.map((source, index) => h('li', { key: index }, h(ChapterSource, { repository, source }))))))
@@ -394,7 +396,7 @@ window.__ModuleLoader__.load({
               h('p', { className: 'dsh-code-wiki-announcement', role: 'status' }, pending ? '正在生成本章…' : content ? '本章已生成。' : ''),
               content ? h(ChapterContent, { repository: document, content }) : h('div', { className: 'dsh-code-wiki-chapter-action' },
                 h(Button, { type: 'button', variant: 'primary', disabled: Boolean(pending), onClick: store.generateChapter },
-                  pending ? '正在生成本章…' : chapterFailure ? '重试生成本章' : '生成正文和图'),
+                  pending ? '正在生成本章…' : chapterFailure ? '重试生成本章' : '生成本章'),
                 chapterFailure && h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, chapterFailure))))
             : h('div', { className: 'dsh-code-wiki-library' },
               formOpen && h(SourceForm, { id: formId, draft, onChange: store.changeDraft, onSubmit: store.generateDocument,
