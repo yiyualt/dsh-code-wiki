@@ -136,8 +136,8 @@ export function singleLine(value, maxLength = Infinity) {
   return text.length <= maxLength && !/[\r\n\u2028\u2029]/.test(text) ? text : ''
 }
 
-export function readSources(sources, evidence) {
-  if (!Array.isArray(sources) || !sources.length || sources.length > sourceLimit || sources.some(source =>
+export function readSources(sources, evidence, maxSources = sourceLimit) {
+  if (!Array.isArray(sources) || !sources.length || sources.length > maxSources || sources.some(source =>
     !Number.isSafeInteger(source?.line) || !evidence.get(source?.path)?.some(range =>
       source.line >= range.start && source.line <= range.end))) return null
   return sources.map(({ path, line }) => ({ path, line }))

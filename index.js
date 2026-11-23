@@ -286,14 +286,15 @@ export function apply(ctx) {
     },
   }))
 
-  registerGeneration(ctx, 'outline', '目录', async (input, options) => {
+  registerGeneration(ctx, 'outline', '总览和目录', async (input, options) => {
     const repository = await openRepository(input, options.signal)
     const outline = await generateOutline({ repository, ...options })
+    if (!outline.overview) throw wikiProblem('wiki-outline-invalid', '总览需要正文和模块关系图。')
     const origin = repository.webUrl
       ? { source: 'github', location: repository.webUrl }
       : { source: 'local', location: input.repositoryPath }
     const record = await storage.create({ ...origin, title: repository.label, ...outline })
-    return { id: record.id, ...outline }
+    return { id: record.id, ...outline, overview: record.document.overview }
   })
 
   registerGeneration(ctx, 'chapter', '章节正文和图', async (input, options) => {

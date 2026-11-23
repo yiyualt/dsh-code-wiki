@@ -58,7 +58,7 @@ function validLocation(source, location, commit, legacy = false) {
 }
 
 function readDocument(input) {
-  const { source, title, location, mainline, commit, chapters } = input ?? {}
+  const { source, title, location, mainline, commit, chapters, overview: rawOverview } = input ?? {}
   if (!validLocation(source, location, commit) || !hasText(title) || !hasText(mainline)
     || !Array.isArray(chapters) || !chapters.length) return null
   const outline = Array.from(chapters, chapter => {
@@ -67,7 +67,9 @@ function readDocument(input) {
     return { title: chapter.title, sources, markdown: '' }
   })
   if (outline.includes(null)) return null
-  return { source, title, location, mainline, commit, chapters: outline }
+  const overview = rawOverview === undefined ? undefined : readOverview(rawOverview)
+  if (overview === null) return null
+  return { source, title, location, mainline, commit, ...(overview && { overview }), chapters: outline }
 }
 
 function readDiagram(value) {
@@ -80,18 +82,33 @@ function readDiagram(value) {
   return { kind, label, title, width, height, svg, ...(slot !== undefined && { slot }) }
 }
 
-function readChapterWork(value) {
-  const { content, warning } = value ?? {}
-  const { markdown, handoff } = content ?? {}
+function readSectionContent(content, completeFigures = false) {
+  const { markdown } = content ?? {}
   const sources = sourceList(content?.sources)
-  if (!hasText(markdown) || typeof handoff !== 'string' || !sources || !Array.isArray(content?.diagrams)
-    || (warning !== undefined && typeof warning !== 'string')) return null
+  if (!hasText(markdown) || !sources || !Array.isArray(content?.diagrams)) return null
   const diagrams = Array.from(content.diagrams, readDiagram)
   if (diagrams.includes(null)) return null
-  if (diagrams.some(diagram => diagram.slot !== undefined)) {
-    const slots = new Set(chapterFigureSlots(markdown).map(({ slot }) => slot))
-    if (diagrams.some(diagram => !slots.delete(diagram.slot))) return null
+  if (completeFigures || diagrams.some(diagram => diagram.slot !== undefined)) {
+    const slots = chapterFigureSlots(markdown).map(({ slot }) => slot)
+    if (completeFigures && slots.some((slot, index) => slot !== index + 1)) return null
+    const pending = new Set(slots)
+    if (diagrams.some(diagram => !pending.delete(diagram.slot)) || (completeFigures && pending.size)) return null
   }
+  return { markdown, sources, diagrams }
+}
+
+function readOverview(value) {
+  const overview = readSectionContent(value, true)
+  return overview?.diagrams.some(({ kind }) => kind === 'component' || kind === 'dependency') ? overview : null
+}
+
+function readChapterWork(value) {
+  const { content, warning } = value ?? {}
+  const handoff = content?.handoff
+  if (typeof handoff !== 'string' || (warning !== undefined && typeof warning !== 'string')) return null
+  const section = readSectionContent(content)
+  if (!section) return null
+  const { markdown, sources, diagrams } = section
   return { content: { markdown, handoff, sources, diagrams }, ...(warning !== undefined && { warning }) }
 }
 
@@ -132,6 +149,7 @@ function summarize({ id, createdAt, updatedAt, document, chapterWork, legacy, ar
   return {
     id, title, source, location, commit, createdAt, updatedAt,
     chapterCount: chapters.length, generatedCount: chapterWork.filter(work => work?.content).length,
+    ...(document.overview && { hasOverview: true }),
     ...(legacy && { legacy }), ...(archived && { archived }),
   }
 }

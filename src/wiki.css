@@ -408,6 +408,13 @@
 }
 
 .dsh-code-wiki-chapter-button > span { color: var(--wiki-muted); text-align: end; }
+.dsh-code-wiki-overview-item { margin-block-end: 2px; }
+.dsh-code-wiki-overview-item .dsh-code-wiki-chapter-button > span {
+  display: flex;
+  align-self: center;
+  justify-content: flex-end;
+}
+
 .dsh-code-wiki-chapter-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
 .dsh-code-wiki-chapter-button[aria-current='page'] {

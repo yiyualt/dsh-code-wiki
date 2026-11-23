@@ -1,10 +1,8 @@
-import { fromMarkdown } from 'mdast-util-from-markdown'
-import { chapterFigureSlots, isFigureSlot, replaceChapterText } from './chapter-figures.mjs'
+import { chapterFigureSlots, isFigureSlot } from './chapter-figures.mjs'
 import { readDiagram } from './diagram-spec.mjs'
-import { renderEntityDiagram } from './render-entity-diagram.mjs'
-import { renderGraphDiagram } from './render-graph-diagram.mjs'
-import { renderSequenceDiagram } from './render-sequence-diagram.mjs'
+import { renderWikiDiagram } from './render-wiki-diagram.mjs'
 import { readSources, singleLine, tool } from './wiki-generation.mjs'
+import { readWikiMarkdown, rewriteWikiCitations } from './wiki-markdown.mjs'
 
 export function invalidChapter(message) {
   return Object.assign(new Error(message), { code: 'wiki-chapter-invalid' })
@@ -34,46 +32,12 @@ function stageSources(current, resolveReference, citationError) {
   return { sources, numberFor }
 }
 
-function embeddedDiagram(node) {
-  return node.type === 'image' || node.type === 'imageReference'
-    || (node.type === 'code' && /^(?:mermaid|graphviz|dot|plantuml)$/i.test(node.lang ?? ''))
-    || node.children?.some(embeddedDiagram)
-}
-
-const placeholderText = [
-  /^(?:本章|章节)(?:已|已经)?(?:生成|完成)(?:完成|成功|完毕)?$/u,
-  /^(?:探针(?:验证|检查|测试|调试|核对|提交|成功|通过)?|(?:测试|验证|检查|调试|核对)引用(?:有效|正确|可用|成功|通过)?|引用(?:测试|验证|检查|调试|核对)(?:成功|通过)?)$/u,
-  /^(?:待生成|待补充|正文待补充|暂无内容|占位(?:文字|文本)?|todo|placeholder|probe|(?:citation|reference)(?:test|check|probe)|(?:test|check|probe)(?:citation|reference))$/iu,
-]
-const probeLabel = /^\s*(?:探针|(?:测试|验证|检查|调试|核对)(?:源码)?引用|引用(?:测试|验证|检查|调试|核对)|(?:citation|reference)\s+(?:test|check|probe))\s*[:：]/iu
-
-function paragraphText(node) {
-  if (node.type === 'text') return node.value
-  if (node.type === 'break') return '\n'
-  return node.children?.map(paragraphText).join('') ?? ''
-}
-
-function hasBodyProse(node) {
-  if (node.type !== 'paragraph') return node.children?.some(hasBodyProse) ?? false
-  const prose = paragraphText(node).replace(/【[^】]*】|\[\[figure:-?\d+\]\]/gu, '')
-  return prose.split(/\r?\n/u).some(line => {
-    if (/^\s*\|.*\|\s*$/u.test(line)) return false
-    return line.split(/[。！？!?]+|\.(?:\s+|$)/u).some(sentence => {
-      if (probeLabel.test(sentence)) return false
-      const words = sentence.replace(/[^\p{L}\p{N}]+/gu, '')
-      return Boolean(words) && !placeholderText.some(pattern => pattern.test(words))
-    })
-  })
-}
-
 function readBody(input, numberFor) {
-  const markdown = typeof input?.markdown === 'string' ? input.markdown.trim() : ''
-  if (!markdown || !markdown.isWellFormed()) throw invalidChapter('正文须为有效的非空 Markdown。')
-  const tree = fromMarkdown(markdown)
-  if (embeddedDiagram(tree)) {
-    throw invalidChapter('正文只用文字或代码说明，图请单独交给 wiki_submit_diagram。')
-  }
-  if (!hasBodyProse(tree)) throw invalidChapter('正文需要可阅读的文字来回答本章问题。请提交完整正文。')
+  const { markdown, tree } = readWikiMarkdown(input?.markdown, invalidChapter, {
+    label: '正文',
+    proseError: '正文需要可阅读的文字来回答本章问题。请提交完整正文。',
+    diagramError: '正文只用文字或代码说明，图请单独交给 wiki_submit_diagram。',
+  })
   const figureSlots = chapterFigureSlots(markdown, tree).map(({ slot }) => slot)
   if (figureSlots.some((slot, index) => slot !== index + 1)) {
     throw invalidChapter('正文图位须从 [[figure:1]] 开始连续编号，每个图位独占一行，前后留空行。')
@@ -82,9 +46,7 @@ function readBody(input, numberFor) {
   if (!handoff || !handoff.isWellFormed()) throw invalidChapter('handoff 须为一句单行文字，说明本章产生或交出的结果。')
   let citations = 0
   const citationErrors = new Map()
-  const marked = replaceChapterText(markdown, text => text.replace(/【([^】]*)】/gu, (original, value) => {
-    const reference = value.trim()
-    if (!/^(?:[\d０-９]+|r[\d０-９]+|r[^\s:：]*\s*[:：][^\r\n]*)$/iu.test(reference)) return original
+  const marked = rewriteWikiCitations(markdown, tree, (reference, original) => {
     try {
       const number = numberFor(reference)
       citations += 1
@@ -94,7 +56,7 @@ function readBody(input, numberFor) {
       citationErrors.set(reference, error.citationErrors[0])
       return original
     }
-  }), tree)
+  })
   if (citationErrors.size) {
     const error = invalidChapter(`正文有 ${citationErrors.size} 处不同的无效源码引用，请根据 citationErrors 更正。`)
     error.citationErrors = [...citationErrors.values()]
@@ -102,20 +64,6 @@ function readBody(input, numberFor) {
   }
   if (!citations) throw invalidChapter('正文至少需要一处源码引用。用【r1:9】标注结论来自哪次读取和哪一行。')
   return { markdown: marked, handoff, figureSlots }
-}
-
-function renderDiagram(diagram, sources, repository) {
-  function sourceAt(number) {
-    const { path, line } = sources[number - 1]
-    const position = path + ':' + line
-    if (!repository.webUrl) return { position }
-    const filePath = path.split('/').map(encodeURIComponent).join('/')
-    const url = repository.webUrl + '/blob/' + repository.commit + '/' + filePath + '#L' + line
-    return { position, url }
-  }
-  if (diagram.kind === 'sequence') return renderSequenceDiagram(diagram, sourceAt)
-  if (diagram.kind === 'er') return renderEntityDiagram(diagram, sourceAt)
-  return renderGraphDiagram(diagram, sourceAt)
 }
 
 function prepareDiagram(input, { sources, numberFor }, repository) {
@@ -126,7 +74,7 @@ function prepareDiagram(input, { sources, numberFor }, repository) {
     : input
   const diagram = readDiagram(normalized, sources.length, invalidChapter)
   try {
-    return renderDiagram(diagram, sources, repository)
+    return renderWikiDiagram(diagram, sources, repository)
   } catch {
     throw invalidChapter('无法绘制这张图。请缩短标签、减少节点与关系，再单独提交这张图。')
   }

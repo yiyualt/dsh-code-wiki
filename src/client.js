@@ -14,6 +14,7 @@ window.__ModuleLoader__.load({
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
+    const overviewTitle = '总览'
     const outlineError = '无法生成目录，请重试。'
     const chapterError = '无法生成本章，请重试。'
     const chapterDataError = '章节生成返回了无法读取的数据。'
@@ -85,9 +86,10 @@ window.__ModuleLoader__.load({
     }
 
     function validOutline(outline, source, legacy = false) {
-      const { mainline, commit, chapters } = outline ?? {}
+      const { mainline, commit, chapters, overview } = outline ?? {}
       return (legacy ? typeof mainline === 'string' : hasText(mainline)) &&
         typeof commit === 'string' && commitId.test(commit) && (source !== 'github' || commit.length === 40) &&
+        (overview === undefined || validContent(overview)) &&
         Array.isArray(chapters) && chapters.length > 0 && chapters.every(chapter =>
           hasText(chapter?.title) && validSources(chapter.sources, legacy))
     }
@@ -99,8 +101,8 @@ window.__ModuleLoader__.load({
       if (!validOutline(result, repository.source) || (result.id !== undefined && !validDocumentId(result.id))) {
         return { error: outlineError }
       }
-      const { id = null, mainline, commit, chapters } = result
-      return { id, mainline: mainline.trim(), commit, chapters }
+      const { id = null, mainline, commit, chapters, overview } = result
+      return { id, mainline: mainline.trim(), commit, chapters, overview }
     }
 
     function validDiagram(diagram) {
@@ -112,9 +114,13 @@ window.__ModuleLoader__.load({
         typeof svg === 'string' && svg.length <= 160_000 && /^<svg(?:\s|>)[\s\S]*<\/svg>$/.test(svg.trim())
     }
 
-    function validChapterContent(content, legacy = false) {
-      return hasText(content?.markdown) && typeof content.handoff === 'string' && validSources(content.sources, legacy) &&
+    function validContent(content, legacy = false) {
+      return hasText(content?.markdown) && validSources(content.sources, legacy) &&
         Array.isArray(content.diagrams) && content.diagrams.every(validDiagram)
+    }
+
+    function validChapterContent(content, legacy = false) {
+      return validContent(content, legacy) && typeof content.handoff === 'string'
     }
 
     async function requestDocuments(id, fallbackError) {
@@ -127,6 +133,7 @@ window.__ModuleLoader__.load({
     function validDocumentSummary(summary) {
       return validDocumentId(summary?.id) && hasText(summary.title) && ['github', 'local'].includes(summary.source) &&
         (summary.archived === undefined || typeof summary.archived === 'boolean') &&
+        (summary.hasOverview === undefined || typeof summary.hasOverview === 'boolean') &&
         Number.isSafeInteger(summary.chapterCount) && summary.chapterCount > 0 &&
         Number.isSafeInteger(summary.generatedCount) && summary.generatedCount >= 0 && summary.generatedCount <= summary.chapterCount
     }
@@ -303,7 +310,7 @@ window.__ModuleLoader__.load({
       function showDocument(record, patch) {
         records.set(record.id, record)
         update({
-          ...patch, opened: record, chapterIndex: 0, view: 'reader', openingId: null, openError: '',
+          ...patch, opened: record, chapterIndex: record.document.overview ? null : 0, view: 'reader', openingId: null, openError: '',
           temporary: record.id === null ? record : snapshot.temporary,
         })
       }
@@ -379,7 +386,9 @@ window.__ModuleLoader__.load({
           return result
         },
         selectChapter(chapterIndex) {
-          if (snapshot.opened?.document.chapters[chapterIndex] && snapshot.chapterIndex !== chapterIndex) update({ chapterIndex })
+          const document = snapshot.opened?.document
+          const section = chapterIndex === null ? document?.overview : document?.chapters[chapterIndex]
+          if (section && snapshot.chapterIndex !== chapterIndex) update({ chapterIndex })
         },
         async chooseFolder() {
           if (snapshot.picker || snapshot.generatingOutline) return
@@ -407,12 +416,12 @@ window.__ModuleLoader__.load({
           openVersion++
           update({ generatingOutline: true, error: '', openingId: null, openError: '' })
           try {
-            const { id, mainline, commit, chapters, error } = await loadOutline(repository)
+            const { id, mainline, commit, chapters, overview, error } = await loadOutline(repository)
             if (error) {
               update({ generatingOutline: false, error })
               return
             }
-            showDocument({ id, document: { ...repository, mainline, commit, chapters }, chapterWork: [], legacy: false },
+            showDocument({ id, document: { ...repository, mainline, commit, chapters, overview }, chapterWork: [], legacy: false },
               { generatingOutline: false })
           } catch {
             update({ generatingOutline: false, error: outlineError })
@@ -420,7 +429,7 @@ window.__ModuleLoader__.load({
         },
         async generateChapter() {
           const { opened, chapterIndex, view } = snapshot
-          if (view !== 'reader' || !opened || opened.legacy) return
+          if (view !== 'reader' || !opened || opened.legacy || chapterIndex === null) return
           const { id, document, chapterWork } = opened
           const current = chapterWork[chapterIndex]
           if (!document.chapters[chapterIndex] || current?.pending || current?.content) return
@@ -543,11 +552,16 @@ window.__ModuleLoader__.load({
         })))
     }
 
-    function ChapterDirectory({ chapters, chapterIndex, mainlineId, onSelect }) {
+    function ChapterDirectory({ chapters, chapterIndex, hasOverview, mainlineId, onSelect }) {
       const selectId = useId()
       return h('nav', { 'aria-label': '章节目录', 'aria-describedby': mainlineId, className: 'dsh-code-wiki-sidebar' },
         h('h2', { className: 'dsh-code-wiki-rail-label' }, '章节目录'),
         h('ol', { className: 'dsh-code-wiki-chapter-list', role: 'list' },
+          hasOverview && h('li', { className: 'dsh-code-wiki-overview-item' },
+            h('button', {
+              type: 'button', className: 'dsh-code-wiki-chapter-button',
+              'aria-current': chapterIndex === null ? 'page' : undefined, onClick: () => onSelect(null),
+            }, h('span', { 'aria-hidden': true }, h(IconCodeOutlineRegular, { size: 14 })), overviewTitle)),
           chapters.map(({ title }, index) => h('li', { key: index },
             h('button', {
               type: 'button', className: 'dsh-code-wiki-chapter-button',
@@ -556,7 +570,9 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-code-wiki-chapter-picker' },
           h('label', { htmlFor: selectId }, '章节'),
           h('div', null,
-            h('select', { id: selectId, value: chapterIndex, onChange: event => onSelect(Number(event.target.value)) },
+            h('select', { id: selectId, value: chapterIndex ?? 'overview',
+              onChange: event => onSelect(event.target.value === 'overview' ? null : Number(event.target.value)) },
+              hasOverview && h('option', { value: 'overview' }, overviewTitle),
               chapters.map(({ title }, index) => h('option', { key: index, value: index }, `${index + 1}. ${title}`))),
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
@@ -755,10 +771,11 @@ window.__ModuleLoader__.load({
     }
 
     function DocumentRow({ document, opening, disabled, actionsDisabled, onOpen, onMove, onDelete }) {
-      const { id, title, source, chapterCount, generatedCount, updatedAt, legacy, archived } = document
+      const { id, title, source, chapterCount, generatedCount, updatedAt, legacy, archived, hasOverview } = document
       const titleId = useId()
       const date = Date.parse(updatedAt)
-      const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章` : '目录草稿'
+      const draftStatus = hasOverview ? '已生成总览' : '目录草稿'
+      const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章` : draftStatus
       return h('li', { className: 'dsh-code-wiki-document-row' },
         h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: disabled || opening, onClick: () => onOpen(id) },
           h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
@@ -806,6 +823,7 @@ window.__ModuleLoader__.load({
       const actionsDisabled = disabled || busy || openingId !== null
       const documents = summaries.filter(summary => (summary.archived === true) === showArchived)
       if (temporary && !showArchived) documents.unshift({ id: null, ...temporary.document,
+        hasOverview: Boolean(temporary.document.overview),
         chapterCount: temporary.document.chapters.length, generatedCount: generatedCount(temporary) })
 
       useLayoutEffect(() => {
@@ -892,10 +910,12 @@ window.__ModuleLoader__.load({
         }
       }, [chapterIndex, reading])
 
-      const chapter = document?.chapters[chapterIndex]
-      const { pending, content, error: chapterFailure, warning } = chapterWork?.[chapterIndex] ?? {}
-      const chapterNotice = content && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…'))
-      const chapterAnnouncement = pending ? '正在生成本章…' : content ? '本章已生成。' : ''
+      const showingOverview = chapterIndex === null
+      const title = showingOverview ? overviewTitle : document?.chapters[chapterIndex]?.title
+      const { pending, content: chapterContent, error: chapterFailure, warning } = chapterWork?.[chapterIndex] ?? {}
+      const content = showingOverview ? document?.overview : chapterContent
+      const chapterNotice = chapterContent && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…'))
+      const chapterAnnouncement = pending ? '正在生成本章…' : chapterContent ? '本章已生成。' : ''
       return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': reading ? '' : undefined, ref: page },
         h('style', null, wikiStyles),
         h('div', { className: 'dsh-code-wiki-shell' },
@@ -921,15 +941,16 @@ window.__ModuleLoader__.load({
           reading ? h('div', { className: 'dsh-code-wiki-columns' },
             document.mainline.trim() && h('p', { id: mainlineId, className: 'dsh-code-wiki-mainline' },
               h('strong', null, '主线'), ' ', h('span', null, document.mainline)),
-            h(ChapterDirectory, { chapters: document.chapters, chapterIndex, mainlineId: document.mainline.trim() ? mainlineId : undefined,
+            h(ChapterDirectory, { chapters: document.chapters, chapterIndex, hasOverview: Boolean(document.overview),
+              mainlineId: document.mainline.trim() ? mainlineId : undefined,
               onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
-              h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
-              h('p', {
+              h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, title)),
+              !showingOverview && h('p', {
                 className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
                 role: chapterNotice && chapterFailure ? 'alert' : 'status',
               }, chapterNotice || chapterAnnouncement),
-              content ? h(ChapterContent, { key: chapterIndex, repository: document, content, pending, title: chapter.title })
+              content ? h(ChapterContent, { key: chapterIndex ?? 'overview', repository: document, content, pending, title })
                 : h('div', { className: 'dsh-code-wiki-chapter-action' }, legacy
                   ? h('p', { className: 'dsh-code-wiki-feedback' }, '这份历史文档未保存本章正文。')
                   : h(Fragment, null,
