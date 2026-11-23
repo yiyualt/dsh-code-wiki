@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-wiki",
-  "version": "0.17.2",
+  "version": "0.18.0",
   "description": "A repository wiki panel for DeepSeek Harness.",
   "type": "module",
   "engines": {
@@ -21,6 +21,9 @@
     "src/wiki-file-tables.js",
     "src/wiki-walkthrough-data.js",
     "src/wiki-editor.js",
+    "src/wiki-skill.js",
+    "skills/repo-design-wiki/SKILL.md",
+    "skills/repo-design-wiki/references/diagrams.md",
     "src/repository-tools.js",
     "src/configured-model.js",
     "src/model-response.js",

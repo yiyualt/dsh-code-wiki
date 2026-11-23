@@ -8,6 +8,7 @@ import { collectLocalSource, openLocalRepository } from './src/local-source.js'
 import { createWikiStorage } from './src/wiki-storage.js'
 import { createWikiCheckpoints } from './src/wiki-checkpoint.js'
 import { createWikiProgress } from './src/wiki-progress.js'
+import { loadWikiSkill } from './src/wiki-skill.js'
 import { registerVideoApi } from './src/video-api.js'
 
 export const name = 'dsh-code-wiki'
@@ -191,9 +192,11 @@ export function apply(ctx, config) {
         const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal,
           { toolCallLimit: 64, streamResponses: true, transportRetries: 2, onProgress: tracking.model })
         if (architecture) {
+          const loadSkill = typeof ctx.profileContext.home === 'string' || checkpoint?.chapters !== undefined
+            ? () => loadWikiSkill(ctx.profileContext.home, signal) : undefined
           const result = await exploreArchitecture(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
             signal, (count, path) => { job.filesRead = count; job.currentFile = path; tracking.activity('source-read') },
-            tracking.phase, { checkpoint,
+            tracking.phase, { checkpoint, loadSkill,
               async onCheckpoint(material) {
                 await checkpoints.save(job.id, { version: 1,
                   ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
@@ -213,6 +216,13 @@ export function apply(ctx, config) {
         }
         model = selection.model
       } catch (error) {
+        if (!signal.aborted && error?.code === 'wiki-skill-invalid') {
+          if (checkpoint) {
+            await checkpoints.save(job.id, checkpoint)
+            job.canResume = true
+          }
+          return fail(error.message, 422, 'model-error')
+        }
         if (signal.aborted || !['model-unavailable', 'model-output-invalid'].includes(error?.code)) throw error
         if (architecture) {
           if (error.providerCode) job.failureCode = error.providerCode

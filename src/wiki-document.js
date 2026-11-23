@@ -231,10 +231,152 @@ function normalizeWalkthrough(raw, source, evidence, nodeIds, chapterIds) {
   return { title: prose(raw.title, 80, '案例标题'), objective: prose(raw.objective, 260, '案例目标'), modules, steps, tasks }
 }
 
+const maxDraftLength = plan => plan.chapters[0].diagrams ? 120_000 : 80_000
+
+function normalizeChapter(chapter, planned, source, evidence, plan, ids) {
+  const chapterDesign = Boolean(plan.chapters[0].diagrams)
+  const claim = (value, field) => {
+    check(['purpose', 'usage', 'implementation'].includes(value), `${field} 的 claimType 必须为 purpose、usage 或 implementation。`)
+    return value
+  }
+  const blocks = list(chapter.blocks, 1, 14, `章节 ${planned.id} 的正文块`).map(block => {
+    check(id(block?.id) && !ids.has(block.id), '正文块编号必须唯一。')
+    ids.add(block.id)
+    const type = block.type
+    check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading', 'module-case', 'design-note'].includes(type),
+      '正文只接受 paragraph、steps、code、table、diagram、heading、module-case、design-note。')
+    if (type === 'design-note') return normalizeDesignNote(block, planned, source, evidence)
+    if (type === 'module-case') {
+      check(planned.role === 'module', 'module-case 只能出现在核心模块章。')
+      return normalizeModuleCase(block, source, evidence)
+    }
+    if (type === 'heading') {
+      const result = { id: block.id, type, claimType: claim(block.claimType ?? 'implementation', block.id),
+        refs: block.refs === undefined ? [] : references(block.refs, source, evidence, false, `小节 ${block.id} 的引用`),
+        text: prose(block.text, 60, '小节标题') }
+      if (!result.refs.length) delete result.refs
+      return result
+    }
+    const claimType = claim(block.claimType, block.id)
+    const primary = claimType === 'implementation' || type === 'code' || (type === 'diagram' && block.kind !== 'scenario')
+    const refs = references(block.refs, source, evidence, primary, `正文 ${block.id} 的引用`)
+    const result = { id: block.id, type, claimType, refs }
+    if (type === 'paragraph') result.text = prose(block.text, 600, '段落')
+    if (type === 'steps') result.items = list(block.items, 2, 7, '步骤').map(item => ({
+      text: prose(item?.text, 400, '步骤说明'), refs: references(item.refs, source, evidence, primary, '步骤引用'),
+    }))
+    if (type === 'table') {
+      result.columns = list(block.columns, 2, 5, '表格列').map(cell => prose(cell, 80, '列标题'))
+      result.rows = list(block.rows, 1, 8, '表格行').map(row => {
+        check(Array.isArray(row) && row.length === result.columns.length, '表格每行必须与列数一致。')
+        return row.map(cell => prose(cell, 250, '表格单元格'))
+      })
+    }
+    if (type === 'code') {
+      check(refs.length === 1 && refs[0].end - refs[0].start < 20, `源码示例 ${block.id} 需要单个 1–20 行的真实范围。`)
+      const ref = refs[0], file = evidence[ref.evidence - 1]
+      result.caption = prose(block.caption, 350, '源码说明')
+      result.path = file.path
+      result.lines = file.text.split('\n').slice(ref.start - file.start, ref.end - file.start + 1)
+      check(result.lines.length === ref.end - ref.start + 1, '源码示例超出已读取内容。')
+    }
+    if (type === 'diagram') {
+      check((planned.diagrams ?? plan.views).some(view => view.kind === block.kind),
+        `章节 ${planned.id} 的图示类型必须来自研究计划。`)
+      check(block.mermaid === undefined, '图示源码由程序生成，不接收模型编写的 Mermaid。')
+      const nodeIds = new Set(), connected = new Set(), edgeIds = new Set()
+      result.kind = block.kind
+      result.title = prose(block.title, 100, '图示标题')
+      result.purpose = prose(block.purpose, 450, '图示解释的问题')
+      result.nodes = list(block.nodes, 2, 8, '图示节点').map(node => {
+        check(id(node?.id) && !nodeIds.has(node.id) && wikiViewRoles.includes(node.role), '图示节点需要唯一编号和明确角色。')
+        nodeIds.add(node.id)
+        return { id: node.id, label: prose(node.label, 60, '图示节点名称'), role: node.role,
+          ...(node.detail !== undefined && { detail: prose(node.detail, 120, '图示节点职责') }),
+          ...(node.members !== undefined && { members: list(node.members, 1, 4, '图示节点成员')
+            .map(member => prose(member, 100, '图示节点字段或方法')) }),
+          refs: references(node.refs, source, evidence, primary, `图示节点 ${node.id} 的引用`) }
+      })
+      const edgeLimit = block.kind === 'sequence' ? wikiViewEdgeLimits.sequence : wikiViewEdgeLimits.other
+      result.edges = list(block.edges, 1, edgeLimit, '图示关系').map(edge => {
+        check(nodeIds.has(edge?.from) && nodeIds.has(edge?.to), `图示 ${block.id} 的关系 ${edge?.from} → ${edge?.to} 引用了未声明的节点。`)
+        check(edge.from !== edge.to || ['state', 'sequence'].includes(block.kind), `图示 ${block.id} 只在状态图或时序图里允许自连。`)
+        const label = prose(edge.label, 60, '图示关系含义')
+        const key = `${edge.from}:${edge.to}:${label}`
+        check(block.kind === 'sequence' || !edgeIds.has(key), '图示关系不应重复。')
+        check(edge.relation === undefined || wikiViewRelations.includes(edge.relation), '图示关系类型无效。')
+        const proposed = edge.contract
+        const blank = proposed && [proposed.entry, proposed.input, proposed.output].every(value => typeof value === 'string' && !value.trim())
+        const contract = proposed === undefined || blank ? undefined : {
+          entry: prose(proposed?.entry, 120, '接口名称'),
+          input: prose(proposed.input, 220, '接口输入'),
+          output: prose(proposed.output, 220, '接口输出'),
+        }
+        edgeIds.add(key); connected.add(edge.from); connected.add(edge.to)
+        const field = `图示关系引用 ${block.id}（${edge.from} → ${edge.to}：${label}）`
+        const refs = references(edge.refs, source, evidence, primary, field)
+        if (contract && !primary) check(refs.some(ref => {
+          const file = evidence[ref.evidence - 1]
+          return file.primary || file.kind === 'config'
+        }), `${field} 的接口至少需要一项有效实现证据或实际配置，文档只能作为补充。`)
+        return { from: edge.from, to: edge.to, label,
+          ...(edge.relation !== undefined && { relation: edge.relation }), ...(contract && { contract }),
+          refs }
+      })
+      check(connected.size === nodeIds.size, '图示每个节点都应参与它要解释的关系。')
+      if (block.kind === 'scenario') check(result.nodes.some(node => node.role === 'actor'), '用户场景视图需要真实的参与者角色。')
+    }
+    if (block.inlineCode !== undefined) {
+      const content = [result.text, result.caption, ...(result.items?.map(item => item.text) ?? []),
+        ...(result.columns ?? []), ...(result.rows?.flat() ?? [])].filter(Boolean).join('\n')
+      result.inlineCode = [...new Set((Array.isArray(block.inlineCode) ? block.inlineCode : []).filter(term =>
+        typeof term === 'string' && term.length > 0 && term.length <= 80 && !/[`|\r\n\u0000-\u001f]/.test(term)
+          && content.includes(term)))].slice(0, 8)
+    }
+    return result
+  })
+
+  if (!chapterDesign) check(!['heading', 'module-case'].includes(blocks[0].type),
+    `章节 ${planned.id} 的第一块应是段落或步骤，不能从小节标题或模块实例开始。`)
+  check(blocks.filter(block => block.type === 'heading').length <= 4, `章节 ${planned.id} 最多 4 个小节标题，请合并过于零碎的部分。`)
+  if (planned.role === 'module') {
+    if (!chapterDesign) {
+      check(blocks.some(block => block.type === 'paragraph'), `核心模块章 ${planned.id} 需要段落说明这个模块解决什么问题。`)
+      check(blocks.some(block => block.type === 'table'), `核心模块章 ${planned.id} 需要一张表格列出主要文件与职责。`)
+    }
+    const cases = blocks.filter(block => block.type === 'module-case').length
+    check(cases <= 1, `核心模块章 ${planned.id} 最多包含一个 module-case。`)
+    check(plan.moduleCases !== true || cases === 1, `核心模块章 ${planned.id} 缺少 module-case，请补全实现步骤、边界、修改位置和验证。`)
+  } else if (!chapterDesign && planned.role !== 'architecture') {
+    check(blocks.some(block => block.type === 'table' || block.type === 'diagram'),
+      `章节 ${planned.id} 需要至少一张表格或一张图，纯文字章节读者很难建立结构。`)
+  }
+  if (chapterDesign) {
+    const notes = blocks.filter(block => block.type === 'design-note')
+    const diagrams = blocks.filter(block => block.type === 'diagram')
+    check(notes.length === 1, `章节 ${planned.id} 需要一个 design-note，包含设计结论与实际影响。`)
+    check(diagrams.length === planned.diagrams.length && planned.diagrams.every((view, index) => diagrams[index].kind === view.kind),
+      `章节 ${planned.id} 需要依次提供 ${planned.diagrams.map(view => view.kind).join('、')} 图示。`)
+    const minimum = planned.role === 'architecture' ? 2 : planned.role === 'module' ? 1 : 0
+    const entries = new Set(diagrams.flatMap(view => view.edges.flatMap(edge => edge.contract ? [edge.contract.entry] : [])))
+    check(entries.size >= minimum, `章节 ${planned.id} 至少要在图中标明 ${minimum} 个不同的接口，包含入口、输入和输出。`)
+  }
+  return { id: planned.id, role: planned.role, title: prose(chapter.title, 40, '章节标题'),
+    ...(chapterDesign && { question: planned.question }), blocks }
+}
+
+export function normalizeWikiChapter(raw, source, evidence, plan, otherBlockIds = []) {
+  check(plan, '先提交研究计划，再提交章节。')
+  const planned = plan.chapters.find(chapter => chapter.id === raw?.id)
+  check(planned, '章节编号必须与已接受的研究计划一致。')
+  check(JSON.stringify(raw).length <= maxDraftLength(plan), `章节 ${planned.id} 过长，请集中解释本章问题。`)
+  return normalizeChapter(raw, planned, source, evidence, plan, new Set(otherBlockIds))
+}
+
 export function normalizeWikiDraft(raw, source, evidence, plan) {
   check(plan, '先提交研究计划，再提交草稿。')
   const chapterDesign = Boolean(plan.chapters[0].diagrams)
-  check(JSON.stringify(raw).length <= (chapterDesign ? 120_000 : 80_000), '草稿过长，请集中解释主要问题。')
+  check(JSON.stringify(raw).length <= maxDraftLength(plan), '草稿过长，请集中解释主要问题。')
   const submitted = new Map()
   for (const chapter of list(raw?.chapters, 2, 8, '草稿章节')) {
     check(id(chapter?.id) && !submitted.has(chapter.id), '章节编号必须唯一。')
@@ -244,137 +386,7 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
     '草稿章节必须与已接受的研究计划完全一致，缺少或新增了章节：'
     + plan.chapters.map(chapter => chapter.id + '（' + roleLabel[chapter.role] + '）').join('、'))
   const ids = new Set()
-  const claim = (value, field) => {
-    check(['purpose', 'usage', 'implementation'].includes(value), `${field} 的 claimType 必须为 purpose、usage 或 implementation。`)
-    return value
-  }
-  const chapters = plan.chapters.map(planned => {
-    const chapter = submitted.get(planned.id)
-    const blocks = list(chapter.blocks, 1, 14, `章节 ${planned.id} 的正文块`).map(block => {
-      check(id(block?.id) && !ids.has(block.id), '正文块编号必须唯一。')
-      ids.add(block.id)
-      const type = block.type
-      check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading', 'module-case', 'design-note'].includes(type),
-        '正文只接受 paragraph、steps、code、table、diagram、heading、module-case、design-note。')
-      if (type === 'design-note') return normalizeDesignNote(block, planned, source, evidence)
-      if (type === 'module-case') {
-        check(planned.role === 'module', 'module-case 只能出现在核心模块章。')
-        return normalizeModuleCase(block, source, evidence)
-      }
-      if (type === 'heading') {
-        const result = { id: block.id, type, claimType: claim(block.claimType ?? 'implementation', block.id),
-          refs: block.refs === undefined ? [] : references(block.refs, source, evidence, false, `小节 ${block.id} 的引用`),
-          text: prose(block.text, 60, '小节标题') }
-        if (!result.refs.length) delete result.refs
-        return result
-      }
-      const claimType = claim(block.claimType, block.id)
-      const primary = claimType === 'implementation' || type === 'code' || (type === 'diagram' && block.kind !== 'scenario')
-      const refs = references(block.refs, source, evidence, primary, `正文 ${block.id} 的引用`)
-      const result = { id: block.id, type, claimType, refs }
-      if (type === 'paragraph') result.text = prose(block.text, 600, '段落')
-      if (type === 'steps') result.items = list(block.items, 2, 7, '步骤').map(item => ({
-        text: prose(item?.text, 400, '步骤说明'), refs: references(item.refs, source, evidence, primary, '步骤引用'),
-      }))
-      if (type === 'table') {
-        result.columns = list(block.columns, 2, 5, '表格列').map(cell => prose(cell, 80, '列标题'))
-        result.rows = list(block.rows, 1, 8, '表格行').map(row => {
-          check(Array.isArray(row) && row.length === result.columns.length, '表格每行必须与列数一致。')
-          return row.map(cell => prose(cell, 250, '表格单元格'))
-        })
-      }
-      if (type === 'code') {
-        check(refs.length === 1 && refs[0].end - refs[0].start < 20, `源码示例 ${block.id} 需要单个 1–20 行的真实范围。`)
-        const ref = refs[0], file = evidence[ref.evidence - 1]
-        result.caption = prose(block.caption, 350, '源码说明')
-        result.path = file.path
-        result.lines = file.text.split('\n').slice(ref.start - file.start, ref.end - file.start + 1)
-        check(result.lines.length === ref.end - ref.start + 1, '源码示例超出已读取内容。')
-      }
-      if (type === 'diagram') {
-        check((planned.diagrams ?? plan.views).some(view => view.kind === block.kind),
-          `章节 ${planned.id} 的图示类型必须来自研究计划。`)
-        check(block.mermaid === undefined, '图示源码由程序生成，不接收模型编写的 Mermaid。')
-        const nodeIds = new Set(), connected = new Set(), edgeIds = new Set()
-        result.kind = block.kind
-        result.title = prose(block.title, 100, '图示标题')
-        result.purpose = prose(block.purpose, 450, '图示解释的问题')
-        result.nodes = list(block.nodes, 2, 8, '图示节点').map(node => {
-          check(id(node?.id) && !nodeIds.has(node.id) && wikiViewRoles.includes(node.role), '图示节点需要唯一编号和明确角色。')
-          nodeIds.add(node.id)
-          return { id: node.id, label: prose(node.label, 60, '图示节点名称'), role: node.role,
-            ...(node.detail !== undefined && { detail: prose(node.detail, 120, '图示节点职责') }),
-            ...(node.members !== undefined && { members: list(node.members, 1, 4, '图示节点成员')
-              .map(member => prose(member, 100, '图示节点字段或方法')) }),
-            refs: references(node.refs, source, evidence, primary, `图示节点 ${node.id} 的引用`) }
-        })
-        const edgeLimit = block.kind === 'sequence' ? wikiViewEdgeLimits.sequence : wikiViewEdgeLimits.other
-        result.edges = list(block.edges, 1, edgeLimit, '图示关系').map(edge => {
-          check(nodeIds.has(edge?.from) && nodeIds.has(edge?.to), `图示 ${block.id} 的关系 ${edge?.from} → ${edge?.to} 引用了未声明的节点。`)
-          check(edge.from !== edge.to || ['state', 'sequence'].includes(block.kind), `图示 ${block.id} 只在状态图或时序图里允许自连。`)
-          const label = prose(edge.label, 60, '图示关系含义')
-          const key = `${edge.from}:${edge.to}:${label}`
-          check(block.kind === 'sequence' || !edgeIds.has(key), '图示关系不应重复。')
-          check(edge.relation === undefined || wikiViewRelations.includes(edge.relation), '图示关系类型无效。')
-          const proposed = edge.contract
-          const blank = proposed && [proposed.entry, proposed.input, proposed.output].every(value => typeof value === 'string' && !value.trim())
-          const contract = proposed === undefined || blank ? undefined : {
-            entry: prose(proposed?.entry, 120, '接口名称'),
-            input: prose(proposed.input, 220, '接口输入'),
-            output: prose(proposed.output, 220, '接口输出'),
-          }
-          edgeIds.add(key); connected.add(edge.from); connected.add(edge.to)
-          const field = `图示关系引用 ${block.id}（${edge.from} → ${edge.to}：${label}）`
-          const refs = references(edge.refs, source, evidence, primary, field)
-          if (contract && !primary) check(refs.some(ref => {
-            const file = evidence[ref.evidence - 1]
-            return file.primary || file.kind === 'config'
-          }), `${field} 的接口至少需要一项有效实现证据或实际配置，文档只能作为补充。`)
-          return { from: edge.from, to: edge.to, label,
-            ...(edge.relation !== undefined && { relation: edge.relation }), ...(contract && { contract }),
-            refs }
-        })
-        check(connected.size === nodeIds.size, '图示每个节点都应参与它要解释的关系。')
-        if (block.kind === 'scenario') check(result.nodes.some(node => node.role === 'actor'), '用户场景视图需要真实的参与者角色。')
-      }
-      if (block.inlineCode !== undefined) {
-        const content = [result.text, result.caption, ...(result.items?.map(item => item.text) ?? []),
-          ...(result.columns ?? []), ...(result.rows?.flat() ?? [])].filter(Boolean).join('\n')
-        result.inlineCode = [...new Set((Array.isArray(block.inlineCode) ? block.inlineCode : []).filter(term =>
-          typeof term === 'string' && term.length > 0 && term.length <= 80 && !/[`|\r\n\u0000-\u001f]/.test(term)
-            && content.includes(term)))].slice(0, 8)
-      }
-      return result
-    })
-
-    if (!chapterDesign) check(!['heading', 'module-case'].includes(blocks[0].type),
-      `章节 ${planned.id} 的第一块应是段落或步骤，不能从小节标题或模块实例开始。`)
-    check(blocks.filter(block => block.type === 'heading').length <= 4, `章节 ${planned.id} 最多 4 个小节标题，请合并过于零碎的部分。`)
-    if (planned.role === 'module') {
-      if (!chapterDesign) {
-        check(blocks.some(block => block.type === 'paragraph'), `核心模块章 ${planned.id} 需要段落说明这个模块解决什么问题。`)
-        check(blocks.some(block => block.type === 'table'), `核心模块章 ${planned.id} 需要一张表格列出主要文件与职责。`)
-      }
-      const cases = blocks.filter(block => block.type === 'module-case').length
-      check(cases <= 1, `核心模块章 ${planned.id} 最多包含一个 module-case。`)
-      check(plan.moduleCases !== true || cases === 1, `核心模块章 ${planned.id} 缺少 module-case，请补全实现步骤、边界、修改位置和验证。`)
-    } else if (!chapterDesign && planned.role !== 'architecture') {
-      check(blocks.some(block => block.type === 'table' || block.type === 'diagram'),
-        `章节 ${planned.id} 需要至少一张表格或一张图，纯文字章节读者很难建立结构。`)
-    }
-    if (chapterDesign) {
-      const notes = blocks.filter(block => block.type === 'design-note')
-      const diagrams = blocks.filter(block => block.type === 'diagram')
-      check(notes.length === 1, `章节 ${planned.id} 需要一个 design-note，包含设计结论与实际影响。`)
-      check(diagrams.length === planned.diagrams.length && planned.diagrams.every((view, index) => diagrams[index].kind === view.kind),
-        `章节 ${planned.id} 需要依次提供 ${planned.diagrams.map(view => view.kind).join('、')} 图示。`)
-      const minimum = planned.role === 'architecture' ? 2 : planned.role === 'module' ? 1 : 0
-      const entries = new Set(diagrams.flatMap(view => view.edges.flatMap(edge => edge.contract ? [edge.contract.entry] : [])))
-      check(entries.size >= minimum, `章节 ${planned.id} 至少要在图中标明 ${minimum} 个不同的接口，包含入口、输入和输出。`)
-    }
-    return { id: planned.id, role: planned.role, title: prose(chapter.title, 40, '章节标题'),
-      ...(chapterDesign && { question: planned.question }), blocks }
-  })
+  const chapters = plan.chapters.map(planned => normalizeChapter(submitted.get(planned.id), planned, source, evidence, plan, ids))
 
   const diagrams = chapters.flatMap(chapter => chapter.blocks.filter(block => block.type === 'diagram'))
   if (!chapterDesign) check(diagrams.length === plan.views.length && new Set(diagrams.map(view => view.kind)).size === plan.views.length,
