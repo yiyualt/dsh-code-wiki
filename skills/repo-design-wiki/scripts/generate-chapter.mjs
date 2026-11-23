@@ -36,7 +36,7 @@ export async function generateChapter({
 ${context}
 
 1. 用 wiki_read 阅读 chapter.sources 提示的行及其附近源码。需要时用 wiki_list 查找文件，再用 wiki_read 核对。wiki_read 返回 handle、start 和 end，handle 只代表该次读到的行。例如 handle 为 r1 且第 9 行在范围内，则该位置的引用是 r1:9。目录或邻章给出的位置须在本次读取后才可引用。
-2. 按下方规则确定章节答案、论述顺序和所需图表，写好并检查正文。先调用 wiki_submit_chapter，参数为 markdown 和 handoff。在关键结论和代码摘录旁使用【r1:9】形式的源码引用。handoff 用一句话写清本章交出的结果，沿用正文里的名称。工具指出错误时按提示修正并重新提交正文。
+2. 按下方规则确定章节答案、论述顺序和所需图表。写好完整的 markdown 和 handoff，在关键结论和代码摘录旁使用【r1:9】形式的源码引用。handoff 用一句话写清本章交出的结果，沿用正文里的名称。需要验证引用时用 wiki_check_chapter 检查整份草稿，根据 citationErrors 修正引用或补读源码。wiki_submit_chapter 会立即保存给读者阅读，只用它提交完整正文。
 3. 收到正文接受消息后，用 wiki_submit_diagram 逐张提交正文图位声明的图。diagram.slot 填该图位的整数编号，例如 1。每条关系的 source 写成字符串 "r1:9"。无法核对或修正的图可以略过。正文和可交付的图已提交后，简短说明完成即可。
 
 ${chapterWriting.trim()}
@@ -44,8 +44,8 @@ ${chapterWriting.trim()}
 ${diagramModels.trim()}`
 
   signal?.throwIfAborted()
-  const { tools, evidence, sourceFor } = repositoryTools(repository, signal)
-  const submissions = createChapterSubmissions({ repository, signal, evidence, sourceFor, onEvent, diagnostic })
+  const { tools, evidence, sourceFor, citationError } = repositoryTools(repository, signal)
+  const submissions = createChapterSubmissions({ repository, signal, evidence, sourceFor, citationError, onEvent, diagnostic })
   const author = await openAuthor({ tools: [...tools, ...submissions.tools], signal })
   try {
     async function run(instruction) {
@@ -74,7 +74,7 @@ ${diagramModels.trim()}`
     if (!submissions.content && !turn.modelFailed) {
       const reason = submissions.bodyError ?? '还没有提交通过核对的正文。'
       turn = await run(`${reason}
-按正文写作规则修正并调用 wiki_submit_chapter，提交带有效【r1:9】式源码引用的 Markdown 正文和一句 handoff。必要时用 wiki_read 补读。正文接受后，再按已声明的图位逐张提交图。`)
+按正文写作规则修正完整的 Markdown 正文和一句 handoff。用 wiki_check_chapter 检查整份正文，按返回的引用范围更正或用 wiki_read 补读。随后用 wiki_submit_chapter 提交完整正文，正文接受后再按已声明的图位逐张提交图。`)
       issue = turnIssue(turn) || (submissions.content ? '' : issue)
     }
     if (!submissions.content) {

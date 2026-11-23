@@ -98,21 +98,30 @@ export function repositoryTools(repository, signal) {
     }
   }
 
-  function sourceFor(reference) {
-    if (typeof reference !== 'string') return null
-    const match = /^(r[1-9]\d*):([1-9]\d*)$/.exec(reference)
-    if (!match) return null
-    const range = readsByHandle.get(match[1])
-    const line = Number(match[2])
-    if (!range || !Number.isSafeInteger(line) || line < range.start || line > range.end) return null
-    return { path: range.path, line }
+  function inspectReference(reference) {
+    const match = typeof reference === 'string' && /^(r[1-9]\d*):([1-9]\d*)$/.exec(reference)
+    if (!match) return { error: { reference, reason: '引用须写成本次 wiki_read 返回的 handle 和行号，例如 r1:9。' } }
+    const [, handle, lineNumber] = match
+    const range = readsByHandle.get(handle)
+    if (!range) return { error: { reference, reason: `本次 wiki_read 未返回 ${handle}。` } }
+    const line = Number(lineNumber)
+    if (!Number.isSafeInteger(line) || line < range.start || line > range.end) {
+      const { path, start, end } = range
+      const alternative = [...readsByHandle].find(([, other]) =>
+        other.path === path && line >= other.start && line <= other.end)
+      const reason = `${handle} 只读取了 ${path} 的第 ${start}–${end} 行。`
+      const suggestedReference = alternative && `${alternative[0]}:${line}`
+      return { error: { reference, reason, path, start, end, ...(suggestedReference && { suggestedReference }) } }
+    }
+    return { source: { path: range.path, line } }
   }
 
   const string = { type: 'string' }
   const integer = { type: 'integer' }
   return {
     evidence,
-    sourceFor,
+    sourceFor: reference => inspectReference(reference).source ?? null,
+    citationError: reference => inspectReference(reference).error,
     tools: [
       tool('wiki_list', '列出已固定提交中的目录和可读文件。设定 match 可在目录内按路径递归匹配，使用 nextOffset 翻页。',
         { directory: string, match: string, offset: integer }, [], args => listPaths(repository, args)),
@@ -122,7 +131,7 @@ export function repositoryTools(repository, signal) {
   }
 }
 
-export function singleLine(value, maxLength) {
+export function singleLine(value, maxLength = Infinity) {
   const text = typeof value === 'string' ? value.trim() : ''
   return text.length <= maxLength && !/[\r\n\u2028\u2029]/.test(text) ? text : ''
 }

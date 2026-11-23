@@ -23,17 +23,23 @@ export function chapterFigureSlots(markdown, tree) {
   return figures
 }
 
-function codePositions(node) {
-  if (node.type === 'code' || node.type === 'inlineCode') return [node.position]
-  return node.children?.flatMap(codePositions) ?? []
-}
-
-export function replaceOutsideCode(markdown, replace, tree = fromMarkdown(markdown)) {
-  let result = ''
-  let previousEnd = 0
-  for (const { start, end } of codePositions(tree)) {
-    result += replace(markdown.slice(previousEnd, start.offset)) + markdown.slice(start.offset, end.offset)
-    previousEnd = end.offset
+export function replaceChapterText(markdown, replace, tree) {
+  const parts = []
+  let offset = 0
+  function visit(node) {
+    if (node.type === 'link' || node.type === 'linkReference') return
+    if (node.type !== 'text') {
+      node.children?.forEach(visit)
+      return
+    }
+    const { start, end } = node.position
+    const original = markdown.slice(start.offset, end.offset)
+    const updated = replace(original)
+    if (updated !== original) {
+      parts.push(markdown.slice(offset, start.offset), updated)
+      offset = end.offset
+    }
   }
-  return result + replace(markdown.slice(previousEnd))
+  visit(tree)
+  return parts.join('') + markdown.slice(offset)
 }

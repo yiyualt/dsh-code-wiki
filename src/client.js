@@ -200,12 +200,12 @@ window.__ModuleLoader__.load({
           }
           switch (message?.type) {
             case 'body':
-              if (content || !validChapterContent(message.content) || message.content.diagrams.length) {
+              if (!validChapterContent(message.content) || message.content.diagrams.length) {
                 return { error: chapterDataError }
               }
               content = message.content
               const slots = chapterFigureSlots(content.markdown)
-              if (slots.length) remainingSlots = new Set(slots.map(({ slot }) => slot))
+              remainingSlots = slots.length ? new Set(slots.map(({ slot }) => slot)) : undefined
               onContent(content)
               break
             case 'diagram':

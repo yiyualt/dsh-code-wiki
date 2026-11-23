@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-wiki",
-  "version": "0.30.3",
+  "version": "0.30.4",
   "description": "A repository wiki panel for DeepSeek Harness.",
   "type": "module",
   "engines": {
@@ -22,7 +22,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepack": "npm run build",
-    "check": "npm run build && node --check client.js && node -e \"import('./index.js')\""
+    "check": "npm run build && node --check client.js && node -e \"import('./index.js')\" && node --test"
   },
   "dsh": {
     "bundle": {
