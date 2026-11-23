@@ -19,6 +19,10 @@ function invalidStorage() {
   return storageError('wiki-storage-invalid', '代码百科文档的保存数据无效。')
 }
 
+function missingDocument() {
+  return storageError('wiki-document-not-found', '找不到这篇代码百科。')
+}
+
 function validId(id) {
   return typeof id === 'string' && documentId.test(id)
 }
@@ -107,8 +111,12 @@ function readLegacy(input, id, createdAt) {
 
 function readRecord(input, id) {
   const createdAt = isoTime(input?.createdAt)
-  if (input?.id !== id || !createdAt) return null
-  if (!Object.hasOwn(input, 'document')) return readLegacy(input, id, createdAt)
+  if (input?.id !== id || !createdAt || (input.archived !== undefined && typeof input.archived !== 'boolean')) return null
+  const archive = input.archived ? { archived: true } : {}
+  if (!Object.hasOwn(input, 'document')) {
+    const record = readLegacy(input, id, createdAt)
+    return record && { ...record, ...archive }
+  }
 
   const updatedAt = isoTime(input.updatedAt)
   const document = readDocument(input.document)
@@ -116,15 +124,15 @@ function readRecord(input, id) {
     || input.chapterWork.length !== document.chapters.length) return null
   const chapterWork = input.chapterWork.map(value => value === null ? null : readChapterWork(value))
   if (chapterWork.some((value, index) => value === null && input.chapterWork[index] !== null)) return null
-  return { id, createdAt, updatedAt, document, chapterWork }
+  return { id, createdAt, updatedAt, document, chapterWork, ...archive }
 }
 
-function summarize({ id, createdAt, updatedAt, document, chapterWork, legacy }) {
+function summarize({ id, createdAt, updatedAt, document, chapterWork, legacy, archived }) {
   const { title, source, location, commit, chapters } = document
   return {
     id, title, source, location, commit, createdAt, updatedAt,
     chapterCount: chapters.length, generatedCount: chapterWork.filter(work => work?.content).length,
-    ...(legacy && { legacy }),
+    ...(legacy && { legacy }), ...(archived && { archived }),
   }
 }
 
@@ -194,7 +202,9 @@ async function loadRecord(directory, id) {
       length += bytesRead
     }
     if (length !== info.size) return null
-    return readRecord(JSON.parse(bytes.subarray(0, length).toString('utf8')), id)
+    const persisted = JSON.parse(bytes.subarray(0, length).toString('utf8'))
+    const record = readRecord(persisted, id)
+    return record && { record, persisted }
   } catch (error) {
     if (error instanceof SyntaxError || ['ENOENT', 'ELOOP', 'EISDIR'].includes(error?.code)) return null
     throw error
@@ -236,6 +246,17 @@ export function createWikiStorage(directory) {
   const location = resolve(directory)
   const accessDirectory = directoryResolver(location)
   const queueDirectory = process.platform === 'darwin' && macSystemAlias.test(location) ? '/private' + location : location
+
+  async function updateRecord(id, operation) {
+    if (!validId(id)) throw missingDocument()
+    return serializeUpdate(join(queueDirectory, id), async () => {
+      const folder = await accessDirectory(false)
+      const stored = folder && await loadRecord(folder, id)
+      if (!stored) throw missingDocument()
+      return operation(stored, folder)
+    })
+  }
+
   return {
     async create(document) {
       const normalized = readDocument(document)
@@ -253,7 +274,7 @@ export function createWikiStorage(directory) {
     async get(id) {
       if (!validId(id)) return null
       const folder = await accessDirectory(false)
-      return folder ? loadRecord(folder, id) : null
+      return folder ? (await loadRecord(folder, id))?.record ?? null : null
     },
     async list() {
       const folder = await accessDirectory(false)
@@ -264,19 +285,25 @@ export function createWikiStorage(directory) {
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue
         const id = entry.name.slice(0, -5)
         if (!validId(id)) continue
-        const record = await loadRecord(folder, id)
-        if (record) summaries.push(summarize(record))
+        const stored = await loadRecord(folder, id)
+        if (stored) summaries.push(summarize(stored.record))
       }
       return summaries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id))
     },
+    async setArchived(id, archived) {
+      return updateRecord(id, async ({ record, persisted }, folder) => {
+        if (Boolean(record.archived) !== archived) await publishRecord(folder, { ...persisted, archived }, true)
+        return { id, archived }
+      })
+    },
+    async delete(id) {
+      return updateRecord(id, async (_stored, folder) => {
+        await unlink(join(folder, id + '.json'))
+        return { id, deleted: true }
+      })
+    },
     async updateChapter(id, index, transform) {
-      const missing = () => storageError('wiki-document-not-found', '找不到这篇代码百科。')
-      if (!validId(id)) throw missing()
-      return serializeUpdate(join(queueDirectory, id), async () => {
-        const folder = await accessDirectory(false)
-        if (!folder) throw missing()
-        const record = await loadRecord(folder, id)
-        if (!record) throw missing()
+      return updateRecord(id, async ({ record }, folder) => {
         if (record.legacy) throw storageError('wiki-document-read-only', '旧版归档文档只能阅读。')
         if (!Number.isSafeInteger(index) || index < 0 || index >= record.chapterWork.length) {
           throw storageError('wiki-chapter-not-found', '找不到该章节。')

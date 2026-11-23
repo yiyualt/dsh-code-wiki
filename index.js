@@ -22,7 +22,7 @@ const sourceErrors = new Map([
   ['repository-unavailable', 404], ['repository-no-evidence', 422],
   ['github-rate-limited', 429], ['github-request-failed', 502],
   ['wiki-document-not-found', 404], ['wiki-chapter-not-found', 404],
-  ['wiki-document-read-only', 409], ['wiki-chapter-busy', 409],
+  ['wiki-document-read-only', 409], ['wiki-chapter-busy', 409], ['wiki-document-busy', 409],
   ['wiki-storage-invalid', 500],
 ])
 
@@ -106,12 +106,34 @@ function repositoryInput({ source, location }) {
   return source === 'github' ? { repositoryUrl: location } : { repositoryPath: location }
 }
 
-function registerDocuments(ctx, storage) {
+function registerDocuments(ctx, storage, active) {
   ctx.connection.fetch.register({
     path: '/api/dsh-code-wiki/documents',
-    methods: ['GET'],
+    methods: ['GET', 'POST'],
     requestBody: 'buffered',
     async fetch(request) {
+      if (request.method === 'POST') {
+        const { id, action } = await request.json().catch(() => null) ?? {}
+        if (typeof id !== 'string' || !id || !['archive', 'restore', 'delete'].includes(action)) {
+          return Response.json({ error: '请选择有效的代码百科和操作。' }, { status: 400, headers: responseHeaders })
+        }
+        if (active.chapters.has(id) || active.documents.has(id)) {
+          return Response.json({ error: '这篇代码百科正在生成或更新，请完成后重试。' }, { status: 409, headers: responseHeaders })
+        }
+        active.documents.add(id)
+        try {
+          const result = action === 'delete' ? await storage.delete(id) : await storage.setArchived(id, action === 'archive')
+          return Response.json(result, { headers: responseHeaders })
+        } catch (error) {
+          if (error?.code === 'wiki-document-not-found') {
+            return Response.json({ error: error.message }, { status: 404, headers: responseHeaders })
+          }
+          return Response.json({ error: '无法更新这篇代码百科。请重试。' }, { status: 500, headers: responseHeaders })
+        } finally {
+          active.documents.delete(id)
+        }
+      }
+
       const id = new URL(request.url).searchParams.get('id')
       try {
         if (id === null) return Response.json({ documents: await storage.list() }, { headers: responseHeaders })
@@ -129,9 +151,11 @@ async function generateSavedChapter({ documentId, chapterIndex }, storage, activ
   if (typeof documentId !== 'string' || !Number.isSafeInteger(chapterIndex) || chapterIndex < 0) {
     throw wikiProblem('invalid-chapter-request', '请打开文档并选择要生成的章节。')
   }
-  const key = documentId + ':' + chapterIndex
-  if (active.has(key)) throw wikiProblem('wiki-chapter-busy', '本章正在另一个请求中生成，请稍后重新打开。')
-  active.add(key)
+  if (active.documents.has(documentId)) throw wikiProblem('wiki-document-busy', '这篇代码百科正在更新，请稍后重试。')
+  const running = active.chapters.get(documentId) ?? new Set()
+  if (running.has(chapterIndex)) throw wikiProblem('wiki-chapter-busy', '本章正在另一个请求中生成，请稍后重新打开。')
+  active.chapters.set(documentId, running)
+  running.add(chapterIndex)
   try {
     const record = await storage.get(documentId)
     if (!record) throw wikiProblem('wiki-document-not-found', '找不到这篇文档。')
@@ -188,7 +212,8 @@ async function generateSavedChapter({ documentId, chapterIndex }, storage, activ
     }
     return result
   } finally {
-    active.delete(key)
+    running.delete(chapterIndex)
+    if (!running.size) active.chapters.delete(documentId)
   }
 }
 
@@ -239,8 +264,8 @@ function registerGeneration(ctx, route, label, run) {
 
 export function apply(ctx) {
   const storage = createWikiStorage(join(ctx.profileContext.dir, 'dsh-code-wiki', 'documents'))
-  const active = new Set()
-  registerDocuments(ctx, storage)
+  const active = { chapters: new Map(), documents: new Set() }
+  registerDocuments(ctx, storage, active)
   ctx.skills.registerProvider(() => ({
     name,
     async list({ signal }) {

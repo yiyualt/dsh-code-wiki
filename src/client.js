@@ -20,6 +20,11 @@ window.__ModuleLoader__.load({
     const chapterInterrupted = '读取章节生成结果时连接中断。'
     const libraryError = '无法读取文档库，请重试。'
     const documentError = '无法打开这份文档，请重试。'
+    const documentActionErrors = {
+      archive: '无法归档这份 Wiki，请重试。',
+      restore: '无法恢复这份 Wiki，请重试。',
+      delete: '无法删除这份 Wiki，请重试。',
+    }
     const commitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
     const documentIdPattern = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i
     const libraryDate = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
@@ -120,6 +125,7 @@ window.__ModuleLoader__.load({
 
     function validDocumentSummary(summary) {
       return validDocumentId(summary?.id) && hasText(summary.title) && ['github', 'local'].includes(summary.source) &&
+        (summary.archived === undefined || typeof summary.archived === 'boolean') &&
         Number.isSafeInteger(summary.chapterCount) && summary.chapterCount > 0 &&
         Number.isSafeInteger(summary.generatedCount) && summary.generatedCount >= 0 && summary.generatedCount <= summary.chapterCount
     }
@@ -135,16 +141,28 @@ window.__ModuleLoader__.load({
     async function loadDocument(id) {
       const { result, error } = await requestDocuments(id, documentError)
       if (error) return { error }
-      const { document, chapterWork, legacy } = result ?? {}
+      const { document, chapterWork, legacy, archived } = result ?? {}
       if (result?.id !== id || !hasText(document?.title) || !hasText(document.location) ||
         (document.source !== 'local' && !(document.source === 'github' && githubRepository(document.location))) ||
+        (archived !== undefined && typeof archived !== 'boolean') ||
         !validOutline(document, document.source, legacy === true) ||
         !Array.isArray(chapterWork) || chapterWork.length > document.chapters.length ||
         chapterWork.some(work => work !== null && (!validChapterContent(work?.content, legacy === true) ||
           (work.warning !== undefined && typeof work.warning !== 'string')))) {
         return { error: documentError }
       }
-      return { record: { id, document, chapterWork, legacy: legacy === true } }
+      return { record: { id, document, chapterWork, legacy: legacy === true, archived: archived === true } }
+    }
+
+    async function changeDocument(id, action) {
+      const fallback = documentActionErrors[action]
+      const response = await requestWiki('documents', { id, action })
+      const { result, error } = await wikiJson(response, fallback)
+      if (error) return { error }
+      if (result?.id !== id || (action === 'delete' ? result.deleted !== true : result.archived !== (action === 'archive'))) {
+        return { error: fallback }
+      }
+      return { archived: result.archived }
     }
 
     async function* chapterLines(stream) {
@@ -257,6 +275,7 @@ window.__ModuleLoader__.load({
         draft: { source: 'github', repositoryUrl: '', repositoryPath: '' },
         view: 'library', opened: null, chapterIndex: 0, picker: null, generatingOutline: false, error: '',
         summaries: [], temporary: null, loadingLibrary: true, libraryError: '', openingId: null, openError: '',
+        managingId: null,
       }
       const listeners = new Set()
       const records = new Map()
@@ -314,7 +333,7 @@ window.__ModuleLoader__.load({
         },
         async openDocument(id = null) {
           if (snapshot.view === 'reader' || snapshot.generatingOutline || snapshot.picker ||
-            (id !== null && (!validDocumentId(id) || snapshot.openingId === id))) return
+            (id !== null && (!validDocumentId(id) || snapshot.openingId === id || snapshot.managingId === id))) return
           const cached = records.get(id)
           if (id === null && !cached) return
           const version = ++openVersion
@@ -328,6 +347,35 @@ window.__ModuleLoader__.load({
           if (version !== openVersion) return
           if (result.error) update({ openingId: null, openError: result.error })
           else showDocument(keepChapterErrors(result.record, cached))
+        },
+        async manageDocument(id, action) {
+          const fallback = documentActionErrors[action]
+          if (snapshot.managingId || snapshot.openingId === id || !snapshot.summaries.some(summary => summary.id === id)) {
+            return { error: fallback }
+          }
+          if (records.get(id)?.chapterWork.some(work => work?.pending)) {
+            return { error: '这份 Wiki 正在生成章节，完成后可以再操作。' }
+          }
+
+          update({ managingId: id })
+          const result = await changeDocument(id, action).catch(() => ({ error: fallback }))
+          if (result.error) {
+            update({ managingId: null })
+            return result
+          }
+
+          libraryVersion++
+          let summaries
+          if (action === 'delete') {
+            records.delete(id)
+            summaries = snapshot.summaries.filter(summary => summary.id !== id)
+          } else {
+            const record = records.get(id)
+            if (record) records.set(id, { ...record, archived: result.archived })
+            summaries = snapshot.summaries.map(summary => summary.id === id ? { ...summary, archived: result.archived } : summary)
+          }
+          update({ managingId: null, summaries, loadingLibrary: false, openError: '' })
+          return result
         },
         selectChapter(chapterIndex) {
           if (snapshot.opened?.document.chapters[chapterIndex] && snapshot.chapterIndex !== chapterIndex) update({ chapterIndex })
@@ -668,37 +716,126 @@ window.__ModuleLoader__.load({
           h('ol', null, files.map(path => h(ChapterSource, { key: path, repository, path })))))
     }
 
-    function DocumentLibrary({ summaries, temporary, loading, loadError, openError, openingId, disabled, formOpen, onOpen, onRefresh }) {
-      const documents = temporary ? [{ id: null, ...temporary.document,
-        chapterCount: temporary.document.chapters.length, generatedCount: generatedCount(temporary) }, ...summaries] : summaries
+    function DocumentRow({ document, opening, disabled, actionsDisabled, onOpen, onMove, onDelete }) {
+      const { id, title, source, chapterCount, generatedCount, updatedAt, legacy, archived } = document
+      const titleId = useId()
+      const date = Date.parse(updatedAt)
+      const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章` : '目录草稿'
+      return h('li', { className: 'dsh-code-wiki-document-row' },
+        h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: disabled || opening, onClick: () => onOpen(id) },
+          h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
+            h(source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
+          h('span', null, h('strong', { id: titleId }, title), h('small', { role: opening ? 'status' : undefined },
+            opening ? '正在打开…' : summary,
+            !opening && Number.isFinite(date) && h(Fragment, null, ' · ', h('time', { dateTime: updatedAt }, libraryDate.format(date))))),
+          h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true })),
+        id !== null && h('div', { className: 'dsh-code-wiki-document-actions' },
+          h(Button, { type: 'button', size: 'sm', disabled: actionsDisabled, 'aria-describedby': titleId,
+            onClick: () => onMove(document) }, archived ? '恢复' : '归档'),
+          h(Button, { type: 'button', size: 'sm', disabled: actionsDisabled, 'aria-describedby': titleId,
+            className: 'dsh-code-wiki-delete-action', onClick: () => onDelete(document) }, '删除')))
+    }
+
+    function ConfirmWikiDeletion({ title, busy, error, onClose, onConfirm }) {
+      const confirm = useRef(null)
+      useLayoutEffect(() => {
+        if (!busy && error) confirm.current?.focus({ preventScroll: true })
+      }, [busy, error])
+      return h(Modal, {
+        open: true, title: '删除 Wiki', closeLabel: '取消删除', onClose, className: 'dsh-code-wiki-delete-modal',
+        description: `永久删除「${title}」及其所有章节。删除后无法恢复。`,
+        onKeyDownCapture(event) {
+          if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 ||
+            event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+          event.preventDefault()
+          event.stopPropagation()
+          if (!busy && !event.repeat) void onConfirm()
+        },
+        footer: h(Fragment, null,
+          h(Button, { type: 'button', variant: 'outline', disabled: busy, onClick: onClose }, '取消'),
+          h(Button, { type: 'button', variant: 'outline', ref: confirm, className: 'dsh-code-wiki-delete-confirm',
+            'aria-disabled': busy, 'data-modal-autofocus': '', onClick: onConfirm }, busy ? '正在删除…' : '删除')),
+      }, error && h('p', { className: 'dsh-code-wiki-delete-error', role: 'alert' }, error))
+    }
+
+    function DocumentLibrary({ summaries, temporary, loading, loadError, openError, openingId, managingId, disabled, formOpen,
+      showArchived, onShowArchived, onOpen, onRefresh, onManage }) {
+      const [feedback, setFeedback] = useState(null)
+      const [deleteTarget, setDeleteTarget] = useState(null)
+      const [deleteError, setDeleteError] = useState('')
+      const activeFilter = useRef(null)
+      const busy = managingId !== null
+      const actionsDisabled = disabled || busy || openingId !== null
+      const documents = summaries.filter(summary => (summary.archived === true) === showArchived)
+      if (temporary && !showArchived) documents.unshift({ id: null, ...temporary.document,
+        chapterCount: temporary.document.chapters.length, generatedCount: generatedCount(temporary) })
+
+      useLayoutEffect(() => {
+        if (feedback && !feedback.error) activeFilter.current?.focus({ preventScroll: true })
+      }, [feedback])
+
+      function finishAction(text) {
+        setFeedback({ text, error: false })
+      }
+
+      async function moveDocument({ id, title, archived }) {
+        setFeedback(null)
+        const { error } = await onManage(id, archived ? 'restore' : 'archive')
+        if (error) setFeedback({ text: error, error: true })
+        else finishAction(archived ? `已恢复「${title}」。` : `已归档「${title}」。`)
+      }
+
+      async function confirmDelete() {
+        if (!deleteTarget || busy) return
+        setDeleteError('')
+        const { id, title } = deleteTarget
+        const { error } = await onManage(id, 'delete')
+        if (error) setDeleteError(error)
+        else {
+          setDeleteTarget(null)
+          finishAction(`已删除「${title}」。`)
+        }
+      }
+
       return h(Fragment, null,
+        h('div', { className: 'dsh-code-wiki-library-filters', role: 'group', 'aria-label': '文档状态' },
+          [false, true].map(archived => h(Button, { key: String(archived), ref: showArchived === archived ? activeFilter : undefined,
+            type: 'button', size: 'sm', variant: showArchived === archived ? 'primary' : 'ghost',
+            'aria-pressed': showArchived === archived, disabled: actionsDisabled,
+            onClick() {
+              setFeedback(null)
+              onShowArchived(archived)
+            },
+          }, archived ? '已归档' : '未归档'))),
         loadError && h('div', { className: 'dsh-code-wiki-library-feedback' },
           h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, loadError),
           h(Button, { type: 'button', size: 'sm', onClick: onRefresh }, '重试读取')),
         openError && h('p', { className: 'dsh-code-wiki-feedback', role: 'alert' }, openError),
+        feedback && h('p', { className: 'dsh-code-wiki-management-feedback', role: feedback.error ? 'alert' : 'status' }, feedback.text),
         loading && h('p', { className: documents.length ? 'dsh-code-wiki-announcement' : 'dsh-code-wiki-empty', role: 'status' }, '正在读取文档库…'),
-        !loading && !loadError && !formOpen && !documents.length && h('p', { className: 'dsh-code-wiki-empty' }, '还没有 Wiki'),
+        !loading && !loadError && !formOpen && !documents.length &&
+          h('p', { className: 'dsh-code-wiki-empty' }, showArchived ? '还没有已归档的 Wiki' : '还没有未归档的 Wiki'),
         documents.length > 0 && h('ul', { className: 'dsh-code-wiki-document-list', role: 'list' },
-          documents.map(({ id, title, source, chapterCount, generatedCount, updatedAt, legacy }) => {
-            const opening = id !== null && id === openingId
-            const date = Date.parse(updatedAt)
-            const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章` : '目录草稿'
-            return h('li', { key: id ?? 'temporary' }, h('button', {
-              type: 'button', className: 'dsh-code-wiki-document', disabled: disabled || opening, onClick: () => onOpen(id),
+          documents.map(document => h(DocumentRow, { key: document.id ?? 'temporary', document,
+            opening: document.id !== null && document.id === openingId,
+            disabled: disabled || (busy && document.id === managingId), actionsDisabled,
+            onOpen, onMove: moveDocument,
+            onDelete(target) {
+              setFeedback(null)
+              setDeleteError('')
+              setDeleteTarget({ id: target.id, title: target.title })
             },
-              h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
-                h(source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
-              h('span', null, h('strong', null, title), h('small', { role: opening ? 'status' : undefined },
-                opening ? '正在打开…' : summary,
-                !opening && Number.isFinite(date) && h(Fragment, null, ' · ', h('time', { dateTime: updatedAt }, libraryDate.format(date))))),
-              h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true })))
-          })))
+          }))),
+        deleteTarget && h(ConfirmWikiDeletion, { title: deleteTarget.title, busy, error: deleteError, onConfirm: confirmDelete,
+          onClose() { if (!busy) setDeleteTarget(null) },
+        }))
     }
 
     function CodeWikiPage({ store, listDirectory }) {
       const { draft, view, opened, chapterIndex, picker, generatingOutline, error,
-        summaries, temporary, loadingLibrary, libraryError, openingId, openError } = useSyncExternalStore(store.subscribe, store.getSnapshot)
+        summaries, temporary, loadingLibrary, libraryError, openingId, openError, managingId } = useSyncExternalStore(store.subscribe, store.getSnapshot)
       const { document, chapterWork, legacy } = opened ?? {}
+      const [showArchived, setShowArchived] = useState(false)
       const formId = useId()
       const mainlineId = useId()
       const page = useRef(null)
@@ -730,14 +867,18 @@ window.__ModuleLoader__.load({
               h(IconChevronRightOutlineRegular, { size: 13, 'aria-hidden': true }),
               document.source === 'github'
                 ? h('a', { href: document.location, target: '_blank', rel: 'noreferrer', title: '在 GitHub 打开 ' + document.title }, document.title)
-                : h('span', { title: document.location }, document.title))
+                : h('span', { title: document.location }, document.title),
+              opened.archived && h('span', { className: 'dsh-code-wiki-archive-status' }, '已归档'))
               : h('h1', { className: 'dsh-code-wiki-brand' },
                 h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true }, h(IconCodeOutlineRegular, { size: 20 })), '文档库'),
             !reading && h(Button, {
-              type: 'button', variant: formOpen ? 'outline' : 'primary', size: 'sm', disabled: Boolean(picker) || generatingOutline,
+              type: 'button', variant: formOpen ? 'outline' : 'primary', size: 'sm', disabled: Boolean(picker) || generatingOutline || managingId !== null,
               icon: formOpen ? undefined : h(IconPlusOutlineRegular, { size: 16 }),
               'aria-expanded': formOpen, 'aria-controls': formOpen ? formId : undefined,
-              onClick: store.toggleForm,
+              onClick() {
+                if (!formOpen) setShowArchived(false)
+                store.toggleForm()
+              },
             }, formOpen ? '取消新建' : '新建 Wiki')),
           reading ? h('div', { className: 'dsh-code-wiki-columns' },
             document.mainline.trim() && h('p', { id: mainlineId, className: 'dsh-code-wiki-mainline' },
@@ -760,8 +901,9 @@ window.__ModuleLoader__.load({
             : h('div', { className: 'dsh-code-wiki-library' },
               formOpen && h(SourceForm, { id: formId, draft, onChange: store.changeDraft, onSubmit: store.generateDocument,
                 error, picker, generatingOutline, onChooseFolder: store.chooseFolder, listDirectory }),
-              h(DocumentLibrary, { summaries, temporary, loading: loadingLibrary, loadError: libraryError, openError, openingId,
-                formOpen, disabled: Boolean(picker) || generatingOutline, onOpen: store.openDocument, onRefresh: store.refreshLibrary }))))
+              h(DocumentLibrary, { summaries, temporary, loading: loadingLibrary, loadError: libraryError, openError, openingId, managingId,
+                showArchived, onShowArchived: setShowArchived, formOpen, disabled: Boolean(picker) || generatingOutline,
+                onOpen: store.openDocument, onRefresh: store.refreshLibrary, onManage: store.manageDocument }))))
     }
 
     return {

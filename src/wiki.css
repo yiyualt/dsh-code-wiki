@@ -89,6 +89,13 @@
 
 .dsh-code-wiki-breadcrumb a:hover { text-decoration: underline; }
 
+.dsh-code-wiki-breadcrumb > .dsh-code-wiki-archive-status {
+  flex: none;
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .dsh-code-wiki-library-link {
   flex: none;
   min-height: 34px;
@@ -110,7 +117,7 @@
 }
 
 .dsh-code-wiki-form-card,
-.dsh-code-wiki-document,
+.dsh-code-wiki-document-row,
 .dsh-code-wiki-empty,
 .dsh-code-wiki-article {
   border: 1px solid var(--wiki-line);
@@ -265,6 +272,28 @@
 
 .dsh-code-wiki-library-feedback > p { flex: 1 1 220px; }
 
+.dsh-code-wiki-library-filters {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dsh-code-wiki-management-feedback {
+  margin: 0;
+  color: var(--wiki-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-management-feedback[role='alert'],
+.dsh-code-wiki-delete-error { color: var(--dsw-alias-state-error-primary); }
+
+.dsh-code-wiki-document-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
 .dsh-code-wiki-document {
   display: grid;
   width: 100%;
@@ -272,6 +301,9 @@
   align-items: center;
   gap: 12px;
   padding: 11px 14px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
   color: var(--wiki-ink);
   font: inherit;
   text-align: start;
@@ -281,12 +313,39 @@
 
 .dsh-code-wiki-document:hover:not(:disabled) { background: var(--wiki-selected); }
 .dsh-code-wiki-document:disabled { cursor: default; }
+.dsh-code-wiki-document:focus-visible { outline-offset: -2px; }
 
 .dsh-code-wiki-document small {
   display: block;
   margin-block-start: 4px;
   color: var(--wiki-muted);
 }
+
+.dsh-code-wiki-document-actions {
+  display: flex;
+  justify-content: end;
+  gap: 4px;
+  padding-inline: 4px 10px;
+}
+
+.dsh-code-wiki-document-actions > button { white-space: nowrap; }
+
+.dsh-code-wiki-document-actions > .dsh-code-wiki-delete-action,
+.dsh-code-wiki-delete-modal .dsh-code-wiki-delete-confirm {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-code-wiki-delete-modal .dsh-code-wiki-delete-confirm {
+  --dsh-button-outline-color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-code-wiki-delete-modal .dsh-code-wiki-delete-confirm[aria-disabled='true'] {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.dsh-code-wiki-delete-modal p { overflow-wrap: anywhere; }
+.dsh-code-wiki-delete-error { margin: 0; font-size: 13px; }
 
 .dsh-code-wiki-empty {
   margin: 0;
@@ -593,4 +652,6 @@
 
 @container code-wiki (max-width: 440px) {
   .dsh-code-wiki-bar { min-height: 58px; margin-block-end: 14px; }
+  .dsh-code-wiki-document-row { grid-template-columns: minmax(0, 1fr); }
+  .dsh-code-wiki-document-actions { padding: 0 8px 8px; }
 }
