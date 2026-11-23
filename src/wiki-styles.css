@@ -205,20 +205,9 @@
   text-align: end;
 }
 
-.dsh-code-wiki-chapter-copy {
-  overflow-wrap: anywhere;
-}
-
 .dsh-code-wiki-chapter-title {
-  display: block;
   font-weight: 620;
-}
-
-.dsh-code-wiki-chapter-detail {
-  display: block;
-  margin-block-start: 2px;
-  color: var(--wiki-muted);
-  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .dsh-code-wiki-sidebar .dsh-code-wiki-chapter-button:hover {

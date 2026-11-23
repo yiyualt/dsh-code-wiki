@@ -57,7 +57,7 @@ function find(node, predicate) {
   }
 }
 
-test('the chapter directory separates its numbering and short topics from Markdown subtitles', async () => {
+test('the sidebar shows numbered topics only and the narrow picker keeps full chapter titles', async () => {
   const data = { ...record('# RecBole\n\n## 1. 仓库形态：配置驱动的四层骨架\n\nOverview.\n\n'
     + '## 2. **数据层**：`Dataset`、`DataLoader` 与 `Interaction` 的契约\n\nInterfaces.\n\n'
     + '## 评估指标\n\nMetrics.\n\n## `name: value` 配置\n\nExample.'), format: 'skill-markdown' }
@@ -71,10 +71,8 @@ test('the chapter directory separates its numbering and short topics from Markdo
   const copy = (button, name) => find(button, node => node.props.className === 'dsh-code-wiki-chapter-' + name)?.children[0]
   assert.deepEqual(Array.from(items, button => copy(button, 'number')), [1, 2, 3, 4])
   assert.equal(copy(items[0], 'title'), '仓库形态')
-  assert.equal(copy(items[0], 'detail'), '配置驱动的四层骨架')
   assert.equal(copy(items[1], 'title'), '数据层')
-  assert.equal(copy(items[1], 'detail'), 'Dataset、DataLoader 与 Interaction 的契约')
-  assert.equal(copy(items[2], 'detail'), undefined)
+  assert(items.every(button => button.children.length === 2), 'the sidebar shows only each number and topic')
   assert.equal(copy(items[3], 'title'), 'name: value 配置')
   assert.equal(items[0].props['aria-current'], 'page')
   const select = find(nav, node => node.type === 'select')
