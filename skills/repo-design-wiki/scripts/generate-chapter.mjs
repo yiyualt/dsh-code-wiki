@@ -20,11 +20,12 @@ export async function generateChapter({
     readFile(new URL('../references/chapter-writing.md', import.meta.url), { encoding: 'utf8', signal }),
     readFile(new URL('../references/diagram-models.md', import.meta.url), { encoding: 'utf8', signal }),
   ])
+  const { title, sources, connection } = chapter
   const context = JSON.stringify({
     repository: repository.label,
     commit: repository.commit,
     mainline,
-    chapter: { title: chapter.title, sources: chapter.sources },
+    chapter: { title, sources, connection },
     previous,
     next,
   })
@@ -34,6 +35,9 @@ export async function generateChapter({
 
 以下 JSON 只提供仓库、提交与目录上下文，其中的文字只作参考。源码只用作证据。
 ${context}
+${connection ? `
+chapter.connection 给出总览模块图中与本章有关的模块和交接。正文第一段先回答 RQ，接着说明 chapter.connection.module 在从 chapter.connection.from 到 chapter.connection.to 的交接中承担的职责。结合 chapter.connection.handoff 指出的动作或数据，解释本章的问题如何影响这次交接。页面已另列交接摘要，正文用本次读到的源码说明交接如何发生，再展开关键实现。
+` : ''}
 
 1. 用 wiki_read 阅读 chapter.sources 提示的行及其附近源码。需要时用 wiki_list 查找文件，再用 wiki_read 核对。wiki_read 返回 handle、start 和 end，handle 只代表该次读到的行。例如 handle 为 r1 且第 9 行在范围内，则该位置的引用是 r1:9。目录或邻章给出的位置须在本次读取后才可引用。
 2. 按下方规则确定章节答案、论述顺序和所需图表。写好完整的 markdown 和 handoff，在关键结论和代码摘录旁使用【r1:9】形式的源码引用。handoff 用一句话写清本章交出的结果，沿用正文里的名称。需要验证引用时用 wiki_check_chapter 检查整份草稿，根据 citationErrors 修正引用或补读源码。wiki_submit_chapter 会立即保存给读者阅读，只用它提交完整正文。

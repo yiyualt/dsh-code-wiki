@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { link, lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises'
 import { isAbsolute, join, parse, relative, resolve, sep, win32 } from 'node:path'
 import { chapterFigureSlots, isFigureSlot } from '../skills/repo-design-wiki/scripts/chapter-figures.mjs'
+import { singleLine } from '../skills/repo-design-wiki/scripts/wiki-generation.mjs'
 
 const documentId = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/
 const gitCommit = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i
@@ -57,6 +58,13 @@ function validLocation(source, location, commit, legacy = false) {
   return source === 'local' && (isAbsolute(location) || (legacy && win32.isAbsolute(location)))
 }
 
+export function readChapterConnection(value) {
+  const { module, from, to, handoff } = value ?? {}
+  if ([module, from, to, handoff].some(field => !hasText(field) || singleLine(field) !== field)) return null
+  if (module !== from && module !== to) return null
+  return { module, from, to, handoff }
+}
+
 function readDocument(input) {
   const { source, title, location, mainline, commit, chapters, overview: rawOverview } = input ?? {}
   if (!validLocation(source, location, commit) || !hasText(title) || !hasText(mainline)
@@ -64,7 +72,9 @@ function readDocument(input) {
   const outline = Array.from(chapters, chapter => {
     const sources = sourceList(chapter?.sources)
     if (!hasText(chapter?.title) || !sources) return null
-    return { title: chapter.title, sources, markdown: '' }
+    const connection = chapter.connection === undefined ? undefined : readChapterConnection(chapter.connection)
+    if (connection === null) return null
+    return { title: chapter.title, sources, ...(connection && { connection }), markdown: '' }
   })
   if (outline.includes(null)) return null
   const overview = rawOverview === undefined ? undefined : readOverview(rawOverview)

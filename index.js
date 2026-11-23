@@ -7,7 +7,7 @@ import { generateOutline } from './skills/repo-design-wiki/scripts/generate-outl
 import { openRepository } from './skills/repo-design-wiki/scripts/read-repository.mjs'
 import { singleLine } from './skills/repo-design-wiki/scripts/wiki-generation.mjs'
 import { openWikiAuthor } from './src/wiki-author.js'
-import { createWikiStorage } from './src/wiki-storage.js'
+import { createWikiStorage, readChapterConnection } from './src/wiki-storage.js'
 
 export const name = 'dsh-code-wiki'
 export const inject = ['connection', 'skills', 'agents', 'agentDefaultModel', 'profileContext']
@@ -99,9 +99,14 @@ function chapterRequest(input) {
     || (next !== null && !singleLine(next, 500))) {
     throw wikiProblem('invalid-chapter-request', '章节因缺少目录、版本或源码位置，无法生成。请重新生成目录。')
   }
+  const connection = chapter.connection === undefined ? undefined : readChapterConnection(chapter.connection)
+  if (connection === null) throw wikiProblem('invalid-chapter-request', '章节的模块交接信息格式有误。')
   return {
     source, commit, mainline, next,
-    chapter: { title: chapter.title, sources: chapter.sources.map(({ path, line }) => ({ path, line })) },
+    chapter: {
+      title: chapter.title, sources: chapter.sources.map(({ path, line }) => ({ path, line })),
+      ...(connection && { connection }),
+    },
     previous: previous && { title: previous.title, handoff: previous.handoff },
   }
 }
@@ -289,12 +294,13 @@ export function apply(ctx) {
   registerGeneration(ctx, 'outline', '总览和目录', async (input, options) => {
     const repository = await openRepository(input, options.signal)
     const outline = await generateOutline({ repository, ...options })
-    if (!outline.overview) throw wikiProblem('wiki-outline-invalid', '总览需要正文和模块关系图。')
+    if (!outline.overview) throw wikiProblem('wiki-outline-invalid', '总览需要正文、逻辑架构图和模块关系图。')
     const origin = repository.webUrl
       ? { source: 'github', location: repository.webUrl }
       : { source: 'local', location: input.repositoryPath }
     const record = await storage.create({ ...origin, title: repository.label, ...outline })
-    return { id: record.id, ...outline, overview: record.document.overview }
+    const { chapters, overview } = record.document
+    return { id: record.id, ...outline, chapters, overview }
   })
 
   registerGeneration(ctx, 'chapter', '章节正文和图', async (input, options) => {

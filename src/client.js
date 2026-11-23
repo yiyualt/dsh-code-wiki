@@ -85,13 +85,19 @@ window.__ModuleLoader__.load({
       return typeof id === 'string' && documentIdPattern.test(id)
     }
 
+    function validChapterConnection(connection) {
+      return hasText(connection?.module) && hasText(connection.from) && hasText(connection.to) &&
+        hasText(connection.handoff) && (connection.module === connection.from || connection.module === connection.to)
+    }
+
     function validOutline(outline, source, legacy = false) {
       const { mainline, commit, chapters, overview } = outline ?? {}
       return (legacy ? typeof mainline === 'string' : hasText(mainline)) &&
         typeof commit === 'string' && commitId.test(commit) && (source !== 'github' || commit.length === 40) &&
         (overview === undefined || validContent(overview)) &&
         Array.isArray(chapters) && chapters.length > 0 && chapters.every(chapter =>
-          hasText(chapter?.title) && validSources(chapter.sources, legacy))
+          hasText(chapter?.title) && validSources(chapter.sources, legacy) &&
+          (chapter.connection === undefined || validChapterConnection(chapter.connection)))
     }
 
     async function loadOutline(repository) {
@@ -244,11 +250,11 @@ window.__ModuleLoader__.load({
 
     async function loadChapter(repository, documentId, chapterIndex, previousHandoff, onContent) {
       const { commit, mainline, chapters } = repository
-      const { title, sources } = chapters[chapterIndex]
+      const { title, sources, connection } = chapters[chapterIndex]
       const previous = chapters[chapterIndex - 1]
       const next = chapters[chapterIndex + 1]
       const response = await requestWiki('chapter', {
-        ...repositoryInput(repository), commit, mainline, chapter: { title, sources },
+        ...repositoryInput(repository), commit, mainline, chapter: { title, sources, connection },
         ...(documentId ? { documentId, chapterIndex } : {}),
         previous: previous ? { title: previous.title, handoff: previousHandoff } : null,
         next: next?.title ?? null,
@@ -654,11 +660,11 @@ window.__ModuleLoader__.load({
     }
 
     function ChapterDiagram({ diagram }) {
-      const { label, title, slot } = diagram
+      const { kind, label, title, slot } = diagram
       const titleId = useId()
       const [preview, setPreview] = useState(false)
 
-      return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId },
+      return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId, 'data-diagram-kind': kind, tabIndex: -1 },
         h('figcaption', { id: titleId },
           h('span', { className: 'dsh-code-wiki-diagram-kind' }, slot === undefined ? label : `图 ${slot}`), ' ', title),
         h(Button, { type: 'button', size: 'sm', variant: 'ghost', 'aria-haspopup': 'dialog',
@@ -896,6 +902,7 @@ window.__ModuleLoader__.load({
       const mainlineId = useId()
       const page = useRef(null)
       const articleHeading = useRef(null)
+      const showModuleDiagram = useRef(false)
       const reading = view === 'reader'
       const formOpen = view === 'form'
 
@@ -904,14 +911,32 @@ window.__ModuleLoader__.load({
       }, [store, view])
 
       useEffect(() => {
-        if (reading) {
-          if (page.current) page.current.scrollTop = 0
+        const reader = page.current
+        if (!reading || !reader) return
+        if (chapterIndex !== null || !showModuleDiagram.current) {
+          reader.scrollTop = 0
           articleHeading.current?.focus({ preventScroll: true })
+          return
         }
+        showModuleDiagram.current = false
+        const frame = requestAnimationFrame(() => {
+          const diagram = reader.querySelector('figure:is([data-diagram-kind="component"], [data-diagram-kind="dependency"])')
+          if (!diagram) {
+            reader.scrollTop = 0
+            articleHeading.current?.focus({ preventScroll: true })
+            return
+          }
+          const header = reader.querySelector('.dsh-code-wiki-bar')
+          reader.scrollTop += diagram.getBoundingClientRect().top - reader.getBoundingClientRect().top - (header?.offsetHeight ?? 0) - 12
+          diagram.focus({ preventScroll: true })
+        })
+        return () => cancelAnimationFrame(frame)
       }, [chapterIndex, reading])
 
       const showingOverview = chapterIndex === null
-      const title = showingOverview ? overviewTitle : document?.chapters[chapterIndex]?.title
+      const chapter = document?.chapters[chapterIndex]
+      const title = showingOverview ? overviewTitle : chapter?.title
+      const connection = chapter?.connection
       const { pending, content: chapterContent, error: chapterFailure, warning } = chapterWork?.[chapterIndex] ?? {}
       const content = showingOverview ? document?.overview : chapterContent
       const chapterNotice = chapterContent && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…'))
@@ -945,7 +970,18 @@ window.__ModuleLoader__.load({
               mainlineId: document.mainline.trim() ? mainlineId : undefined,
               onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
-              h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, title)),
+              h('header', null,
+                h('h1', { ref: articleHeading, tabIndex: -1 }, title),
+                connection && h('div', { className: 'dsh-code-wiki-chapter-connection' },
+                  h('p', null, '本章聚焦', h('strong', null, connection.module), '。模块图中，',
+                    connection.from, '到', connection.to, '的连线标为「', connection.handoff, '」。'),
+                  document.overview && h(Button, {
+                    type: 'button', size: 'sm', variant: 'outline',
+                    onClick() {
+                      showModuleDiagram.current = true
+                      store.selectChapter(null)
+                    },
+                  }, '查看总览模块图'))),
               !showingOverview && h('p', {
                 className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
                 role: chapterNotice && chapterFailure ? 'alert' : 'status',

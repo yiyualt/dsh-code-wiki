@@ -14,7 +14,7 @@ const outline = {
   mainline: '入口读取配置后交给执行模块。',
   chapters: [{ title: '入口怎样读取配置？', sources }],
 }
-const overview = {
+const moduleOverview = {
   markdown: '入口载入配置【1】。图 1 展示模块的交接关系。\n\n[[figure:1]]',
   sources,
   diagrams: [{
@@ -27,6 +27,16 @@ const overview = {
     slot: 1,
   }],
 }
+const overview = {
+  markdown: '图 1 展示项目的逻辑架构【1】。\n\n[[figure:1]]\n\n图 2 展示模块交接。\n\n[[figure:2]]',
+  sources,
+  diagrams: [
+    { ...moduleOverview.diagrams[0], kind: 'architecture', label: '逻辑架构图', title: '入口和业务层' },
+    { ...moduleOverview.diagrams[0], slot: 2 },
+  ],
+}
+const connection = { module: '执行模块', from: '入口', to: '执行模块', handoff: '提交配置' }
+const connectedChapter = { ...outline.chapters[0], connection }
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-wiki-storage-'))
@@ -34,11 +44,12 @@ async function fixture(t) {
   return createWikiStorage(directory)
 }
 
-test('saved overview survives chapter writes and archive while counts only track RQ chapters', async t => {
+test('overview diagrams and RQ connection survive chapter writes and archive', async t => {
   const storage = await fixture(t)
-  const { id } = await storage.create({ ...outline, overview })
+  const { id } = await storage.create({ ...outline, overview, chapters: [connectedChapter] })
   const before = await storage.get(id)
   assert.deepEqual(before.document.overview, overview)
+  assert.deepEqual(before.document.chapters[0].connection, connection)
   assert.deepEqual(before.chapterWork, [null])
   assert.equal((await storage.list())[0].chapterCount, 1)
   assert.equal((await storage.list())[0].generatedCount, 0)
@@ -55,29 +66,50 @@ test('saved overview survives chapter writes and archive while counts only track
   const after = await storage.get(id)
   assert.equal(after.archived, true)
   assert.deepEqual(after.document.overview, overview)
+  assert.deepEqual(after.document.chapters[0].connection, connection)
   const [summary] = await storage.list()
   assert.equal(summary.hasOverview, true)
   assert.equal(summary.chapterCount, 1)
   assert.equal(summary.generatedCount, 1)
 })
 
-test('previous Wiki records with no overview still load', async t => {
+test('previous Wiki records with no overview or connection still load', async t => {
   const storage = await fixture(t)
   const { id } = await storage.create(outline)
   const existing = await storage.get(id)
   assert.equal(Object.hasOwn(existing.document, 'overview'), false)
+  assert.equal(Object.hasOwn(existing.document.chapters[0], 'connection'), false)
   assert.equal(Object.hasOwn((await storage.list())[0], 'hasOverview'), false)
   assert.deepEqual(existing.chapterWork, [null])
+
+  const olderOverview = await storage.create({ ...outline, overview: moduleOverview })
+  const record = await storage.get(olderOverview.id)
+  assert.deepEqual(record.document.overview, moduleOverview)
+  assert.equal(Object.hasOwn(record.document.chapters[0], 'connection'), false)
 })
 
 test('storage rejects incomplete overview figures and overviews without a module diagram', async t => {
   const storage = await fixture(t)
   for (const invalid of [
     { ...overview, markdown: '入口载入配置【1】。' },
-    { ...overview, markdown: overview.markdown + '\n\n[[figure:2]]' },
-    { ...overview, diagrams: [{ ...overview.diagrams[0], kind: 'flow' }] },
+    { ...overview, markdown: overview.markdown + '\n\n[[figure:3]]' },
+    { ...overview, diagrams: [overview.diagrams[0], { ...overview.diagrams[1], kind: 'flow' }] },
   ]) {
     await assert.rejects(storage.create({ ...outline, overview: invalid }), { code: 'wiki-storage-invalid' })
+  }
+  assert.deepEqual(await storage.list(), [])
+})
+
+test('storage requires complete, single-line connections involving the RQ module', async t => {
+  const storage = await fixture(t)
+  for (const invalid of [
+    null,
+    { ...connection, handoff: undefined },
+    { ...connection, from: '入\n口' },
+    { ...connection, module: '无关模块' },
+  ]) {
+    const chapters = [{ ...connectedChapter, connection: invalid }]
+    await assert.rejects(storage.create({ ...outline, overview, chapters }), { code: 'wiki-storage-invalid' })
   }
   assert.deepEqual(await storage.list(), [])
 })

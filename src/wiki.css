@@ -484,6 +484,23 @@
 
 .dsh-code-wiki-article h1:focus { outline: none; }
 
+.dsh-code-wiki-chapter-connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  margin-block-start: 14px;
+}
+
+.dsh-code-wiki-article .dsh-code-wiki-chapter-connection p {
+  flex: 1 1 280px;
+  margin: 0;
+  line-height: 1.65;
+}
+
+.dsh-code-wiki-chapter-connection strong { color: var(--wiki-ink); }
+.dsh-code-wiki-chapter-connection > button { white-space: nowrap; }
+
 .dsh-code-wiki-chapter-action,
 .dsh-code-wiki-chapter-content {
   display: grid;

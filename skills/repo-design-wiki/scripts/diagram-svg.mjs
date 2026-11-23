@@ -11,6 +11,7 @@ export const diagramColors = {
 }
 
 const labels = new Map([
+  ['architecture', '逻辑架构图'],
   ['context', '系统上下文图'],
   ['component', '组件图'],
   ['dependency', '依赖图'],
@@ -85,6 +86,16 @@ export function renderCitation(number, x, y, sourceAt) {
   if (!url) return '<g aria-label="' + description + '">' + metadata + mark + '</g>'
   return '<a href="' + escapeSvg(url) + '" target="_blank" rel="noreferrer" aria-label="' + description
     + '">' + metadata + mark + '</a>'
+}
+
+export function diagramSourceAt(sources, { webUrl, commit }) {
+  return number => {
+    const { path, line } = sources[number - 1]
+    const position = path + ':' + line
+    if (!webUrl) return { position }
+    const filePath = path.split('/').map(encodeURIComponent).join('/')
+    return { position, url: webUrl + '/blob/' + commit + '/' + filePath + '#L' + line }
+  }
 }
 
 export function svgFigure(diagram, width, height, body) {
