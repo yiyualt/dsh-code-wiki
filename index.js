@@ -39,10 +39,7 @@ function generationFailure(error, route, label) {
   if (sourceStatus) return { status: sourceStatus, message: error.message }
   if (error?.code === 'wiki-skill-unavailable') return { status: 500, message: '无法读取代码百科 Skill。' }
   if (error?.code === 'wiki-model-unavailable') return { status: 502, message: '暂时无法使用 DSH 当前模型。' }
-  if (route === 'chapter' && error?.code === 'wiki-chapter-invalid') return { status: 502, message: error.message }
-  if (error?.code === `wiki-${route}-invalid` || error?.code === 'wiki-author-invalid') {
-    return { status: 502, message: `模型未能生成有效的${label}，请重试。` }
-  }
+  if (error?.code === `wiki-${route}-invalid`) return { status: 502, message: error.message }
   return { status: 500, message: `无法生成代码百科${label}，请重试。` }
 }
 
@@ -234,18 +231,15 @@ function registerGeneration(ctx, route, label, run) {
     async fetch(request) {
       const input = await request.json().catch(() => null)
       const { signal } = request
-      const requestId = route === 'chapter' ? randomUUID() : null
-      const headers = requestId
-        ? { ...responseHeaders, 'x-dsh-wiki-request-id': requestId, vary: 'Accept' }
-        : responseHeaders
+      const requestId = randomUUID()
+      const chapterRoute = route === 'chapter'
+      const headers = { ...responseHeaders, 'x-dsh-wiki-request-id': requestId, ...(chapterRoute && { vary: 'Accept' }) }
       // Generation diagnostics are supplied by the Skill and contain status details only.
-      const diagnostic = requestId
-        ? record => console.info('[dsh-code-wiki]', JSON.stringify({ requestId, ...record }))
-        : undefined
+      const diagnostic = record => console.info('[dsh-code-wiki]', JSON.stringify({ requestId, route, ...record }))
       const fail = error => {
         const failure = generationFailure(error, route, label)
         const code = typeof error?.code === 'string' && /^[a-z][a-z\d_-]*$/i.test(error.code) ? error.code : 'internal'
-        diagnostic?.({ phase: 'request', status: 'failed', code, httpStatus: failure.status })
+        diagnostic({ phase: 'request', status: 'failed', code, httpStatus: failure.status })
         return failure
       }
       const execute = async (generationSignal, onEvent) => {
@@ -257,7 +251,7 @@ function registerGeneration(ctx, route, label, run) {
           openAuthor: options => openWikiAuthor(ctx, options),
         })
       }
-      if (requestId && request.headers.get('accept')?.includes('application/x-ndjson')) {
+      if (chapterRoute && request.headers.get('accept')?.includes('application/x-ndjson')) {
         return streamChapter(signal, headers, execute, fail)
       }
       try {

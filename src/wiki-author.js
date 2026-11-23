@@ -51,6 +51,7 @@ export async function openWikiAuthor(ctx, { tools, signal }) {
     signal.throwIfAborted()
     const turn = events().slice(cursor)
     const end = turn.findLast(event => event.type === 'turn/end')?.data
+    const failure = end?.reason?.error ?? end?.reason?.failure
     const content = end && turn.findLast(event => event.type === 'assistant/message' && event.data?.turn === end.turn)
       ?.data?.message?.content
     const blocks = Array.isArray(content) ? content : null
@@ -58,19 +59,11 @@ export async function openWikiAuthor(ctx, { tools, signal }) {
       kind: end?.reason?.kind ?? 'missing-end',
       text: blocks && blocks.filter(block => block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text).join('\n\n'),
-      modelFailed: Boolean(end?.reason?.error || end?.reason?.failure),
+      modelFailed: Boolean(failure),
+      malformedResponse: failure?.code === 'MALFORMED_RESPONSE',
       pendingTool: blocks?.some(block => block.type === 'tool-call') ?? false,
     }
   }
 
-  return {
-    run,
-    async reply(prompt) {
-      const result = await run(prompt)
-      if (result.modelFailed) throw authorError('wiki-model-unavailable')
-      if (result.kind !== 'completed' || result.text === null || result.pendingTool) throw authorError('wiki-author-invalid')
-      return result.text
-    },
-    dispose,
-  }
+  return { run, dispose }
 }

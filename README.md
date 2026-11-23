@@ -10,7 +10,7 @@
 npm ci
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.32.0.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.32.1.tgz
 ```
 
 所选仓库的源码片段会交给当前模型用于生成总览、目录和章节正文。Skill 根据本章内容选图，并把图形数据绘成附源码引用的 SVG。插件负责在阅读页显示。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。
@@ -19,7 +19,7 @@ dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.32.0.tgz
 
 章节用具体输入和关键源码片段解释结果如何产生。正文直接呈现表格，图生成后放在首次说明它的段落下方。已保存章节会恢复图的位置。
 
-章节正文和每张图通过校验后会依次显示。正文和已完成的图会保留，页面显示尚未交付的内容遇到的问题。DSH 服务日志中的 `[dsh-code-wiki]` 记录请求编号、阶段和校验结果，便于定位失败。
+总览正文、两张图和 RQ 目录分别通过工具校验后一起保存。章节正文和每张图通过校验后会依次显示。正文和已完成的图会保留，页面显示尚未交付的内容遇到的问题。DSH 服务日志中的 `[dsh-code-wiki]` 记录请求编号、生成类型、阶段和校验结果，便于定位失败。
 
 文档库保存在当前 DSH profile 的 `dsh-code-wiki/documents/`。总览和目录完成时创建文档。各 RQ 的正文和图通过核对后逐步保存。刷新页面或重启 DSH 后，可以从文档库继续阅读已有结果，并生成未完成的章节。旧版归档在同一目录下可供阅读。
 

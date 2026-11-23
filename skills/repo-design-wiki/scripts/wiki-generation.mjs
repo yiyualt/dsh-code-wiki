@@ -158,29 +158,3 @@ export function parseReply(response, invalid) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) throw invalid('结果必须是一个 JSON 对象。')
   return result
 }
-
-export async function generateFromRepository({ repository, openAuthor, signal, prompt, parse, code }) {
-  const { tools, evidence } = repositoryTools(repository, signal)
-  const invalid = message => Object.assign(new Error(message), { code })
-  const parseResponse = response => {
-    signal?.throwIfAborted()
-    return parse(parseReply(response, invalid), evidence, invalid)
-  }
-
-  signal?.throwIfAborted()
-  const author = await openAuthor({ tools, signal })
-  try {
-    const response = await author.reply(prompt)
-    try {
-      return parseResponse(response)
-    } catch (error) {
-      if (error?.code !== code) throw error
-      const corrected = await author.reply(
-        `${error.message} 请根据已读源码修正结果。必要时先用工具补充证据，然后只返回符合约定的 JSON 对象。`,
-      )
-      return parseResponse(corrected)
-    }
-  } finally {
-    await author.dispose()
-  }
-}
