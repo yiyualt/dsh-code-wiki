@@ -198,24 +198,33 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
         if (publication.draft) return publication.draft
         const turn = agent.session?.snapshotEvents?.().findLast(event => event.type === 'turn/end')
         const failure = turn?.data?.reason?.error ?? turn?.data?.reason?.failure
+        let malformedResponse
         if (failure) {
           const wrapped = failure.code === 'UNKNOWN' ? modelError({ code: failure.message }) : null
-          throw wrapped?.providerCode ? wrapped : modelError(failure)
+          const error = wrapped?.providerCode ? wrapped : modelError(failure)
+          // DSH rejects invalid tool JSON before executing it or replaying it in model history.
+          if (!skill || error.providerCode !== 'MALFORMED_RESPONSE') throw error
+          malformedResponse = error
         }
         const reason = turn?.data?.reason?.kind
-        const detail = lastRejection || (skill ? '尚未完成分章提交。' : submissions
+        const detail = malformedResponse ? '模型返回的工具参数格式无效，正在自动重试。' : lastRejection || (skill ? '尚未完成分章提交。' : submissions
           ? '尚未收到完整、有效的 kind=draft 提交。' : '研究代理结束前没有调用 wiki_publish。')
-        lastRetry = { reasonCategory: lastRejection ? 'validation' : 'missing-publication', retryMessage: detail }
+        const reasonCategory = malformedResponse ? 'model-response' : lastRejection ? 'validation' : 'missing-publication'
+        lastRetry = { reasonCategory, retryMessage: detail }
         progress('writing', 'submission-retry', { plan })
         const completed = staged.size + Number(Boolean(plan))
         stalled = completed > previousCount ? 0 : stalled + 1
         previousCount = completed
-        if (stalled >= 3 || attempt === (skill ? 11 : 2)) throw wikiInvalid((skill ? '研究代理未能完成有效草稿：'
-          : '研究代理三次尝试后尚未提交有效草稿：') + detail.slice(0, 900)
-          + (reason === 'max-tokens' ? '模型输出达到长度上限。' : '') + (skill ? '' : '本次没有保存不完整文档。'))
+        if (stalled >= 3 || attempt === (skill ? 11 : 2)) {
+          if (malformedResponse) throw malformedResponse
+          throw wikiInvalid((skill ? '研究代理未能完成有效草稿：'
+            : '研究代理三次尝试后尚未提交有效草稿：') + detail.slice(0, 900)
+            + (reason === 'max-tokens' ? '模型输出达到长度上限。' : '') + (skill ? '' : '本次没有保存不完整文档。'))
+        }
         if (skill) {
           prompt = (plan ? chapterStatus() : '调用 wiki_submit_plan 先提交研究计划。') + '\n最近校验反馈：' + detail
             + '\n已被接受的章节仍有效。每次只提交一章，先修正出错的字段或提交下一章。所有章通过后调用 wiki_finish。'
+          if (malformedResponse) prompt += '\n重新组织本次调用的 JSON 参数。保留源码引用，压缩重复叙述，每次只调用一个提交工具。'
           continue
         }
         prompt = '研究尚未完成，也没有保存任何文档。继续当前任务，必须调用 wiki_publish(kind=draft) 提交有效草稿，不能只在聊天中回复。'

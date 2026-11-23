@@ -13,7 +13,7 @@ DSH 代理加载 `repo-design-wiki` Skill，通过只读目录、代码读取和
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.18.0.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.18.1.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
@@ -36,6 +36,8 @@ dsh plugin --profile web add ./dsh-code-wiki-0.18.0.tgz
 已接受的研究计划、已读源码依据、已通过校验的章节和完整草稿保存在 profile 的 `dsh-code-wiki-checkpoints/`。刷新或重启后可以在生成表单点击「继续生成」，恢复同一仓库提交的研究记录。已有有效草稿时从审核开始，旧版计划或草稿需要更新时继续使用已读源码和原证据编号。发布成功后会删除本次任务和直接恢复的研究记录。生成 API 也接受 `resumeFrom`（原任务编号）。普通的新建请求从头研究。
 
 每次生成加载 DSH 用户技能目录中的 `repo-design-wiki/SKILL.md` 和 `references/diagrams.md`。首次安装可以直接使用随包版本。个人 Skill 更新后，下次生成会读取新版。
+
+模型返回无效工具参数时，分章生成会在当前任务内自动重试，继续使用已通过的章节和源码证据。连续三轮没有新增进度时结束本次尝试，并保留可恢复记录。
 
 使用单独配置的模型服务生成 Wiki 时，请求采用流式传输，收到完整结果后才执行工具；连接中断或暂时服务错误最多自动重试两次。认证错误、无效请求和取消不重试。仓库介绍视频沿用原有请求方式。
 

@@ -45,11 +45,11 @@ export const wikiSkillTransportInstructions = `本次任务是在代码百科里
 1. 通过 wiki_submit_plan 提交计划对象。选择 2–5 个实际模块，总计 4–8 章，顺序为 overview → quickstart（可选）→ architecture → 各 module → flow（可选）→ extension（可选）。小仓库优先只设 overview、architecture 和各 module。每个模块对应一章并填写 module 编号。每章优先计划一张图，第二张只用于另一个问题，全文最多 12 张。研究项 paths 填具体文件，walkthrough 填贯穿案例的题目和问题。恢复已有计划时按已接受的章节继续。
 2. 每次调用 wiki_submit_chapter 提交一章 {id,title,blocks}，收到结果后继续下一章。引用用已读取范围的 {evidence,start,end}，每组 1–6 项，每段建议不超过 25 行。需要实现证据的引用全部使用实际源码或配置。每章至少提交以下图文块。
    - {id,type:"design-note",answer,refs,rules:[{rule,consequence,refs}]}。answer 和各条规则分别带引用，每章有 2–4 条规则。
-   - 图示块 {id,type:"diagram",kind,title,purpose,claimType,refs,nodes,edges}。图、每个节点和每条边各自带 refs。用途类场景图用 claimType="usage"，其他图用 "implementation"。节点 role 选择 actor、component、process、data、store、decision、start 或 end；from 和 to 指向图内已有节点。接口在边的 contract 中填写 entry、input、output。按本章计划给图，architecture 至少有两个接口，每个 module 至少一个。
+   - 图示块 {id,type:"diagram",kind,title,purpose,claimType,refs,nodes,edges}。图、每个节点和每条边各自带 refs。用途类场景图用 claimType="usage"，其他图用 "implementation"。每图 2–8 个节点，时序图最多 16 条边，其余最多 10 条，节点和边的 label 不超过 60 字符。节点 role 选择 actor、component、process、data、store、decision、start 或 end；from 和 to 指向图内已有节点。接口在边的 contract 中填写 entry、input、output。按本章计划给图，architecture 至少有两个接口，每个 module 至少一个。
    - 每个 module 交一个 {id,type:"module-case",title,items:[{text,refs}],boundary:{condition,result,refs},change:{goal,location,refs},verification:{action,expected,refs}}。items 填 2–7 条，题目写仓库实际行为。
 3. 各章通过校验后，调用 wiki_finish 提交 coverage、graph 和 walkthrough。coverage 对应各研究领域，graph 节点与关系用实际实现或配置证据。案例 modules 指向 graph 节点，steps 的首尾和至少一个中间步骤要提供 data，tasks 各含一个 feature 和 debug，并引用案例中的步骤。
 
-收到某章校验反馈时定向修改该章，其他已接受章节会保留。只有 wiki_finish 确认成功后任务才完成。`
+表格、步骤、段落等补充块也须带 claimType 和 refs，steps 的各项另带 refs。核对 start 和 end 都落在同一个 evidence 已读范围。收到某章校验反馈时定向修改该章，其他已接受章节会保留。只有 wiki_finish 确认成功后任务才完成。`
 
 const ref = { type: 'object', properties: { evidence: { type: 'integer', minimum: 1 }, start: { type: 'integer', minimum: 1 }, end: { type: 'integer', minimum: 1 } },
   required: ['evidence', 'start', 'end'], additionalProperties: false }

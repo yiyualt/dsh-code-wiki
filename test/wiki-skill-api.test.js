@@ -18,6 +18,7 @@ const apiRoot = '/api/dsh-code-wiki/'
 const skillInstruction = '先验证关键条件对结果的影响。'
 const guideInstruction = '图旁标注实际调用方与实现。'
 const skillText = `---\nname: repo-design-wiki\ndescription: Read a repository.\n---\n${skillInstruction}\n`
+const invalidToolJson = { code: 'MALFORMED_RESPONSE', message: 'DeepSeek Messages stream: tool input is invalid JSON' }
 
 async function initRepository(directory) {
   await mkdir(directory)
@@ -175,6 +176,53 @@ test('the generation route uses the installed Skill and retains accepted chapter
   assert.equal(result?.phase, 'completed', result?.error)
   assert.equal(api.authorRounds(), 1, 'correcting one chapter does not restart the author or re-submit earlier chapters')
   await verifyDocument(api, result.result)
+})
+
+test('a malformed DeepSeek tool call is retried within the same Skill generation', async t => {
+  const acceptedText = '项目提供一个在本次生成首次提交中已经保存的示例入口。'
+  let spans
+  const api = await skillFixture(t, async ({ prompt, tools, signal, events, job }) => {
+    assert.equal(job, 1, 'recovery uses the same author agent')
+    if (spans === undefined) {
+      spans = await gatherEvidence(tools, signal)
+      await submitPlan(tools)
+      const original = draftFor(spans).chapters[0]
+      original.blocks[0].text = acceptedText
+      await submitChapters(tools, [original])
+      events.push({ type: 'turn/end', data: { reason: { kind: 'error', error: invalidToolJson } } })
+      return
+    }
+    assert.match(prompt, /模型返回的工具参数格式无效/)
+    assert.match(prompt, /待提交章节：architecture、execution、core/)
+    const { chapters, ...metadata } = draftFor(spans)
+    await submitChapters(tools, chapters.slice(1))
+    assert.match((await tools.get('wiki_finish').execute({ ...metadata, walkthrough: walkthrough(spans) })).status, /草稿已收到/)
+  })
+
+  const response = await api.post('generate')
+  api.reportAuthorError()
+  assert.equal(response.status, 200)
+  assert.equal(api.authorRounds(), 2)
+  const document = await response.json()
+  assert.ok(document.markdown.includes(acceptedText))
+  await verifyDocument(api, document)
+})
+
+test('malformed tool response retries are bounded and authentication errors remain terminal', async t => {
+  for (const [failure, attempts, expected] of [
+    [invalidToolJson, 3, /工具参数/],
+    [{ code: 'AUTH', status: 401, message: 'Authentication failed' }, 1, /无法使用当前模型配置/],
+  ]) {
+    const api = await skillFixture(t, async ({ events, job }) => {
+      assert.equal(job, 1)
+      events.push({ type: 'turn/end', data: { reason: { kind: 'error', error: failure } } })
+    })
+    const response = await api.post('generate')
+    api.reportAuthorError()
+    assert.equal(response.status, 502)
+    assert.match((await response.json()).error, expected)
+    assert.equal(api.authorRounds(), attempts)
+  }
 })
 
 test('a subsequent job resumes with only missing Skill chapters and saves citations under its own document ID', async t => {

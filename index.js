@@ -74,6 +74,7 @@ function researchFailure(error, resumable) {
   const next = resumable ? '研究记录已保存，可以继续生成。' : '请重新尝试。'
   if (['TRANSPORT', 'TIMEOUT', 'STREAM_CLOSED'].includes(error.providerCode)) return '与模型服务的连接中断。' + next
   if (['SERVER', 'RATE_LIMIT'].includes(error.providerCode)) return '模型服务暂时不可用。' + next
+  if (error.providerCode === 'MALFORMED_RESPONSE') return '模型返回的工具参数格式无效。' + next
   if (['AUTH', 'MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'MODEL_CONFIG'].includes(error.providerCode)) {
     return '无法使用当前模型配置，请检查后重试。'
   }

@@ -3,7 +3,7 @@ const steps = new Set(['repository', 'planning', 'researching', 'drafting', 'rev
   'submission-retry', 'agent-finishing', 'reviewing', 'review-reading', 'saving'])
 const defaults = { reading: 'repository', planning: 'planning', researching: 'researching', writing: 'drafting', reviewing: 'reviewing', saving: 'saving' }
 const counters = ['repair', 'attempt', 'attemptLimit', 'rejections']
-const categories = new Set(['validation', 'review', 'missing-publication'])
+const categories = new Set(['validation', 'review', 'missing-publication', 'model-response'])
 const requestEvents = new Set(['request-start', 'request-receiving', 'request-retry', 'request-completed', 'request-failed'])
 const retryCodes = new Set(['TRANSPORT', 'TIMEOUT', 'STREAM_CLOSED', 'RATE_LIMIT', 'SERVER', 'AUTH', 'INVALID_REQUEST',
   'EMPTY_RESPONSE', 'MALFORMED_RESPONSE', 'MODEL_CONFIG', 'MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'UNKNOWN'])
