@@ -1,12 +1,43 @@
-import { replaceOutsideCode } from '../skills/repo-design-wiki/scripts/chapter-figures.mjs'
+import { fromMarkdown } from 'mdast-util-from-markdown'
 
 const citationRun = /【[1-9]\d*】(?:[ \t]*【[1-9]\d*】)*/gu
 const citationMarker = /([ \t]*)【([1-9]\d*)】/gu
+const authoredLinks = new Set(['link', 'linkReference', 'image', 'imageReference'])
 
 // Match only the citation markup emitted by the diagram renderer, with the same position in both labels.
 const diagramCitation = /(<(?:a|g) [^<>]*?aria-label="源码)【([1-9]\d*)】 ([^<>"\n]+):([1-9]\d*)"><title>源码【\2】 \3:\4(<\/title><text [^<>]*><tspan [^<>]*>)【\2】(?=<\/tspan>)/gu
 
-export function chapterSources({ markdown, sources, diagrams }) {
+function linkCitations(markdown, fileNumber, citationHref) {
+  if (!markdown.includes('【')) return markdown
+  const parts = []
+  let offset = 0
+  function visit(node) {
+    if (authoredLinks.has(node.type)) return
+    if (node.type !== 'text') {
+      node.children?.forEach(visit)
+      return
+    }
+    const { start, end } = node.position
+    const text = markdown.slice(start.offset, end.offset)
+    const linked = text.replace(citationRun, run => {
+      const seen = new Set()
+      return run.replace(citationMarker, (reference, space, sourceNumber) => {
+        const number = fileNumber(sourceNumber)
+        if (!number) return reference
+        if (seen.has(number)) return ''
+        seen.add(number)
+        return `${space}[【${number}】](${citationHref(number)})`
+      })
+    })
+    if (linked === text) return
+    parts.push(markdown.slice(offset, start.offset), linked)
+    offset = end.offset
+  }
+  visit(fromMarkdown(markdown))
+  return parts.join('') + markdown.slice(offset)
+}
+
+export function chapterSources({ markdown, sources, diagrams }, citationHref) {
   const numbersByPath = new Map()
   const fileNumbers = sources.map(({ path }) => {
     if (!numbersByPath.has(path)) numbersByPath.set(path, numbersByPath.size + 1)
@@ -16,16 +47,7 @@ export function chapterSources({ markdown, sources, diagrams }) {
   if (!files.length) return { markdown, diagrams, files }
 
   const fileNumber = sourceNumber => fileNumbers[Number(sourceNumber) - 1]
-  const numberedMarkdown = replaceOutsideCode(markdown, text => text.replace(citationRun, run => {
-    const seen = new Set()
-    return run.replace(citationMarker, (reference, space, sourceNumber) => {
-      const number = fileNumber(sourceNumber)
-      if (!number) return reference
-      if (seen.has(number)) return ''
-      seen.add(number)
-      return `${space}【${number}】`
-    })
-  }))
+  const numberedMarkdown = linkCitations(markdown, fileNumber, citationHref)
   const numberedDiagrams = diagrams.map(diagram => {
     const svg = diagram.svg.replace(diagramCitation, (citation, start, sourceNumber, path, _line, text) => {
       const number = fileNumber(sourceNumber)

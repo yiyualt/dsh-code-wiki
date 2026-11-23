@@ -10,12 +10,12 @@
 npm ci
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.30.2.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.30.3.tgz
 ```
 
 所选仓库的源码片段会交给当前模型用于拟定目录和撰写正文。Skill 根据本章内容选图，并把图形数据绘成附源码引用的 SVG。插件负责在阅读页显示。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。
 
-图按阅读区宽度等比例显示。点击「查看大图」可放大、缩小或恢复适合宽度。每章按文件编号，源码位置只显示路径。GitHub 源码引用打开生成时对应提交里的文件。
+图按阅读区宽度等比例显示。点击「查看大图」可放大、缩小或恢复适合宽度。每章按文件编号，点击正文里的引用编号可跳到下方的源码位置。GitHub 文件路径打开生成时对应提交里的文件。
 
 章节用具体输入和关键源码片段解释结果如何产生。正文直接呈现表格，图生成后放在首次说明它的段落下方。已保存章节会恢复图的位置。
 

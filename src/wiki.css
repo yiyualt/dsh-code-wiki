@@ -492,6 +492,15 @@
 .dsh-code-wiki-prose > div > p:first-child { margin-block-start: 0; }
 .dsh-code-wiki-prose > div > :is(h2, h3) { margin-block: 1.5em 0.5em; }
 
+.dsh-code-wiki-prose a[href^='#dsh-code-wiki-source-'] {
+  border: 0;
+  margin: 0;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dsh-code-wiki-prose a[href^='#dsh-code-wiki-source-'] > svg { display: none; }
+
 .dsh-code-wiki-inline-diagram { margin-block: 12px 22px; }
 
 .dsh-code-wiki-inline-diagram > .dsh-code-wiki-diagram-status {
@@ -617,6 +626,13 @@
   color: var(--wiki-muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.dsh-code-wiki-sources li:focus {
+  border-radius: 4px;
+  background: var(--wiki-selected);
+  outline: 2px solid var(--wiki-accent);
+  outline-offset: 3px;
 }
 
 .dsh-code-wiki-sources code { white-space: normal; overflow-wrap: anywhere; }

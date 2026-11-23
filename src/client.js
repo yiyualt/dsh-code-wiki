@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
     const commitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
     const documentIdPattern = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i
     const libraryDate = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+    const sourceLinkBase = `${window.location.origin}/#`
     const markdownLabels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
@@ -560,11 +561,12 @@ window.__ModuleLoader__.load({
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
 
-    function ChapterSource({ repository, path }) {
+    function ChapterSource({ repository, path, id }) {
       const label = h('code', null, path)
-      if (repository.source === 'local') return h('li', null, label)
+      const row = { id, tabIndex: -1 }
+      if (repository.source === 'local') return h('li', row, label)
       const encodedPath = path.split('/').map(encodeURIComponent).join('/')
-      return h('li', null, h('a', {
+      return h('li', row, h('a', {
         href: `${repository.location}/blob/${repository.commit}/${encodedPath}`,
         target: '_blank', rel: 'noreferrer',
       }, label))
@@ -650,7 +652,7 @@ window.__ModuleLoader__.load({
         preview && h(DiagramPreview, { diagram, onClose: () => setPreview(false) }))
     }
 
-    function ChapterProse({ markdown, diagrams, pending }) {
+    function ChapterProse({ markdown, diagrams, pending, citationPrefix }) {
       const prose = useRef(null)
       const markerPrefix = `CodeWikiFigure${useId().replace(/[^a-z\d]/gi, '')}Slot`
       const { text, markers } = useMemo(() => {
@@ -670,10 +672,17 @@ window.__ModuleLoader__.load({
       const [mounted, setMounted] = useState(null)
 
       useLayoutEffect(() => {
+        const rendered = prose.current.firstElementChild
+        // MarkdownText renders absolute links. Convert our chapter's citation links to local fragments.
+        for (const link of rendered.querySelectorAll(`a[href^="${citationPrefix}"]`)) {
+          link.setAttribute('href', '#' + link.getAttribute('href').slice(sourceLinkBase.length))
+          link.removeAttribute('target')
+          link.removeAttribute('rel')
+        }
         if (!markers.size) return
         // Keep one Markdown render so tables, code, links and footnotes share the chapter context.
         const placements = new Map()
-        for (const node of [...prose.current.firstElementChild.children]) {
+        for (const node of [...rendered.children]) {
           const slot = node.tagName === 'P' && markers.get(node.textContent)
           if (!slot) continue
           const target = node.ownerDocument.createElement('div')
@@ -689,7 +698,7 @@ window.__ModuleLoader__.load({
             node.hidden = false
           }
         }
-      }, [text, markers])
+      }, [text, markers, citationPrefix])
 
       const placements = mounted?.text === text ? mounted.placements : null
       const diagramBySlot = new Map(diagrams.filter(diagram => diagram.slot !== undefined).map(diagram => [diagram.slot, diagram]))
@@ -707,15 +716,42 @@ window.__ModuleLoader__.load({
     }
 
     function ChapterContent({ repository, content, pending, title }) {
-      const { markdown, diagrams, files } = chapterSources(content)
+      const sourcePrefix = `dsh-code-wiki-source-${useId().replace(/[^a-z\d]/gi, '')}-`
+      const citationPrefix = sourceLinkBase + sourcePrefix
+      const sourceList = useRef(null)
+      const { markdown, diagrams, files } = chapterSources(content, number => citationPrefix + number)
       const heading = /^#[ \t]+([^\r\n]+)\r?\n/.exec(markdown)
       const prose = heading?.[1].replace(/[ \t]+#+[ \t]*$/, '').trim() === title
         ? markdown.slice(heading[0].length).trimStart() : markdown
-      return h('div', { className: 'dsh-code-wiki-chapter-content' },
-        h(ChapterProse, { markdown: prose, diagrams, pending }),
+
+      function jumpToSource(event) {
+        const href = event.target.closest?.('a[href]')?.getAttribute('href')
+        if (!href?.startsWith('#' + sourcePrefix)) return
+        const list = sourceList.current
+        const row = list?.ownerDocument.getElementById(href.slice(1))
+        if (row?.parentElement !== list) return
+
+        event.preventDefault()
+        event.stopPropagation()
+        row.focus({ preventScroll: true })
+        const scroller = row.closest('.dsh-code-wiki-page')
+        if (!scroller) return
+        const viewport = scroller.getBoundingClientRect()
+        const position = row.getBoundingClientRect()
+        const headerHeight = scroller.querySelector('.dsh-code-wiki-bar')?.offsetHeight ?? 0
+        const visibleTop = viewport.top + headerHeight + 12
+        if (position.top < visibleTop || position.bottom > viewport.bottom) {
+          scroller.scrollTop += position.top - visibleTop
+        }
+      }
+
+      return h('div', { className: 'dsh-code-wiki-chapter-content', onClickCapture: jumpToSource },
+        h(ChapterProse, { markdown: prose, diagrams, pending, citationPrefix }),
         files.length > 0 && h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
-          h('ol', null, files.map(path => h(ChapterSource, { key: path, repository, path })))))
+          h('ol', { ref: sourceList }, files.map((path, index) => h(ChapterSource, {
+            key: path, repository, path, id: sourcePrefix + (index + 1),
+          })))))
     }
 
     function DocumentRow({ document, opening, disabled, actionsDisabled, onOpen, onMove, onDelete }) {
