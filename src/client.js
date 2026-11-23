@@ -1,7 +1,10 @@
+import { layoutDiagram } from './diagram-layout.js'
+import wikiStyles from './wiki.css'
+
 window.__ModuleLoader__.load({
   id: 'dsh-code-wiki',
   factory(require) {
-    const { createElement: h, Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } = require('react')
+    const { createElement: h, Fragment, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } = require('react')
     const {
       Button, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCodeOutlineRegular,
       IconFolderCloseRegular, IconFolderOpenOutlineRegular, IconPlusOutlineRegular, Input, MarkdownText, Modal,
@@ -299,45 +302,103 @@ window.__ModuleLoader__.load({
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
 
-    function ChapterSource({ repository, source, number }) {
+    function ChapterSource({ repository, source, number, relation }) {
       const position = `${source.path}:${source.line}`
       const label = number ? `【${number}】` : h('code', null, position)
-      if (repository.source === 'local') return number ? h('span', { title: position }, label) : label
+      if (repository.source === 'local') return number ? h('span', { title: position },
+        label, h('span', { className: 'dsh-code-wiki-announcement' }, ` 源码 ${position}`)) : label
       const path = source.path.split('/').map(part => encodeURIComponent(part)).join('/')
       return h('a', {
         href: `${repository.location}/blob/${repository.commit}/${path}#L${source.line}`,
         target: '_blank', rel: 'noreferrer', title: position,
-        'aria-label': number ? `${label} 在 GitHub 查看 ${position}` : undefined,
+        'aria-label': number ? `${label} ${relation}，在 GitHub 查看 ${position}` : undefined,
       }, label)
+    }
+
+    function graphLabelSize(element) {
+      const { width, height } = element.getBoundingClientRect()
+      return { width: Math.ceil(width), height: Math.ceil(height) }
+    }
+
+    function graphLabelPosition(position) {
+      return position && { left: position.x, top: position.y }
+    }
+
+    function DiagramLines({ layout, arrowId }) {
+      return h('svg', {
+        className: 'dsh-code-wiki-diagram-lines', width: layout.width, height: layout.height,
+        'aria-hidden': true, focusable: false,
+      },
+      h('defs', null, h('marker', {
+        id: arrowId, markerWidth: 8, markerHeight: 8, refX: 8, refY: 4,
+        orient: 'auto', markerUnits: 'userSpaceOnUse',
+      }, h('path', { d: 'M0,0 L8,4 L0,8 Z', fill: 'currentColor' }))),
+      layout.edges.map(({ path }, index) => h('path', {
+        key: index, d: path, 'data-edge-index': index, markerEnd: `url(#${arrowId})`,
+      })))
     }
 
     function ChapterDiagram({ repository, diagram, sources }) {
       const titleId = useId()
-      const nodes = new Map(diagram.nodes.map(node => [node.id, node.label]))
-      const outgoing = new Map()
-      const incoming = new Set()
-      for (const edge of diagram.edges) {
-        const edges = outgoing.get(edge.from) ?? []
-        edges.push(edge)
-        outgoing.set(edge.from, edges)
-        incoming.add(edge.to)
-      }
+      const arrowId = useId()
+      const viewport = useRef(null)
+      const [measured, setMeasured] = useState(null)
+      const layout = measured?.diagram === diagram ? measured.layout : null
+      const scrolls = layout && layout.width > measured.width
+      const nodeLabels = new Map(diagram.nodes.map(node => [node.id, node.label]))
+
+      useLayoutEffect(() => {
+        const region = viewport.current
+        const nodes = Array.from(region.querySelectorAll('[data-node-id]'))
+        const edges = Array.from(region.querySelectorAll('[data-edge-from]'))
+        let lastSize
+
+        function measure() {
+          const width = region.clientWidth
+          if (!width) return
+          const nodeSizes = nodes.map(graphLabelSize)
+          const edgeSizes = edges.map(graphLabelSize)
+          const size = JSON.stringify([width, nodeSizes, edgeSizes])
+          if (lastSize === size) return
+          lastSize = size
+          setMeasured({ diagram, width, layout: layoutDiagram(diagram, nodeSizes, edgeSizes, width) })
+        }
+
+        measure()
+        const observer = new ResizeObserver(measure)
+        observer.observe(region)
+        for (const element of [...nodes, ...edges]) observer.observe(element)
+        return () => observer.disconnect()
+      }, [diagram])
 
       return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId },
         h('figcaption', { id: titleId },
           h('span', { className: 'dsh-code-wiki-diagram-kind' }, diagramLabels.get(diagram.kind)), ' ', diagram.title),
-        h('ul', { className: 'dsh-code-wiki-diagram-groups', role: 'list' },
-          diagram.nodes.filter(node => outgoing.has(node.id) || !incoming.has(node.id)).map(node => {
-            const edges = outgoing.get(node.id)
-            return h('li', { className: 'dsh-code-wiki-diagram-group', key: node.id },
-              h('strong', { className: 'dsh-code-wiki-diagram-node' }, node.label),
-              edges && h('ul', { className: 'dsh-code-wiki-diagram-edges', role: 'list', 'aria-label': '指向' },
-                edges.map((edge, index) => h('li', { className: 'dsh-code-wiki-diagram-edge', key: index },
-                  h('span', { className: 'dsh-code-wiki-diagram-connector' },
-                    h('span', null, edge.label, ' ', h(ChapterSource, { repository, source: sources[edge.source - 1], number: edge.source })),
-                    h('span', { className: 'dsh-code-wiki-diagram-arrow', 'aria-hidden': true })),
-                  h('span', { className: 'dsh-code-wiki-diagram-node' }, nodes.get(edge.to))))))
-          })))
+        h('div', {
+          className: 'dsh-code-wiki-diagram-scroll', ref: viewport,
+          tabIndex: scrolls ? 0 : undefined, role: scrolls ? 'region' : undefined,
+          'aria-label': scrolls ? '可横向滚动的图' : undefined,
+        },
+          h('div', {
+            className: 'dsh-code-wiki-diagram-canvas', 'data-direction': layout?.direction,
+            style: layout && { width: layout.width, height: layout.height },
+          },
+            layout && h(DiagramLines, { layout, arrowId }),
+            h('ul', { className: 'dsh-code-wiki-diagram-nodes', role: 'list', 'aria-label': '节点' },
+              diagram.nodes.map((node, index) => h('li', {
+                key: node.id, className: 'dsh-code-wiki-diagram-node', 'data-node-id': node.id,
+                style: graphLabelPosition(layout?.nodes[index]),
+              }, node.label))),
+            h('ul', { className: 'dsh-code-wiki-diagram-edges', role: 'list', 'aria-label': '连接关系' },
+              diagram.edges.map((edge, index) => {
+                const endpoints = `${nodeLabels.get(edge.from)} 指向 ${nodeLabels.get(edge.to)}`
+                return h('li', {
+                  key: index, className: 'dsh-code-wiki-diagram-edge', 'data-edge-from': edge.from, 'data-edge-to': edge.to,
+                  style: graphLabelPosition(layout?.edges[index]),
+                },
+                  h('span', { className: 'dsh-code-wiki-announcement' }, `${endpoints}，`), edge.label, ' ',
+                  h(ChapterSource, { repository, source: sources[edge.source - 1], number: edge.source, relation: `${endpoints}，${edge.label}` }))
+              })))))
     }
 
     function ChapterContent({ repository, content }) {

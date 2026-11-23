@@ -429,7 +429,7 @@
 }
 
 .dsh-code-wiki-diagram {
-  container: code-wiki-diagram / inline-size;
+  --wiki-graph-line: color-mix(in srgb, var(--wiki-accent) 55%, var(--wiki-muted));
   min-width: 0;
   margin: 0;
   padding: 14px;
@@ -452,98 +452,91 @@
   font-size: 12px;
 }
 
-.dsh-code-wiki-diagram-groups,
+.dsh-code-wiki-diagram-scroll {
+  container: code-wiki-diagram / inline-size;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dsh-code-wiki-diagram-scroll:focus-visible {
+  outline: 2px solid var(--wiki-accent);
+  outline-offset: 2px;
+}
+
+.dsh-code-wiki-diagram-canvas {
+  position: relative;
+  margin-inline: auto;
+}
+
+.dsh-code-wiki-diagram-canvas:not([data-direction]) {
+  height: 84px;
+  visibility: hidden;
+}
+
+.dsh-code-wiki-diagram-lines,
+.dsh-code-wiki-diagram-nodes,
 .dsh-code-wiki-diagram-edges {
-  display: grid;
-  gap: 8px;
+  position: absolute;
+  inset: 0;
   margin: 0;
   padding: 0;
   list-style: none;
+  pointer-events: none;
 }
 
-.dsh-code-wiki-diagram-group,
+.dsh-code-wiki-diagram-lines { color: var(--wiki-graph-line); }
+
+.dsh-code-wiki-diagram-lines path[data-edge-index] {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dsh-code-wiki-diagram-node,
 .dsh-code-wiki-diagram-edge {
-  display: grid;
-  align-items: center;
-  min-width: 0;
-}
-
-.dsh-code-wiki-diagram-group {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2.5fr);
-  padding-block: 8px;
-  border-block-start: 1px solid var(--wiki-line);
+  position: absolute;
+  box-sizing: border-box;
+  width: max-content;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
 }
 
 .dsh-code-wiki-diagram-node {
-  position: relative;
-  min-width: 0;
-  padding: 7px 9px;
-  border: 1px solid var(--wiki-line);
+  display: grid;
+  place-items: center;
+  min-width: 68px;
+  max-width: clamp(108px, 36cqi, 154px);
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--wiki-accent) 35%, var(--wiki-line));
   border-radius: 6px;
-  background: var(--wiki-paper);
+  background: color-mix(in srgb, var(--wiki-accent) 6%, var(--wiki-paper));
+  color: var(--wiki-ink);
   font-size: 13px;
+  font-weight: 630;
   line-height: 1.45;
-  text-align: center;
-  overflow-wrap: anywhere;
 }
-
-.dsh-code-wiki-diagram-group > .dsh-code-wiki-diagram-node {
-  border-color: color-mix(in srgb, var(--wiki-accent) 55%, var(--wiki-line));
-  background: color-mix(in srgb, var(--wiki-accent) 7%, var(--wiki-paper));
-}
-
-.dsh-code-wiki-diagram-group:has(.dsh-code-wiki-diagram-edges) > .dsh-code-wiki-diagram-node {
-  margin-inline-end: 12px;
-}
-
-.dsh-code-wiki-diagram-group:has(.dsh-code-wiki-diagram-edges) > .dsh-code-wiki-diagram-node::after {
-  position: absolute;
-  inset-block-start: 50%;
-  inset-inline-start: 100%;
-  width: 13px;
-  border-block-start: 1px solid var(--wiki-accent);
-  content: '';
-}
-
-.dsh-code-wiki-diagram-edges { border-inline-start: 1px solid var(--wiki-accent); }
 
 .dsh-code-wiki-diagram-edge {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-  gap: 6px;
-}
-
-.dsh-code-wiki-diagram-connector {
-  display: grid;
-  grid-template-rows: 1fr auto 1fr;
-  align-self: stretch;
-  gap: 3px;
-  min-width: 0;
-  color: var(--wiki-muted);
+  max-width: clamp(96px, 36cqi, 142px);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--wiki-canvas);
+  color: var(--wiki-ink);
   font-size: 12px;
   line-height: 1.4;
-  text-align: center;
-  overflow-wrap: anywhere;
 }
 
-.dsh-code-wiki-diagram-connector > span:first-child { align-self: end; padding-inline: 5px; }
-.dsh-code-wiki-diagram-connector a { white-space: nowrap; }
-
-.dsh-code-wiki-diagram-arrow {
-  position: relative;
-  margin-inline-end: -2px;
-  border-block-start: 1px solid var(--wiki-accent);
-}
-
-.dsh-code-wiki-diagram-arrow::after {
-  position: absolute;
-  inset-block-start: -4px;
-  inset-inline-end: 1px;
-  width: 6px;
-  height: 6px;
-  transform: rotate(45deg);
-  border: solid var(--wiki-accent);
-  border-width: 1px 1px 0 0;
-  content: '';
+.dsh-code-wiki-diagram-edge a {
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
 }
 
 .dsh-code-wiki-diagram a,
@@ -561,40 +554,6 @@
 }
 
 .dsh-code-wiki-sources code { white-space: normal; overflow-wrap: anywhere; }
-
-@container code-wiki-diagram (max-width: 410px) {
-  .dsh-code-wiki-diagram-group,
-  .dsh-code-wiki-diagram-edge { grid-template-columns: minmax(0, 1fr); gap: 0; }
-
-  .dsh-code-wiki-diagram-node { text-align: start; }
-
-  .dsh-code-wiki-diagram-group:has(.dsh-code-wiki-diagram-edges) > .dsh-code-wiki-diagram-node { margin: 0; }
-  .dsh-code-wiki-diagram-group > .dsh-code-wiki-diagram-node::after { display: none; }
-  .dsh-code-wiki-diagram-edges { margin-inline-start: 12px; padding-inline-start: 9px; }
-
-  .dsh-code-wiki-diagram-connector {
-    display: flex;
-    align-items: center;
-    padding-block: 5px;
-    text-align: start;
-  }
-
-  .dsh-code-wiki-diagram-connector > span:first-child { align-self: center; }
-
-  .dsh-code-wiki-diagram-arrow {
-    flex: none;
-    order: -1;
-    height: 15px;
-    margin: 0 0 0 8px;
-    border: 0;
-    border-inline-start: 1px solid var(--wiki-accent);
-  }
-
-  .dsh-code-wiki-diagram-arrow::after {
-    inset: auto auto 0 -4px;
-    transform: rotate(135deg);
-  }
-}
 
 @container code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {
