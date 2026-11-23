@@ -30,9 +30,9 @@ export async function readPreview(directory, signal) {
   }
 
   const result = chapters.map(({ title, lines }) => ({ title, markdown: lines.join('\n').trim() }))
-  if (fence || result.length !== 6 || new Set(result.map(({ title }) => title)).size !== 6
+  if (fence || !result.length || new Set(result.map(({ title }) => title)).size !== result.length
     || result.some(({ title, markdown }) => !title || !markdown)) {
-    throw new Error('示例文档需要六个标题互不重复且有正文的二级章节。')
+    throw new Error('示例文档需要至少一个二级章节，每章须有正文且标题互不重复。')
   }
 
   return result

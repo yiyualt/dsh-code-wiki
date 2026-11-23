@@ -1,6 +1,6 @@
 # DSH 代码百科
 
-在 DeepSeek Harness Web 侧栏打开「代码百科」，选择 GitHub 地址或本地仓库文件夹。提交后可浏览 `repo-design-wiki` Skill 提供的六个固定示例章节。
+在 DeepSeek Harness Web 侧栏打开「代码百科」，选择 GitHub 地址或本地仓库文件夹。提交后可浏览 `repo-design-wiki` Skill 提供的示例文档，每个 `##` 标题对应一个目录项。
 
 ## 本地安装
 
