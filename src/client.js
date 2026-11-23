@@ -499,15 +499,13 @@ window.__ModuleLoader__.load({
 
     function SourceForm({ id, draft, onChange, onSubmit, error, picker, generatingOutline, onChooseFolder, listDirectory }) {
       const sourceId = useId()
-      const titleId = useId()
-      const heading = useRef(null)
+      const selectedSource = useRef(null)
       const local = draft.source === 'local'
       const ready = local ? draft.repositoryPath : draft.repositoryUrl.trim()
       const busy = Boolean(picker) || generatingOutline
-      useEffect(() => { heading.current?.focus() }, [])
+      useEffect(() => { selectedSource.current?.focus() }, [])
 
-      return h('section', { id, className: 'dsh-code-wiki-form-card', 'aria-labelledby': titleId },
-        h('h2', { id: titleId, ref: heading, tabIndex: -1 }, '新建 Wiki'),
+      return h('section', { id, className: 'dsh-code-wiki-form-card', 'aria-label': '新建 Wiki' },
         h('form', {
           className: 'dsh-code-wiki-form',
           'aria-busy': generatingOutline,
@@ -519,9 +517,13 @@ window.__ModuleLoader__.load({
         h('fieldset', { disabled: busy },
           h('legend', null, '仓库来源'),
           h('div', { className: 'dsh-code-wiki-source-options' },
-            [['github', 'GitHub 地址'], ['local', '本地仓库']].map(([value, label]) => h('label', { key: value },
-              h('input', { type: 'radio', name: sourceId, value, checked: draft.source === value, onChange: () => onChange({ source: value }) }),
-              h('span', null, label))))),
+            [['github', 'GitHub 地址'], ['local', '本地仓库']].map(([value, label]) => {
+              const checked = draft.source === value
+              return h('label', { key: value }, h('input', {
+                type: 'radio', name: sourceId, value, checked, ref: checked ? selectedSource : undefined,
+                onChange: () => onChange({ source: value }),
+              }), h('span', null, label))
+            }))),
         local ? h('div', { className: 'dsh-code-wiki-field' },
           h('span', null, '本地 Git 仓库'),
           h('div', { className: 'dsh-code-wiki-folder-field' },

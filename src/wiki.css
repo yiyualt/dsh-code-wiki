@@ -127,12 +127,6 @@
 
 .dsh-code-wiki-form-card { padding: clamp(19px, 4cqi, 34px); }
 
-.dsh-code-wiki-form-card h2 {
-  margin: 0 0 19px;
-  font-size: clamp(19px, 3cqi, 24px);
-  font-weight: 680;
-}
-
 .dsh-code-wiki-form {
   display: flex;
   flex-wrap: wrap;
@@ -481,8 +475,7 @@
   line-height: 1.24;
 }
 
-.dsh-code-wiki-article h1:focus,
-.dsh-code-wiki-form-card h2:focus { outline: none; }
+.dsh-code-wiki-article h1:focus { outline: none; }
 
 .dsh-code-wiki-chapter-action,
 .dsh-code-wiki-chapter-content {
