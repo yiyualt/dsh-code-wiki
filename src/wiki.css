@@ -449,6 +449,10 @@
 }
 
 .dsh-code-wiki-diagram {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
   margin: 0;
   padding: 14px;
@@ -465,29 +469,74 @@
   line-height: 1.5;
 }
 
+.dsh-code-wiki-diagram figcaption { margin: 0; }
+
 .dsh-code-wiki-diagram-kind {
   margin-inline-end: 5px;
   color: var(--wiki-muted);
   font-size: 12px;
 }
 
-.dsh-code-wiki-diagram-scroll {
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.dsh-code-wiki-diagram-scroll:focus-visible {
-  outline: 2px solid var(--wiki-accent);
-  outline-offset: 2px;
-}
+.dsh-code-wiki-diagram > .dsh-code-wiki-diagram-frame { grid-column: 1 / -1; }
 
 .dsh-code-wiki-diagram-frame {
   display: block;
-  max-width: none;
+  height: auto;
   margin-inline: auto;
   border: 0;
   color-scheme: inherit;
+}
+
+.dsh-code-wiki-diagram-preview[role='dialog'] {
+  width: 100%;
+  height: 100%;
+  gap: 0;
+  padding: 0;
+}
+
+.dsh-code-wiki-diagram-preview-header,
+.dsh-code-wiki-diagram-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+}
+
+.dsh-code-wiki-diagram-preview-header { justify-content: space-between; }
+
+.dsh-code-wiki-diagram-preview-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-diagram-controls {
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-code-wiki-diagram-controls output {
+  min-width: 4ch;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.dsh-code-wiki-diagram-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  background: var(--dsw-alias-bg-base);
+}
+
+.dsh-code-wiki-diagram-viewport:focus-visible {
+  outline: 2px solid var(--dsw-alias-link);
+  outline-offset: -2px;
 }
 
 .dsh-code-wiki-sources a { color: var(--wiki-accent); }
@@ -504,6 +553,7 @@
 }
 
 .dsh-code-wiki-sources code { white-space: normal; overflow-wrap: anywhere; }
+.dsh-code-wiki-source-lines { margin-inline-start: 8px; }
 
 @container code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {

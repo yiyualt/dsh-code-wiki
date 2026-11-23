@@ -1,4 +1,5 @@
 import wikiStyles from './wiki.css'
+import { chapterSources } from './chapter-sources.js'
 
 window.__ModuleLoader__.load({
   id: 'dsh-code-wiki',
@@ -6,7 +7,8 @@ window.__ModuleLoader__.load({
     const { createElement: h, Fragment, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } = require('react')
     const {
       Button, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular, IconCodeOutlineRegular,
-      IconFolderCloseRegular, IconFolderOpenOutlineRegular, IconPlusOutlineRegular, Input, MarkdownText, Modal,
+      IconCloseOutlineRegular, IconFolderCloseRegular, IconFolderOpenOutlineRegular, IconFullscreenOutlineRegular,
+      IconPlusOutlineRegular, Input, MarkdownText, Modal,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
@@ -501,15 +503,16 @@ window.__ModuleLoader__.load({
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))))
     }
 
-    function ChapterSource({ repository, source }) {
-      const position = `${source.path}:${source.line}`
-      const label = h('code', null, position)
-      if (repository.source === 'local') return label
-      const path = source.path.split('/').map(part => encodeURIComponent(part)).join('/')
-      return h('a', {
-        href: `${repository.location}/blob/${repository.commit}/${path}#L${source.line}`,
-        target: '_blank', rel: 'noreferrer', title: position,
-      }, label)
+    function ChapterSource({ repository, file }) {
+      const path = file.path.split('/').map(encodeURIComponent).join('/')
+      return h('li', null, h('code', null, file.path),
+        h('span', { className: 'dsh-code-wiki-source-lines' }, '第 ', file.lines.map((line, index) =>
+          h(Fragment, { key: line }, index > 0 && '、', repository.source === 'github'
+            ? h('a', {
+              href: `${repository.location}/blob/${repository.commit}/${path}#L${line}`,
+              target: '_blank', rel: 'noreferrer', 'aria-label': `${file.path}:${line}`,
+            }, line)
+            : line)), ' 行'))
     }
 
     function diagramDocument(svg) {
@@ -519,50 +522,88 @@ window.__ModuleLoader__.load({
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
-  <style>html, body { margin: 0; overflow: hidden; } svg { display: block; }</style>
+  <style>html, body { margin: 0; overflow: hidden; } body > svg { display: block; width: 100%; height: auto; }</style>
 </head>
 <body>${svg}</body>
 </html>`
     }
 
-    function ChapterDiagram({ diagram }) {
+    function DiagramFrame({ diagram, zoom }) {
       const { label, title, width, height, svg } = diagram
-      const titleId = useId()
+      return h('iframe', {
+        className: 'dsh-code-wiki-diagram-frame', title: `${label} ${title}`,
+        style: { width: zoom === undefined ? `min(100%, ${width}px)` : `${width * zoom}px`, aspectRatio: `${width} / ${height}` },
+        sandbox: 'allow-popups allow-popups-to-escape-sandbox', referrerPolicy: 'no-referrer',
+        srcDoc: diagramDocument(svg),
+      })
+    }
+
+    function DiagramPreview({ diagram, onClose }) {
       const viewport = useRef(null)
-      const [scrolls, setScrolls] = useState(false)
+      const [availableWidth, setAvailableWidth] = useState(0)
+      const [chosenZoom, setChosenZoom] = useState(null)
+      const fit = Math.min(1, availableWidth / diagram.width)
+      const zoom = Math.max(fit, chosenZoom ?? fit)
+      const zoomed = zoom > fit
+      const maxZoom = 4
+      const zoomStep = 1.25
+      const title = `${diagram.label} · ${diagram.title}`
 
       useLayoutEffect(() => {
         const region = viewport.current
-        const measure = () => setScrolls(width > region.clientWidth)
+        const measure = () => setAvailableWidth(region.clientWidth)
         measure()
         const observer = new ResizeObserver(measure)
         observer.observe(region)
         return () => observer.disconnect()
-      }, [width])
+      }, [])
+
+      function changeZoom(factor) {
+        const next = Math.min(maxZoom, zoom * factor)
+        setChosenZoom(next > fit ? next : null)
+      }
+
+      return h(Modal, { open: true, onClose, title, headless: true, className: 'dsh-code-wiki-diagram-preview' },
+        h('header', { className: 'dsh-code-wiki-diagram-preview-header' },
+          h('h2', null, title),
+          h(Button, { type: 'button', size: 'sm', variant: 'ghost', 'aria-label': '关闭大图', 'data-modal-autofocus': '',
+            icon: h(IconCloseOutlineRegular, { size: 18 }), onClick: onClose })),
+        h('div', { className: 'dsh-code-wiki-diagram-controls', role: 'group', 'aria-label': '图缩放' },
+          h(Button, { type: 'button', size: 'sm', variant: 'outline', 'aria-label': '缩小', disabled: !zoomed,
+            onClick: () => changeZoom(1 / zoomStep) }, '−'),
+          h('output', null, `${Math.round(zoom * 100)}%`),
+          h(Button, { type: 'button', size: 'sm', variant: 'outline', 'aria-label': '放大', disabled: !fit || zoom >= maxZoom,
+            onClick: () => changeZoom(zoomStep) }, '+'),
+          h(Button, { type: 'button', size: 'sm', variant: 'ghost', onClick: () => setChosenZoom(null) }, '适合宽度')),
+        h('div', { className: 'dsh-code-wiki-diagram-viewport', ref: viewport, tabIndex: 0,
+          role: 'region', 'aria-label': '图预览区域' },
+          h(DiagramFrame, { diagram, zoom: zoomed ? zoom : undefined })))
+    }
+
+    function ChapterDiagram({ diagram }) {
+      const { label, title } = diagram
+      const titleId = useId()
+      const [preview, setPreview] = useState(false)
 
       return h('figure', { className: 'dsh-code-wiki-diagram', 'aria-labelledby': titleId },
         h('figcaption', { id: titleId },
           h('span', { className: 'dsh-code-wiki-diagram-kind' }, label), ' ', title),
-        h('div', {
-          className: 'dsh-code-wiki-diagram-scroll', ref: viewport,
-          tabIndex: scrolls ? 0 : undefined, role: scrolls ? 'region' : undefined,
-          'aria-label': scrolls ? '可横向滚动的图' : undefined,
-        },
-          h('iframe', {
-            className: 'dsh-code-wiki-diagram-frame', title: `${label} ${title}`, width, height,
-            sandbox: 'allow-popups allow-popups-to-escape-sandbox', referrerPolicy: 'no-referrer',
-            srcDoc: diagramDocument(svg),
-          })))
+        h(Button, { type: 'button', size: 'sm', variant: 'ghost', 'aria-haspopup': 'dialog',
+          icon: h(IconFullscreenOutlineRegular, { size: 15 }),
+          onClick: () => setPreview(true) }, '查看大图'),
+        h(DiagramFrame, { diagram }),
+        preview && h(DiagramPreview, { diagram, onClose: () => setPreview(false) }))
     }
 
     function ChapterContent({ repository, content }) {
+      const { markdown, diagrams, files } = chapterSources(content)
       return h('div', { className: 'dsh-code-wiki-chapter-content' },
         h('div', { className: 'dsh-code-wiki-prose' },
-          h(MarkdownText, { text: content.markdown, labels: markdownLabels, omitHtml: true })),
-        content.diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, diagram })),
-        content.sources.length > 0 && h('section', { className: 'dsh-code-wiki-sources' },
+          h(MarkdownText, { text: markdown, labels: markdownLabels, omitHtml: true })),
+        diagrams.map((diagram, index) => h(ChapterDiagram, { key: index, diagram })),
+        files.length > 0 && h('section', { className: 'dsh-code-wiki-sources' },
           h('h2', null, '源码位置'),
-          h('ol', null, content.sources.map((source, index) => h('li', { key: index }, h(ChapterSource, { repository, source }))))))
+          h('ol', null, files.map(file => h(ChapterSource, { key: file.path, repository, file })))))
     }
 
     function DocumentLibrary({ summaries, temporary, loading, loadError, openError, openingId, disabled, formOpen, onOpen, onRefresh }) {
@@ -647,7 +688,7 @@ window.__ModuleLoader__.load({
                 className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
                 role: chapterNotice && chapterFailure ? 'alert' : 'status',
               }, chapterNotice || chapterAnnouncement),
-              content ? h(ChapterContent, { repository: document, content })
+              content ? h(ChapterContent, { key: chapterIndex, repository: document, content })
                 : h('div', { className: 'dsh-code-wiki-chapter-action' }, legacy
                   ? h('p', { className: 'dsh-code-wiki-feedback' }, '这份历史文档未保存本章正文。')
                   : h(Fragment, null,
