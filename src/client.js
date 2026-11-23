@@ -118,9 +118,13 @@ window.__ModuleLoader__.load({
         && new RegExp('^\\?key=' + metadata.id + '&file=\\d+&start=\\d+&end=\\d+$').test(parsed.search)
     }
 
-    function readViews(views, metadata) {
+    function readViews(views, metadata, chapterCount) {
       if (!Array.isArray(views)) return []
-      const ids = new Set(), kinds = new Set()
+      const ids = new Set(), kinds = new Set(), chapterFigures = new Map()
+      const viewKinds = new Set(['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment',
+        'component', 'activity', 'state', 'entity', 'class'])
+      const roles = new Set(['actor', 'component', 'process', 'data', 'store', 'decision', 'start', 'end'])
+      const relations = new Set(['return', 'async', 'composition', 'association', 'inheritance'])
       const validId = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,43}$/.test(value)
       const text = (value, maximum) => typeof value === 'string' && value.trim() && value.length <= maximum
         && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)
@@ -133,32 +137,64 @@ window.__ModuleLoader__.load({
         })
         return resolved.every(Boolean) ? resolved : null
       }
-      return views.slice(0, 3).flatMap(view => {
-        if (!validId(view?.id) || ids.has(view.id) || kinds.has(view.kind)
-          || !['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment'].includes(view.kind)
+      return views.slice(0, 12).flatMap(view => {
+        if (!validId(view?.id) || !viewKinds.has(view.kind)
           || !text(view.title, 100) || !text(view.purpose, 450) || !text(view.mermaid, 16_000)
           || !Array.isArray(view.nodes) || view.nodes.length < 2 || view.nodes.length > 8
           || !Array.isArray(view.edges) || !view.edges.length || view.edges.length > (view.kind === 'sequence' ? 16 : 10)) return []
+        const chapter = view.chapter
+        if (chapter !== undefined && (!Number.isInteger(chapter) || chapter < 0 || chapter >= chapterCount)) return []
+        const chapterKinds = chapterFigures.get(chapter) ?? new Set()
+        if (ids.has(view.id) || (chapter === undefined
+          ? kinds.has(view.kind) || kinds.size >= 3
+          : chapterKinds.has(view.kind) || chapterKinds.size >= 2)) return []
         const nodeIds = new Set(), connected = new Set()
         const nodes = view.nodes.map(node => {
           const refs = references(node?.refs)
           if (!validId(node?.id) || nodeIds.has(node.id) || !text(node.label, 60)
-            || !['actor', 'component', 'process', 'data', 'store'].includes(node.role) || !refs) return null
+            || !roles.has(node.role) || !refs || node.detail !== undefined && !text(node.detail, 120)
+            || node.members !== undefined && (!Array.isArray(node.members) || node.members.length < 1 || node.members.length > 4
+              || Array.from(node.members).some(member => !text(member, 100)))) return null
           nodeIds.add(node.id)
-          return { id: node.id, label: node.label, role: node.role, refs }
+          return { id: node.id, label: node.label, role: node.role, refs,
+            ...(node.detail !== undefined && { detail: node.detail }), ...(node.members !== undefined && { members: node.members }) }
         })
         if (!nodes.every(Boolean)) return []
         const edges = view.edges.map(edge => {
           const refs = references(edge?.refs)
-          if (!nodeIds.has(edge?.from) || !nodeIds.has(edge?.to) || edge.from === edge.to || !text(edge.label, 60) || !refs) return null
+          if (!nodeIds.has(edge?.from) || !nodeIds.has(edge?.to) || edge.from === edge.to || !text(edge.label, 60)
+            || !refs || edge.relation !== undefined && !relations.has(edge.relation)) return null
+          const contract = edge.contract
+          if (contract !== undefined && (!text(contract?.entry, 120) || !text(contract.input, 220) || !text(contract.output, 220))) return null
           connected.add(edge.from); connected.add(edge.to)
-          return { from: edge.from, to: edge.to, label: edge.label, refs }
+          return { from: edge.from, to: edge.to, label: edge.label, refs,
+            ...(edge.relation !== undefined && { relation: edge.relation }),
+            ...(contract !== undefined && { contract: { entry: contract.entry, input: contract.input, output: contract.output } }) }
         })
         if (!edges.every(Boolean) || connected.size !== nodeIds.size || view.kind === 'scenario' && !nodes.some(node => node.role === 'actor')) return []
-        ids.add(view.id); kinds.add(view.kind)
+        ids.add(view.id)
+        if (chapter === undefined) kinds.add(view.kind)
+        else {
+          chapterKinds.add(view.kind)
+          chapterFigures.set(chapter, chapterKinds)
+        }
         return [{ id: view.id, kind: view.kind, title: view.title, purpose: view.purpose, nodes, edges,
+          ...(chapter !== undefined && { chapter }),
           mermaid: view.mermaid.replace(/\r\n?/g, '\n') }]
       })
+    }
+
+    function portableInterfaceEnd(lines, diagramEnd, view) {
+      if (!view.edges.some(edge => edge.contract)) return diagramEnd
+      let start = diagramEnd + 1
+      while (start < lines.length && !lines[start].trim()) start++
+      if (lines[start] !== `<!-- dsh-wiki-interfaces:${view.id} -->`) return diagramEnd
+      const closing = `<!-- /dsh-wiki-interfaces:${view.id} -->`
+      for (let i = start + 1; i < lines.length; i++) {
+        if (lines[i] === closing) return i
+        if (/^ {0,3}(?:<!--|#{1,6}[ \t])/.test(lines[i]) || markdownFence(lines[i])) break
+      }
+      return diagramEnd
     }
 
     function approvedViewBlocks(markdown, views) {
@@ -188,7 +224,7 @@ window.__ModuleLoader__.load({
           pending.push(mermaid ? lines[i].replace(/(`{3,}|~{3,})[ \t]*mermaid[ \t]*$/i, '$1text') : lines[i],
             ...lines.slice(i + 1, Math.min(end + 1, lines.length)))
         }
-        i = end
+        i = view ? portableInterfaceEnd(lines, end, view) : end
       }
       if (pending.length) blocks.push({ markdown: pending.join('\n') })
       return blocks
@@ -340,7 +376,7 @@ window.__ModuleLoader__.load({
       return {
         ...metadata,
         ...content, chapters,
-        views: readViews(data.views, metadata),
+        views: readViews(data.views, metadata, chapters.length),
         model: typeof data.model === 'string' ? data.model : undefined,
         note: typeof data.note === 'string' ? data.note : undefined,
         durationMs: Number.isSafeInteger(data.durationMs) && data.durationMs >= 0 ? data.durationMs : undefined,
@@ -1320,10 +1356,12 @@ window.__ModuleLoader__.load({
         && ![repository + ' Wiki', repository + ' 架构 Wiki'].includes(title)
       const shortCommit = result.commit.slice(0, 12)
       const placedInline = result.chapters.some(item => item.markdown.includes('```dsh-architecture'))
-      const overview = !placedInline && chapterIndex === 0 && result.architecture
+      const hasChapterDesign = result.views.some(view => view.chapter !== undefined)
+      const overview = !hasChapterDesign && !placedInline && chapterIndex === 0 && result.architecture
         ? introductionBeforeGraph(chapter.markdown) : null
+      const chapterViews = result.views.filter(view => view.chapter === undefined || view.chapter === chapterIndex)
       const prose = markdown => markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
-        approvedViewBlocks(markdown, result.views ?? []).map((block, i) => block.architecture
+        approvedViewBlocks(markdown, chapterViews).map((block, i) => block.architecture
           ? result.architecture && h(ArchitectureGraph, { key: 'architecture-' + i, graph: result.architecture })
           : block.view
             ? h(WikiView, { key: block.view.id + '-' + i, view: block.view })
@@ -1333,8 +1371,10 @@ window.__ModuleLoader__.load({
         h('span', { 'aria-hidden': true }, h(IconBranchOutlineRegular, { size: 14 })),
         h('code', null, shortCommit),
       )
+      const walkthrough = chapterIndex === 0 && result.walkthrough && h(WikiWalkthrough, { key: result.id, walkthrough: result.walkthrough,
+        graph: result.architecture, chapterTitles: result.chapters.map(item => item.title), ...walkthroughControls })
 
-      return h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
+      return h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文', 'data-chapter-design': hasChapterDesign || undefined },
         h('header', { className: 'dsh-code-wiki-article-header' },
           isDocumentTitle && h('p', { className: 'dsh-code-wiki-eyebrow' }, title),
           h('h1', { ref: headingRef, tabIndex: -1, className: 'dsh-code-wiki-article-title' }, chapter.title),
@@ -1360,11 +1400,11 @@ window.__ModuleLoader__.load({
             const target = [...(article?.querySelectorAll('h2, h3') ?? [])].find(node => node.textContent.trim() === section)
             target?.scrollIntoView({ block: 'start', behavior: 'smooth' })
           } }, section))),
-        chapterIndex === 0 && result.walkthrough && h(WikiWalkthrough, { key: result.id, walkthrough: result.walkthrough,
-          graph: result.architecture, chapterTitles: result.chapters.map(item => item.title), ...walkthroughControls }),
+        !hasChapterDesign && walkthrough,
         prose(overview ? overview.introduction : chapter.markdown),
         overview && h(ArchitectureGraph, { key: result.id, graph: result.architecture }),
         overview && prose(overview.remaining),
+        hasChapterDesign && walkthrough,
         chapter.references && h('details', { className: 'dsh-code-wiki-sources' },
           h('summary', null, '本章引用', h('span', null, chapter.referenceCount)),
           h('div', { className: 'dsh-code-wiki-prose' },

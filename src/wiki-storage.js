@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { link, mkdir, open, readdir, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
-import { wikiCitationLimit, wikiViewEdgeLimits } from './wiki-document.js'
+import { wikiChapterViewLimit, wikiCitationLimit, wikiViewEdgeLimits, wikiViewKinds, wikiViewRelations, wikiViewRoles } from './wiki-document.js'
 import { readWikiWalkthrough } from './wiki-walkthrough-data.js'
 import { formatWikiFileTables } from './wiki-file-tables.js'
 
@@ -14,13 +14,14 @@ const githubRepo = /^https:\/\/github\.com\/[a-z\d-]+\/[\w.-]+$/i
 
 const timestamp = value => new Date(value).getTime()
 const nonempty = value => typeof value === 'string' && Boolean(value.trim())
-const viewKinds = new Set(['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment'])
 
 function validViews(views) {
-  if (!Array.isArray(views) || views.length > 3 || JSON.stringify(views).length > 120_000) return false
+  if (!Array.isArray(views) || views.length > wikiChapterViewLimit || JSON.stringify(views).length > 480_000) return false
   const ids = new Set()
+  const text = (value, max) => nonempty(value) && value.length <= max
   return views.every(view => {
-    if (!view || !/^[a-z][a-z0-9_-]{0,43}$/.test(view.id) || ids.has(view.id) || !viewKinds.has(view.kind)
+    if (!view || !/^[a-z][a-z0-9_-]{0,43}$/.test(view.id) || ids.has(view.id) || !wikiViewKinds.includes(view.kind)
+      || (view.chapter !== undefined && (!Number.isInteger(view.chapter) || view.chapter < 0 || view.chapter >= 8))
       || !nonempty(view.title) || !nonempty(view.purpose) || !nonempty(view.mermaid)
       || !Array.isArray(view.nodes) || view.nodes.length < 2 || view.nodes.length > 8
       || !Array.isArray(view.edges) || view.edges.length < 1
@@ -30,10 +31,16 @@ function validViews(views) {
     const refs = value => Array.isArray(value) && value.length > 0 && value.length <= wikiCitationLimit
       && value.every(ref => nonempty(ref?.label) && nonempty(ref?.url))
     if (!view.nodes.every(node => {
-      if (!/^[a-z][a-z0-9_-]{0,43}$/.test(node?.id) || nodes.has(node.id) || !nonempty(node.label) || !refs(node.refs)) return false
+      if (!/^[a-z][a-z0-9_-]{0,43}$/.test(node?.id) || nodes.has(node.id) || !nonempty(node.label) || !refs(node.refs)
+        || (view.chapter !== undefined && !wikiViewRoles.includes(node.role))
+        || (node.detail !== undefined && !text(node.detail, 120))
+        || (node.members !== undefined && (!Array.isArray(node.members) || node.members.length < 1 || node.members.length > 4
+          || !node.members.every(member => text(member, 100))))) return false
       nodes.add(node.id); return true
     })) return false
-    return view.edges.every(edge => nodes.has(edge?.from) && nodes.has(edge?.to) && nonempty(edge.label) && refs(edge.refs))
+    return view.edges.every(edge => nodes.has(edge?.from) && nodes.has(edge?.to) && nonempty(edge.label) && refs(edge.refs)
+      && (edge.relation === undefined || wikiViewRelations.includes(edge.relation))
+      && (edge.contract === undefined || text(edge.contract?.entry, 120) && text(edge.contract.input, 220) && text(edge.contract.output, 220)))
   })
 }
 

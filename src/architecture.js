@@ -56,12 +56,16 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
           if (plans >= 3) throw wikiInvalid('研究计划最多修订三次，请按当前计划完成研究。')
           const next = normalizeWikiPlan(args.plan, source)
           if (!checkpoint && !next.walkthrough) throw wikiInvalid('新研究计划需要 walkthrough，填写案例标题和要解释的问题。')
+          if ((!checkpoint || plan?.chapters[0].diagrams) && !next.chapters[0].diagrams) {
+            throw wikiInvalid('新研究计划需要在每章填写 diagrams，选择一到两张能回答本章设计问题的图。')
+          }
           plan = { ...next, moduleCases: true }; plans++; phase = 'researching'
           await saveCheckpoint()
           lastRetry = undefined
           lastRejection = ''
           progress('researching', 'researching', { plan })
-          return { status: '研究计划已接受。读取实际证据后提交 kind=draft，每个核心模块章需要一个 module-case。' }
+          return { status: '研究计划已接受。读取实际证据后提交 kind=draft，每个核心模块章需要一个 module-case。'
+            + (plan.chapters[0].diagrams ? '每章需要 design-note 与计划中的图，架构及模块图要写清接口。' : '') }
         }
         if (args?.kind !== 'draft') throw wikiInvalid('wiki_publish 需要 kind=plan 或 kind=draft。')
         progress('writing', 'validating', { plan })
@@ -105,7 +109,7 @@ export async function exploreArchitecture(ctx, source, selection, adapter, signa
     async function draftRound(prompt) {
       if (adapter) disposeAdapter = ctx.llm.registerAdapter([provider], adapter)
       handle = await ctx.agents.create({
-        sessionId: 'code-wiki-' + randomUUID(), agentOptions: { ...selection, provider, maxTokens: 20_000 }, signal,
+        sessionId: 'code-wiki-' + randomUUID(), agentOptions: { ...selection, provider, maxTokens: 24_000 }, signal,
         setup(agentCtx) {
           agentCtx.tools.restrict({ allow: [] })
           for (const definition of [...definitions, publish]) agentCtx.tools.register(definition)

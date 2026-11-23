@@ -243,6 +243,51 @@ test('only exact approved diagram fences become controlled views and all other M
   assert.equal(find(fallbackElement.type(fallbackElement.props), node => node.type?.name === 'WikiView'), undefined)
 })
 
+test('chapter diagrams retain repeated kinds across sections and show validated interface contracts', async () => {
+  const refs = [{ label: 'src/main.js:10–20', url: sourceUrl }]
+  const names = ['Overview', 'Lifecycle', 'Job', 'Retry']
+  const views = names.map((title, chapter) => ({
+    id: 'lifecycle_' + chapter, chapter, kind: 'state', title, purpose: 'Show the state change at the boundary.',
+    mermaid: `%% wiki-view:lifecycle_${chapter}\nflowchart TD\n    first --> second`,
+    nodes: [{ id: 'first', label: 'Ready', role: 'start', refs },
+      { id: 'second', label: 'Accepted', role: 'end', detail: 'Job has an identifier', members: ['jobId'], refs }],
+    edges: [{ from: 'first', to: 'second', label: 'accept', refs,
+      contract: { entry: 'openJob(options)', input: 'options.repo identifies the project', output: 'returns jobId' } }],
+  }))
+  const fence = view => '\n```mermaid\n' + view.mermaid + '\n```\n\n'
+    + `<!-- dsh-wiki-interfaces:${view.id} -->\n\n**图中接口**\n\n- portable interface ${view.id}\n\n`
+    + `<!-- /dsh-wiki-interfaces:${view.id} -->\n`
+  const markdown = '# Wiki\n' + names.map((title, index) => '\n## ' + title + '\n' + fence(views[index])
+    + (index === 0 ? fence(views[1]) : '')).join('\n')
+  const { wiki, Page } = await reader({ ...record(markdown), views })
+  const snapshot = wiki.getSnapshot()
+  assert.equal(snapshot.result.views.length, 4, 'the same kind can be useful in multiple chapters')
+  for (let chapterIndex = 0; chapterIndex < names.length; chapterIndex++) {
+    const element = find(Page({ wiki: { ...wiki, getSnapshot: () => ({ ...snapshot, chapterIndex }) } }),
+      node => node.type?.name === 'WikiArticle')
+    const article = element.type(element.props)
+    const drawn = find(article, node => node.type?.name === 'WikiView')
+    assert.equal(drawn.props.view.chapter, chapterIndex)
+    assert.equal(drawn.props.view.nodes[1].detail, 'Job has an identifier')
+    assert.equal(drawn.props.view.edges[0].contract.entry, 'openJob(options)')
+    assert(!find(article, node => node.type === 'markdown' && node.props.text.includes('portable interface ' + drawn.props.view.id)),
+      'the reader shows the contract card without the generated Markdown duplicate')
+    if (chapterIndex === 0) assert(find(article, node => node.type === 'markdown'
+      && node.props.text.includes('```text\n' + views[1].mermaid) && node.props.text.includes('portable interface ' + views[1].id)),
+    'an untrusted diagram leaves its readable Markdown interface intact')
+  }
+  const malformed = structuredClone(views)
+  malformed[1].edges[0].contract.output = 'x'.repeat(221)
+  const invalid = await reader({ ...record(markdown), views: malformed })
+  assert.equal(invalid.wiki.getSnapshot().result.views.some(view => view.chapter === 1), false)
+
+  const misplaced = await reader({ ...record(markdown.replace('<!-- dsh-wiki-interfaces:lifecycle_0 -->',
+    'A paragraph between the diagram and the portable list.\n\n<!-- dsh-wiki-interfaces:lifecycle_0 -->')), views })
+  const misplacedElement = find(misplaced.Page({ wiki: misplaced.wiki }), node => node.type?.name === 'WikiArticle')
+  assert(find(misplacedElement.type(misplacedElement.props), node => node.type === 'markdown'
+    && node.props.text.includes('portable interface lifecycle_0')), 'only an adjacent portable list belongs to the diagram')
+})
+
 
 const nextId = '87654321-4321-4321-4321-cba987654321'
 function failedJob(target = { repositoryUrl: repoUrl }, resumable = false) {

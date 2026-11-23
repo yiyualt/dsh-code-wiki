@@ -9,7 +9,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 
 import { apply } from '../index.js'
-import { wikiDraftFixture, wikiModuleCaseFixture, wikiPlanFixture, withWikiModuleCases } from '../fixtures/wiki-editorial.js'
+import { wikiDraftFixture, wikiModuleCaseFixture, wikiPlanFixture, withWikiModuleCases,
+  withChapterDiagramPlan, withChapterDiagrams } from '../fixtures/wiki-editorial.js'
 import { createWikiStorage } from '../src/wiki-storage.js'
 import { createWikiCheckpoints } from '../src/wiki-checkpoint.js'
 
@@ -288,7 +289,7 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
         ] }, { signal })
         const { results: [entry, core, readme] } = JSON.parse(batch.data)
         const cite = span => [{ evidence: span.evidence, start: span.start, end: span.end }]
-        const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: {
+        const planned = await tools.get('wiki_publish').execute({ kind: 'plan', plan: withChapterDiagramPlan({
           audience: 'Developers inspecting this runner', goal: 'Understand the committed entry and returned value',
           walkthrough: { title: 'Load the runner', question: 'How does importing main.js produce value?' },
           views: [], viewOmission: 'The existing overall component diagram fully explains this small example.',
@@ -300,13 +301,13 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
             { id: 'core', title: 'Core', role: 'module', module: 'core', question: 'What is returned?' }],
           research: [{ id: 'purpose', question: 'What does the project claim to do?', evidenceType: 'documentation', paths: ['README.md'] },
             { id: 'behavior', question: 'How does the entry invoke the implementation?', evidenceType: 'implementation', paths: ['main.js', 'core.js'] }],
-        } })
+        }) })
         assert.match(planned.status, /研究计划已接受/)
         const paragraph = (id, text, span, claimType = 'implementation') => ({ id, type: 'paragraph', claimType, text, refs: cite(span) })
         const table = (id, span, claimType = 'implementation') => ({ id, type: 'table', claimType, columns: ['Symbol', 'Role'],
           rows: [['run', 'Returns a value']], refs: cite(span) })
         const node = (id, kind, span) => ({ id, title: id, kind, summary: id, technology: 'JavaScript', boundary: '进程内模块', refs: cite(span) })
-        const published = await tools.get('wiki_publish').execute({ kind: 'draft', draft: {
+        const published = await tools.get('wiki_publish').execute({ kind: 'draft', draft: withChapterDiagrams({
           chapters: [
             { id: 'overview', title: 'Overview', blocks: [paragraph('purpose', 'A small command runner.', readme, 'purpose'), table('layout', readme, 'usage')] },
             { id: 'architecture', title: 'Architecture', blocks: [paragraph('architecture', 'The entry hands the call to core.', entry)] },
@@ -343,7 +344,7 @@ async function publishingAgent({ setup, signal }, release, restrictions = []) {
               { kind: 'debug', title: 'Trace an unexpected export', summary: 'Compare the return from run with the assigned value.', steps: ['export', 'call'], refs: cite(entry) },
             ],
           },
-        } })
+        }, { docs: readme, entry, core }) })
         assert.match(published.status, /草稿已收到/)
 
       })()
@@ -728,13 +729,13 @@ test('a fresh installation follows the current DSH provider, model and reasoning
   const first = await generateDocument(api, repositoryPath)
   assert.equal(first.phase, 'completed', first.error)
   assert.equal(first.result.model, selection.model)
-  assert.deepEqual(calls[0], { ...selection, maxTokens: 20_000 })
+  assert.deepEqual(calls[0], { ...selection, maxTokens: 24_000 })
 
   selection = { provider: 'another-provider', model: 'another-model', reasoningEffort: 'high' }
   const second = await generateDocument(api, repositoryPath)
   assert.equal(second.phase, 'completed', second.error)
   assert.equal(second.result.model, selection.model)
-  assert.deepEqual(calls[1], { ...selection, maxTokens: 20_000 })
+  assert.deepEqual(calls[1], { ...selection, maxTokens: 24_000 })
 })
 
 test('a local model override takes precedence over DSH and reports configuration failures', async t => {

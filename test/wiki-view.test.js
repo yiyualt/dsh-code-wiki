@@ -51,7 +51,7 @@ test('sequence views retain message order and direction with participants on dis
 
 test('SVG rendering preserves labels as React text and exposes source links without an HTML execution API', () => {
   let count = 0
-  const React = { useId: () => 'view-' + count++, useRef: () => ({ current: null }), useLayoutEffect() {},
+  const React = { useId: () => 'view-' + count++, useRef: () => ({ current: null }), useLayoutEffect() {}, useState: value => [value, () => {}],
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) }
   const render = createWikiViewRenderer(React)
   const view = fixture('sequence')
@@ -70,7 +70,8 @@ test('SVG rendering preserves labels as React text and exposes source links with
 test('vertical views start centered in their own viewport without recentering other view kinds', () => {
   for (const kind of ['flow', 'dataflow', 'sequence', 'scenario', 'dependency', 'deployment']) {
     const element = { scrollWidth: 640, clientWidth: 320, scrollLeft: 0 }
-    const React = { useId: () => kind, useRef: () => ({ current: element }), useLayoutEffect: effect => effect(), createElement: () => null }
+    const React = { useId: () => kind, useRef: () => ({ current: element }), useLayoutEffect: effect => effect(),
+      useState: value => [value, () => {}], createElement: () => null }
     createWikiViewRenderer(React)({ view: fixture(kind) })
     assert.equal(element.scrollLeft, ['flow', 'dataflow'].includes(kind) ? 160 : 0)
   }
@@ -98,7 +99,7 @@ test('dense dataflow relationships retain their complete labels or a visible num
   }
   assert(result.nodes.find(item => item.id === 'mapped').labelRows.includes('DataFrame'))
   assert(result.nodes.find(item => item.id === 'split').labelRows.includes('Interaction'))
-  const React = { useId: () => 'dense', useRef: () => ({ current: null }), useLayoutEffect() {},
+  const React = { useId: () => 'dense', useRef: () => ({ current: null }), useLayoutEffect() {}, useState: value => [value, () => {}],
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) }
   const output = createWikiViewRenderer(React)({ view }), elements = []
   function collect(value) { if (value && typeof value === 'object') { elements.push(value); value.children?.forEach(collect) } }
@@ -127,4 +128,23 @@ test('word-aware node and sequence labels stay complete and allocate enough mess
     if (i) assert(message.messageY > result.edges[i - 1].points[0][1])
   }
   assert.equal(new Set(result.nodes.map(item => item.h)).size, 1)
+})
+
+test('entity records render members and expose a source-linked interface below the graph', () => {
+  const view = { ...fixture('entity'), nodes: [
+    { ...node('thread', 'data'), label: 'Thread', detail: 'Identifies a session', members: ['id: UUID', 'createdAt: string'] },
+    { ...node('message', 'data'), label: 'Message', members: ['threadId: UUID', 'body: string'] },
+  ], edges: [{ ...edge('thread', 'message', 'stores messages'), relation: 'composition',
+    contract: { entry: 'append(threadId, body)', input: 'A valid thread and the message body', output: 'An assigned message ID' } }] }
+  const React = { useId: () => 'schema', useRef: () => ({ current: null }), useLayoutEffect() {}, useState: value => [value, () => {}],
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) }
+  const output = createWikiViewRenderer(React)({ view }), elements = []
+  function collect(value) { if (value && typeof value === 'object') { elements.push(value); value.children?.forEach(collect) } }
+  collect(output)
+  assert(elements.some(item => item.type === 'tspan' && item.children.includes('threadId: UUID')))
+  assert(elements.some(item => item.type === 'path' && item.props.markerStart === 'url(#wiki-view-schema-diamond)'))
+  assert(elements.some(item => item.type === 'a' && item.props.className === 'dsh-code-wiki-view-contract-entry'
+    && item.props.href === refs[0].href && item.children[0].children.includes('append(threadId, body)')))
+  assert(elements.some(item => item.type === 'dd' && item.children.includes('A valid thread and the message body')))
+  assert(elements.some(item => item.type === 'dd' && item.children.includes('An assigned message ID')))
 })

@@ -3,7 +3,8 @@ import { test } from 'node:test'
 import { exploreArchitecture } from '../src/architecture.js'
 import { normalizeWikiPlan, normalizeWikiDraft, renderWikiDocument, reviseWikiDraft, wikiReviewMaterial } from '../src/wiki-document.js'
 import { reviewWikiDraft, wikiPublicationSchema, wikiResearchInstructions } from '../src/wiki-editor.js'
-import { wikiPlanFixture, wikiDraftFixture, wikiDiagramFixture, approvedWikiReview, withWikiModuleCases } from '../fixtures/wiki-editorial.js'
+import { wikiPlanFixture, wikiDraftFixture, wikiDiagramFixture, approvedWikiReview, withWikiModuleCases,
+  withChapterDiagramPlan, withChapterDiagrams } from '../fixtures/wiki-editorial.js'
 
 function fixture() {
   const contents = { 'README.md': '# 示例\n项目提供可重复调用的模块示例。',
@@ -31,15 +32,39 @@ test('file tables render generated relative link notation as file names with the
 })
 
 function planWithWalkthrough() {
-  return { ...wikiPlanFixture(), walkthrough: { title: '执行示例', question: '一次调用如何得到结果？' } }
+  return withChapterDiagramPlan({ ...wikiPlanFixture(), walkthrough: { title: '执行示例', question: '一次调用如何得到结果？' } })
 }
+
+test('redesigned chapters require planned figures and source-backed interface contracts', () => {
+  const { source, evidence, spans } = fixture()
+  const input = withChapterDiagramPlan(wikiPlanFixture())
+  const incomplete = structuredClone(input)
+  delete incomplete.chapters[2].diagrams
+  assert.throws(() => normalizeWikiPlan(incomplete, source), /章节 execution 的计划图示/)
+  const plan = normalizeWikiPlan(input, source)
+  const raw = withChapterDiagrams(withWikiModuleCases(wikiDraftFixture(spans), spans), spans)
+  raw.chapters[2].blocks = raw.chapters[2].blocks.filter(block => block.type !== 'table' && block.type !== 'paragraph')
+  const rendered = renderWikiDocument(normalizeWikiDraft(raw, source, evidence, plan), source)
+  assert.deepEqual(rendered.views.map(view => [view.chapter, view.kind]), [[0, 'scenario'], [1, 'component'], [2, 'sequence'], [3, 'component']])
+  assert.equal(rendered.markdown.match(/^### 设计细节$/gm).length, 4)
+  assert.match(rendered.markdown, /边界在哪里？[\s\S]+```mermaid[\s\S]+输入：Import the named binding from core\.js\.[\s\S]+### 设计细节/)
+  assert.doesNotMatch(rendered.markdown, /```dsh-architecture/)
+  const diagram = raw.chapters[1].blocks.find(block => block.type === 'diagram')
+  const first = diagram.edges[0], second = diagram.edges[1]
+  const old = second.contract.entry
+  second.contract.entry = first.contract.entry
+  assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /章节 architecture .* 2 个不同的接口/)
+  second.contract.entry = old
+  second.refs = [{ ...spans.docs }]
+  assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /图示关系引用.*有效实现证据/)
+})
 
 function draftWithWalkthrough(spans) {
   const { entry, core } = spans
   const ref = ({ evidence, start, end }) => ({ evidence, start, end })
   const step = (id, module, title, action, outcome, value, span) => ({ id, module, title, action, outcome, refs: [ref(span)],
     data: { title, columns: ['阶段', '示例值'], rows: [[title, value]], refs: [ref(span)] } })
-  return { ...withWikiModuleCases(wikiDraftFixture(spans), spans), walkthrough: {
+  return { ...withChapterDiagrams(withWikiModuleCases(wikiDraftFixture(spans), spans), spans), walkthrough: {
     title: '执行示例', objective: '检查一次调用返回的值。',
     modules: [
       { node: 'entry', chapter: 'execution', entry: 'main.js', change: '在入口检查调用参数。', refs: [ref(entry)] },
@@ -75,10 +100,10 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
   const bounds = schema => [schema.minItems, schema.maxItems]
   for (const [schema, expected] of [
     [plan.chapters, [4, 8]], [plan.research, [2, 8]], [plan.research.items.properties.paths, [1, 6]], [plan.views, [0, 3]],
-    [plan.modules, [2, 5]], [plan.modules.items.properties.paths, [1, 6]],
+    [plan.modules, [2, 5]], [plan.modules.items.properties.paths, [1, 6]], [plan.chapters.items.properties.diagrams, [1, 2]],
     [draft.chapters, [4, 8]], [draft.chapters.items.properties.blocks, [1, 14]], [draft.coverage, [2, 8]],
     [block.items, [2, 7]], [block.columns, [2, 5]], [block.rows, [1, 8]], [block.rows.items, [2, 5]],
-    [block.inlineCode, [0, 8]], [block.nodes, [2, 8]], [block.edges, [1, 16]],
+    [block.inlineCode, [0, 8]], [block.nodes, [2, 8]], [block.edges, [1, 16]], [block.rules, [2, 4]],
     [draft.graph.properties.layers, [2, 5]], [draft.graph.properties.layers.items.properties.nodes, [1, 8]],
     [draft.graph.properties.edges, [2, 24]],
   ]) assert.deepEqual(bounds(schema), expected)
@@ -98,7 +123,7 @@ test('Wiki publication schema exposes the normalizer array bounds before a draft
     }
   }
   visit(wikiPublicationSchema)
-  assert.equal(refLocations, 14)
+  assert.equal(refLocations, 15)
   assert.match(wikiResearchInstructions, /超过 25 行会按 25 行拆分且拆分后总数仍不能超过 6 项/)
   const { raw, source, evidence, plan: acceptedPlan, spans } = fixture()
   raw.chapters[0].blocks[0].refs = Array(7).fill(spans.docs)

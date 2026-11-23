@@ -1,5 +1,8 @@
 const wikiViews = (() => {
-  const names = { flow: '流程图', sequence: '时序图', dataflow: '数据流图', dependency: '依赖视图', scenario: '场景视图', deployment: '部署视图' }
+  const names = {
+    flow: '流程图', sequence: '时序图', dataflow: '数据流图', dependency: '依赖图', scenario: '用例图', deployment: '部署图',
+    component: '组件图', activity: '活动图', state: '状态图', entity: '实体关系图', class: '类图',
+  }
   const overlap = (a, b, gap = 0) => a.x < b.x + b.w + gap && a.x + a.w + gap > b.x
     && a.y < b.y + b.h + gap && a.y + a.h + gap > b.y
   const center = node => [node.x + node.w / 2, node.y + node.h / 2]
@@ -34,10 +37,23 @@ const wikiViews = (() => {
   function dimensions(node, kind) {
     const actor = node.role === 'actor' && kind !== 'sequence'
     const circle = kind === 'dataflow' && ['component', 'process'].includes(node.role)
-    const w = kind === 'sequence' ? 140 : actor ? 126 : kind === 'scenario' ? 252 : kind === 'deployment' ? 178 : circle ? 132 : 164
-    const labelRows = lines(node.label, w - 22)
-    const h = actor ? 80 + labelRows.length * 18 : Math.max(kind === 'sequence' ? 66 : 76, labelRows.length * 18 + 24, circle ? w : 0)
-    return { ...node, w, h, labelRows }
+    const compact = ['decision', 'start', 'end'].includes(node.role)
+    const record = ['class', 'entity'].includes(kind) || kind === 'component' && node.members?.length
+    const memberRows = record && node.members?.length ? node.members.flatMap(member => lines(member, 190, 12)) : []
+    let w = 164
+    if (kind === 'sequence') w = 140
+    else if (actor) w = 126
+    else if (kind === 'scenario') w = 252
+    else if (record || node.detail && !compact && !circle) w = 218
+    else if (kind === 'deployment' || compact) w = 178
+    else if (circle) w = 132
+    const labelRows = lines(node.label, w - (node.role === 'decision' ? 76 : 26))
+    const detailRows = node.detail && !actor && !compact ? lines(node.detail, w - (circle ? 48 : 28), 12) : []
+    const bodyHeight = labelRows.length * 18 + detailRows.length * 16 + (detailRows.length ? 7 : 0)
+    const h = actor ? 80 + labelRows.length * 18 : Math.max(kind === 'sequence' ? 60 : 64,
+      bodyHeight + 28 + (memberRows.length ? 14 + 16 * memberRows.length : 0), circle ? w : 0,
+      node.role === 'decision' ? labelRows.length * 22 + 36 : 0)
+    return { ...node, w, h, labelRows, detailRows, memberRows, bodyHeight }
   }
 
   function ranks(view) {
@@ -62,8 +78,10 @@ const wikiViews = (() => {
     const nodes = view.nodes.map(node => dimensions(node, view.kind))
     if (view.kind === 'sequence') {
       const height = Math.max(...nodes.map(node => node.h))
-      return { width: Math.max(640, nodes.length * 160 + 20), height: 30 + height + 56,
-        nodes: nodes.map((node, i) => ({ ...node, x: 20 + i * 160, y: 30, h: height })) }
+      const contentWidth = nodes.length * 154 + 28
+      const width = Math.max(440, contentWidth)
+      return { width, height: 25 + height + 50,
+        nodes: nodes.map((node, i) => ({ ...node, x: (width - contentWidth) / 2 + 20 + i * 154, y: 25, h: height })) }
     }
     if (view.kind === 'scenario') {
       const actors = nodes.filter(node => node.role === 'actor'), subjects = nodes.filter(node => node.role !== 'actor')
@@ -86,26 +104,30 @@ const wikiViews = (() => {
       }
       return { width: columns * pitch + 100, height: top, nodes: placed }
     }
-    const horizontal = view.kind === 'dependency', levels = ranks(view), groups = []
+    const levels = ranks(view), groups = []
     for (const node of nodes) (groups[levels.get(node.id)] ??= []).push(node)
+    const horizontal = isHorizontal(view.kind) && groups.length <= 3
     const breadth = Math.max(...groups.map(group => group.length))
-    const pitch = (horizontal ? Math.max(146, ...nodes.map(node => node.h + 58)) : Math.max(220, ...nodes.map(node => node.w + 56))) * spacing
-    const width = horizontal ? groups.reduce((sum, group) => sum + Math.max(...group.map(node => node.w)) + 80 * spacing, 60)
-      : Math.max(640, breadth * pitch + 80)
-    const height = horizontal ? Math.max(320, breadth * pitch + 80)
-      : groups.reduce((sum, group) => sum + Math.max(...group.map(node => node.h)) + 100 * spacing, 60)
-    let depthStart = horizontal ? 44 : 30
+    const pitch = (horizontal ? Math.max(118, ...nodes.map(node => node.h + 38)) : Math.max(195, ...nodes.map(node => node.w + 32))) * spacing
+    const width = horizontal ? groups.reduce((sum, group) => sum + Math.max(...group.map(node => node.w)), 62)
+      + Math.max(0, groups.length - 1) * 72 * spacing : Math.max(400, breadth * pitch + 48)
+    const height = horizontal ? Math.max(220, breadth * pitch + 42)
+      : groups.reduce((sum, group) => sum + Math.max(...group.map(node => node.h)), 56)
+        + Math.max(0, groups.length - 1) * 82 * spacing
+    let depthStart = horizontal ? 31 : 28
     const placed = groups.flatMap(group => {
       const depthSize = Math.max(...group.map(node => horizontal ? node.w : node.h))
       const result = group.map((node, i) => ({ ...node,
         x: horizontal ? depthStart + (depthSize - node.w) / 2 : (width - group.length * pitch) / 2 + i * pitch + (pitch - node.w) / 2,
         y: horizontal ? (height - group.length * pitch) / 2 + i * pitch + (pitch - node.h) / 2 : depthStart + (depthSize - node.h) / 2,
       }))
-      depthStart += depthSize + (horizontal ? 80 : 100) * spacing
+      depthStart += depthSize + (horizontal ? 72 : 82) * spacing
       return result
     })
     return { width, height, nodes: placed }
   }
+
+  function isHorizontal(kind) { return ['dependency', 'scenario', 'component', 'entity', 'class'].includes(kind) }
 
   function route(start, end, nodes, source, destination, horizontal) {
     const axis = horizontal ? 0 : 1, sign = Math.sign(end[axis] - start[axis])
@@ -195,7 +217,7 @@ const wikiViews = (() => {
       } else {
         const [ax, ay] = center(from), [bx, by] = center(to)
         const horizontal = Math.abs(bx - ax) > (from.w + to.w) / 2 + 12
-          && (view.kind === 'dependency' || view.kind === 'scenario' || Math.abs(bx - ax) > Math.abs(by - ay) * 1.3)
+          && (isHorizontal(view.kind) || Math.abs(bx - ax) > Math.abs(by - ay) * 1.3)
         const sign = Math.sign(horizontal ? bx - ax : by - ay)
         const outgoing = view.edges.filter(item => item.from === edge.from)
         const incoming = view.edges.filter(item => item.to === edge.to)
@@ -236,8 +258,8 @@ const wikiViews = (() => {
 
   function createRenderer(React) {
     const h = React.createElement
-    function textRows(rows, x, y, size = 14, className) {
-      return h('text', { x, y, textAnchor: 'middle', className, fontSize: size },
+    function textRows(rows, x, y, size = 14, className, anchor = 'middle') {
+      return h('text', { x, y, textAnchor: anchor, className, fontSize: size },
         rows.map((row, i) => h('tspan', { key: i, x, dy: i ? size + 4 : 0 }, row)))
     }
     function shape(node, kind) {
@@ -245,68 +267,142 @@ const wikiViews = (() => {
       if (node.role === 'actor' && kind !== 'sequence') return h('g', { className: 'dsh-wiki-view-actor' },
         h('circle', { cx: x + w / 2, cy: y + 13, r: 10 }),
         h('path', { d: `M${x + w / 2} ${y + 23}v30m-22-18h44m-22 18-19 24m19-24 19 24` }))
-      if (node.role === 'store') return h('g', null,
+      if (node.role === 'decision') return h('polygon', {
+        points: `${x + w / 2},${y} ${x + w},${y + height / 2} ${x + w / 2},${y + height} ${x},${y + height / 2}`,
+      })
+      if (['start', 'end'].includes(node.role)) return h('g', null,
+        h('rect', { x, y, width: w, height, rx: Math.min(27, height / 2) }),
+        h('circle', { cx: x + 19, cy: y + height / 2, r: 5, className: 'dsh-wiki-view-terminal-dot' }),
+        node.role === 'end' && h('circle', { cx: x + 19, cy: y + height / 2, r: 8, className: 'dsh-wiki-view-terminal-ring' }))
+      if (node.role === 'store' && !['entity', 'class', 'sequence'].includes(kind)) return h('g', null,
         h('path', { d: `M${x} ${y + 12}v${height - 24}a${w / 2} 12 0 0 0 ${w} 0V${y + 12}` }),
         h('ellipse', { cx: x + w / 2, cy: y + 12, rx: w / 2, ry: 12 }))
       if (kind === 'scenario' && node.role === 'process' || kind === 'dataflow' && ['component', 'process'].includes(node.role)) {
         return h('ellipse', { cx: x + w / 2, cy: y + height / 2, rx: w / 2, ry: height / 2 })
       }
-      if (node.role === 'data') return h('polygon', { points: `${x + 14},${y} ${x + w},${y} ${x + w - 14},${y + height} ${x},${y + height}` })
+      if (node.role === 'data' && !['class', 'entity', 'sequence'].includes(kind)) return h('polygon', { points: `${x + 14},${y} ${x + w},${y} ${x + w - 14},${y + height} ${x},${y + height}` })
       if (kind === 'deployment') return h('g', null,
         h('path', { d: `M${x} ${y + 10}l12-10h${w - 12}v${height - 10}l-12 10H${x}zM${x} ${y + 10}h${w - 12}l12-10M${x + w - 12} ${y + 10}v${height - 10}` }))
-      return h('rect', { x, y, width: w, height, rx: kind === 'flow' && node.role === 'process' ? 14 : 7 })
+      return h('g', null,
+        h('rect', { x, y, width: w, height, rx: ['activity', 'flow', 'state'].includes(kind) ? 14 : 7 }),
+        kind === 'component' && h('path', { className: 'dsh-wiki-view-node-icon',
+          d: `M${x + w - 21} ${y + 10}h12v13h-12v-3m0-6v-4m-3 4h7v3h-7zm0 5h7v3h-7z` }))
     }
+
+    function nodeText(node, kind) {
+      const { x, y, w, h: height, labelRows, detailRows, memberRows, bodyHeight } = node
+      const partition = memberRows.length ? 14 + 16 * memberRows.length : 0
+      const top = (height - bodyHeight - partition) / 2
+      const actor = node.role === 'actor' && kind !== 'sequence'
+      const terminal = ['start', 'end'].includes(node.role)
+      const labelX = x + w / 2 + (terminal ? 7 : 0)
+      const labelY = actor ? y + 93 : y + top + 14
+      const dividerY = y + top + bodyHeight + 8
+      return h('g', null,
+        textRows(labelRows, labelX, labelY, 14, 'dsh-wiki-view-node-label'),
+        detailRows.length ? textRows(detailRows, x + w / 2, y + top + labelRows.length * 18 + 15, 12, 'dsh-wiki-view-node-detail') : null,
+        partition ? h('g', null,
+          h('line', { x1: x, x2: x + w, y1: dividerY, y2: dividerY, className: 'dsh-wiki-view-node-divider' }),
+          textRows(memberRows, x + 14, dividerY + 17, 12, 'dsh-wiki-view-node-member', 'start')) : null)
+    }
+
+    function arrowheads(prefix) {
+      const marker = (kind, path, filled, start = false) => h('marker', { key: kind, id: prefix + '-' + kind,
+        markerWidth: 13, markerHeight: 12, refX: start ? 0 : 12, refY: 6, orient: 'auto', markerUnits: 'userSpaceOnUse' },
+      h('path', { d: path, className: filled ? 'dsh-wiki-view-arrowhead' : 'dsh-wiki-view-open-arrowhead' }))
+      return h('defs', null, marker('arrow', 'M2 1L12 6L2 11Z', true), marker('open', 'M2 1L12 6L2 11'),
+        marker('triangle', 'M1 1L12 6L1 11Z'), marker('diamond', 'M0 6L6 1L12 6L6 11Z', true, true))
+    }
+
+    function relationArrows(prefix, relation) {
+      if (relation === 'composition') return { markerStart: `url(#${prefix}-diamond)` }
+      if (relation === 'association') return {}
+      const head = relation === 'inheritance' ? 'triangle' : ['return', 'async'].includes(relation) ? 'open' : 'arrow'
+      return { markerEnd: `url(#${prefix}-${head})` }
+    }
+
+    function interfaceContracts(edges, byId) {
+      const contracts = edges.filter(edge => edge.contract)
+      if (!contracts.length) return null
+      return h('div', { className: 'dsh-code-wiki-view-contracts' },
+        h('ul', { 'aria-label': '图中接口', className: 'dsh-code-wiki-view-contract-list' },
+          contracts.map(edge => h('li', { key: edge.id },
+            h('p', { className: 'dsh-code-wiki-view-contract-route' },
+              byId.get(edge.from).label + ' → ' + byId.get(edge.to).label),
+            h('a', { href: edge.refs[0].href, target: '_blank', rel: 'noreferrer',
+              className: 'dsh-code-wiki-view-contract-entry' }, h('code', null, edge.contract.entry)),
+            h('dl', null, h('dt', null, '输入'), h('dd', null, edge.contract.input),
+              h('dt', null, '输出'), h('dd', null, edge.contract.output))))))
+    }
+
     return function WikiView({ view }) {
       const prefix = 'wiki-view-' + React.useId().replace(/[^a-z\d_-]/gi, '')
       const viewport = React.useRef(null)
+      const [fit, setFit] = React.useState(false)
+      const [overflow, setOverflow] = React.useState(false)
+      const geometry = layout(view)
+      const readableWidth = Math.ceil(geometry.width * .9)
       React.useLayoutEffect(() => {
         const element = viewport.current
-        if (element && ['flow', 'dataflow'].includes(view.kind)) {
-          element.scrollLeft = Math.max(0, (element.scrollWidth - element.clientWidth) / 2)
+        if (!element) return
+        function updateSize() {
+          setOverflow(element.clientWidth + 1 < readableWidth)
+          if (!fit && ['flow', 'dataflow', 'activity', 'state'].includes(view.kind)) {
+            element.scrollLeft = Math.max(0, (element.scrollWidth - element.clientWidth) / 2)
+          }
         }
-      }, [view.id, view.kind])
-      const geometry = layout(view)
+        updateSize()
+        if (typeof ResizeObserver !== 'function') return
+        const observer = new ResizeObserver(updateSize)
+        observer.observe(element)
+        return () => observer.disconnect()
+      }, [view.kind, readableWidth, fit])
       const byId = new Map(view.nodes.map(node => [node.id, node]))
-      const references = [...view.nodes.map(node => ({ label: node.label, refs: node.refs })),
+      const references = [...view.nodes.map(node => ({ label: node.label, detail: node.detail,
+        members: node.members, refs: node.refs })),
         ...view.edges.map(edge => ({ label: byId.get(edge.from).label + ' → ' + byId.get(edge.to).label + '：' + edge.label, refs: edge.refs }))]
       return h('figure', { className: 'dsh-code-wiki-view', 'data-kind': view.kind, 'aria-label': view.title },
-        h('div', { className: 'dsh-code-wiki-view-header' }, h('strong', null, names[view.kind]),
-          h('span', null, '宽图可横向滚动查看')),
-        h('div', { className: 'dsh-code-wiki-view-scroll', ref: viewport, tabIndex: 0, role: 'region', 'aria-label': view.title + '图示' },
+        h('figcaption', { className: 'dsh-code-wiki-view-header' },
+          h('strong', { className: 'dsh-code-wiki-view-type' }, names[view.kind]),
+          overflow && h('button', { type: 'button', 'aria-pressed': fit, 'aria-controls': prefix + '-viewport',
+            onClick: () => setFit(previous => !previous) }, '适应宽度')),
+        h('div', { id: prefix + '-viewport', className: 'dsh-code-wiki-view-scroll', ref: viewport,
+          tabIndex: overflow && !fit ? 0 : undefined, role: 'region', 'aria-label': view.title + '图示' },
           h('svg', { className: 'dsh-code-wiki-view-svg', width: geometry.width, height: geometry.height,
             viewBox: `0 0 ${geometry.width} ${geometry.height}`, role: 'img', 'aria-labelledby': prefix + '-title ' + prefix + '-description',
-            style: { minWidth: geometry.width } },
+            style: { minWidth: fit ? 0 : readableWidth, maxWidth: geometry.width } },
           h('title', { id: prefix + '-title' }, view.title), h('desc', { id: prefix + '-description' }, view.purpose),
-          h('defs', null, h('marker', { id: prefix + '-arrow', markerWidth: 10, markerHeight: 10, refX: 9, refY: 5, orient: 'auto', markerUnits: 'userSpaceOnUse' },
-            h('path', { d: 'M0 1L9 5L0 9Z', className: 'dsh-wiki-view-arrowhead' }))),
-          view.kind === 'sequence' && geometry.nodes.map(node => h('line', { key: 'life-' + node.id, x1: center(node)[0], x2: center(node)[0],
-            y1: node.y + node.h, y2: geometry.height - 24, className: 'dsh-wiki-view-lifeline' })),
-          geometry.edges.map((edge, i) => h('g', { key: edge.id, 'data-edge-id': edge.id },
-            h('title', null, edge.label),
-            h('path', { d: edge.points.map(([x, y], index) => (index ? 'L' : 'M') + x + ' ' + y).join(' '),
-              markerEnd: `url(#${prefix}-arrow)`, className: 'dsh-wiki-view-edge' }),
-            view.kind === 'sequence' ? textRows(edge.messageRows,
-              (edge.points[0][0] + edge.points.at(-1)[0]) / 2, edge.messageY, 13, 'dsh-wiki-view-message')
-              : (() => {
-                const box = edge.labelBox ?? edge.numberBox
-                return h('g', { className: 'dsh-wiki-view-edge-label', 'data-relation-number': edge.number },
+          arrowheads(prefix),
+          view.kind === 'sequence' && geometry.nodes.map((node, i) => h('g', { key: 'life-' + node.id },
+            i % 2 === 0 && h('rect', { x: node.x - 7, y: node.y, width: node.w + 14, height: geometry.height - node.y - 14,
+              rx: 7, className: 'dsh-wiki-view-lane' }),
+            h('line', { x1: center(node)[0], x2: center(node)[0], y1: node.y + node.h, y2: geometry.height - 24, className: 'dsh-wiki-view-lifeline' }))),
+          geometry.edges.map(edge => {
+            const d = edge.points.map(([x, y], index) => (index ? 'L' : 'M') + x + ' ' + y).join(' ')
+            const box = edge.labelBox ?? edge.numberBox
+            const label = byId.get(edge.from).label + ' → ' + byId.get(edge.to).label + '：' + edge.label
+            return h('a', { key: edge.id, href: edge.refs[0].href, target: '_blank', rel: 'noreferrer',
+              className: 'dsh-wiki-view-edge-link', 'data-edge-id': edge.id, 'data-relation': edge.relation, 'aria-label': label + '，查看源码' },
+              h('title', null, label), h('path', { d, className: 'dsh-wiki-view-edge-region' }),
+              h('path', { d, ...relationArrows(prefix, edge.relation), className: 'dsh-wiki-view-edge' }),
+              view.kind === 'sequence' ? textRows(edge.messageRows,
+                (edge.points[0][0] + edge.points.at(-1)[0]) / 2, edge.messageY, 13, 'dsh-wiki-view-message')
+                : h('g', { className: 'dsh-wiki-view-edge-label', 'data-relation-number': edge.number },
                   h('rect', { x: box.x, y: box.y, width: box.w, height: box.h, rx: 4 }),
-                  textRows(box.rows, box.x + box.w / 2, box.y + 15, 12))
-              })())),
-          geometry.nodes.map(node => {
-            const actor = node.role === 'actor' && view.kind !== 'sequence'
-            const label = node.labelRows
-            const labelY = actor ? node.y + 93 : node.y + node.h / 2 - (label.length - 1) * 9 + 5
-            return h('a', { key: node.id, href: node.refs[0].href, target: '_blank', rel: 'noreferrer',
-              className: 'dsh-wiki-view-node', 'data-node-id': node.id, 'aria-label': node.label + '，查看源码' },
-              h('title', null, node.label + '\n' + node.refs.map(ref => ref.label).join('\n')), shape(node, view.kind),
-              textRows(label, node.x + node.w / 2, labelY, 14, 'dsh-wiki-view-node-label'))
-          }))),
+                  textRows(box.rows, box.x + box.w / 2, box.y + 15, 12)))
+          }),
+          geometry.nodes.map(node => h('a', { key: node.id, href: node.refs[0].href, target: '_blank', rel: 'noreferrer',
+            className: 'dsh-wiki-view-node', 'data-node-id': node.id, 'data-node-role': node.role, 'aria-label': node.label + '，查看源码' },
+            h('title', null, [node.label, node.detail, ...(node.members ?? []), ...node.refs.map(ref => ref.label)].filter(Boolean).join('\n')),
+            shape(node, view.kind), nodeText(node, view.kind))))),
         geometry.edges.some(edge => edge.number) && h('ol', { className: 'dsh-code-wiki-view-relations', 'aria-label': '图中编号关系' },
           geometry.edges.filter(edge => edge.number).map(edge => h('li', { key: edge.id, value: edge.number },
             h('strong', null, byId.get(edge.from).label + ' → ' + byId.get(edge.to).label), h('span', null, edge.label)))),
+        interfaceContracts(geometry.edges, byId),
         h('details', { className: 'dsh-code-wiki-view-sources' }, h('summary', null, '视图源码依据'),
           h('ul', null, references.map((item, i) => h('li', { key: i }, h('span', null, item.label),
+            item.detail && h('p', null, item.detail), item.members?.length && h('ul', null,
+              item.members.map((member, index) => h('li', { key: index }, h('code', null, member)))),
             item.refs.map((ref, j) => h('a', { key: j, href: ref.href, target: '_blank', rel: 'noreferrer' }, ref.label)))))))
     }
   }

@@ -881,7 +881,7 @@ a.dsh-code-wiki-revision:hover {
   overflow-wrap: anywhere;
 }
 
-.dsh-code-wiki-prose a:is([href^='https://github.com/'][href*='/blob/'][href*='#L'], [href*='/api/dsh-code-wiki/source?']) {
+.dsh-code-wiki-prose > div a:is([href^='https://github.com/'][href*='/blob/'][href*='#L'], [href*='/api/dsh-code-wiki/source?']) {
   display: inline-block;
   box-sizing: border-box;
   max-inline-size: 100%;
@@ -897,14 +897,14 @@ a.dsh-code-wiki-revision:hover {
   overflow-wrap: anywhere;
 }
 
-.dsh-code-wiki-prose a:is([href^='https://github.com/'][href*='/blob/'][href*='#L'], [href*='/api/dsh-code-wiki/source?']) svg {
+.dsh-code-wiki-prose > div a:is([href^='https://github.com/'][href*='/blob/'][href*='#L'], [href*='/api/dsh-code-wiki/source?']) svg {
   width: 0.95em;
   height: 0.95em;
   margin-inline-end: 3px;
   vertical-align: -0.16em;
 }
 
-.dsh-code-wiki-prose a:is([href^='https://github.com/'][href*='/blob/'][href*='#L'], [href*='/api/dsh-code-wiki/source?']):hover {
+.dsh-code-wiki-prose > div a:is([href^='https://github.com/'][href*='/blob/'][href*='#L'], [href*='/api/dsh-code-wiki/source?']):hover {
   background: var(--wiki-accent-fill);
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -953,37 +953,67 @@ a.dsh-code-wiki-revision:hover {
 }
 
 .dsh-code-wiki-view {
-  --view-fill: color-mix(in srgb, var(--wiki-accent) 7%, var(--wiki-paper));
-  margin: 22px 0;
+  --view-hue: var(--wiki-accent);
+  --view-strong: color-mix(in srgb, var(--view-hue) 82%, var(--wiki-ink));
+  --view-edge: color-mix(in srgb, var(--view-hue) 64%, var(--wiki-muted));
+  --view-rule: color-mix(in srgb, var(--view-hue) 23%, var(--wiki-line));
+  --view-fill: color-mix(in srgb, var(--view-hue) 9%, var(--wiki-paper));
+  --view-grid: color-mix(in srgb, var(--view-hue) 17%, transparent);
+  margin: 24px 0;
   max-inline-size: 100%;
-  border: 1px solid var(--wiki-line);
-  border-radius: 10px;
+  border: 1px solid var(--view-rule);
+  border-radius: 12px;
   background: var(--wiki-paper);
   overflow: hidden;
 }
 
-.dsh-code-wiki-view[data-kind='dataflow'] { --view-fill: color-mix(in srgb, #23806b 8%, var(--wiki-paper)); }
-.dsh-code-wiki-view[data-kind='deployment'] { --view-fill: color-mix(in srgb, #3877ad 8%, var(--wiki-paper)); }
+.dsh-code-wiki-view:is([data-kind='dataflow'], [data-kind='entity']) { --view-hue: #27836b; }
+.dsh-code-wiki-view:is([data-kind='sequence'], [data-kind='deployment']) { --view-hue: #397bad; }
+.dsh-code-wiki-view:is([data-kind='activity'], [data-kind='state']) { --view-hue: #8a5eae; }
 
 .dsh-code-wiki-view-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  padding: 12px 16px;
-  border-block-end: 1px solid var(--wiki-line);
+  gap: 8px;
+  min-block-size: 38px;
+  box-sizing: border-box;
+  padding: 5px clamp(16px, 3cqi, 27px);
+  border-block-end: 1px solid var(--view-rule);
   font-size: 12px;
   line-height: 1.5;
 }
 
-.dsh-code-wiki-view-header > strong { color: var(--wiki-ink); font-weight: 650; }
-.dsh-code-wiki-view-header > span { color: var(--wiki-muted); }
+.dsh-code-wiki-view-header button {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--wiki-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dsh-code-wiki-view-header button:is(:hover, [aria-pressed='true']) {
+  border-color: var(--view-rule);
+  background: var(--view-fill);
+  color: var(--view-strong);
+}
+
+.dsh-code-wiki-view-header button:focus-visible { outline: 2px solid var(--wiki-accent); outline-offset: 2px; }
+
+.dsh-code-wiki-view-type {
+  color: var(--view-strong);
+  font-size: 12px;
+  font-weight: 680;
+}
 
 .dsh-code-wiki-view-scroll {
   max-inline-size: 100%;
   overflow-x: auto;
   overscroll-behavior-x: contain;
+  background-image: radial-gradient(var(--view-grid) 1px, transparent 1px);
+  background-size: 15px 15px;
 }
 
 .dsh-code-wiki-view-scroll:focus-visible {
@@ -991,18 +1021,35 @@ a.dsh-code-wiki-revision:hover {
   outline-offset: -3px;
 }
 
-.dsh-code-wiki-view-svg { display: block; width: 100%; height: auto; font-family: var(--dsw-font-family); }
-.dsh-wiki-view-edge { fill: none; stroke: var(--wiki-accent-ink); stroke-width: 1.7; stroke-linejoin: round; }
-.dsh-wiki-view-arrowhead { fill: var(--wiki-accent-ink); }
-.dsh-wiki-view-lifeline { stroke: var(--wiki-muted); stroke-width: 1.2; stroke-dasharray: 5 5; opacity: .65; }
+.dsh-code-wiki-view-svg { display: block; width: 100%; height: auto; margin-inline: auto; font-family: var(--dsw-font-family); }
+.dsh-wiki-view-edge { fill: none; stroke: var(--view-edge); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.dsh-wiki-view-edge-region { fill: none; stroke: transparent; stroke-width: 15; }
+.dsh-wiki-view-edge-link { cursor: pointer; text-decoration: none; }
+.dsh-wiki-view-edge-link:hover .dsh-wiki-view-edge,
+.dsh-wiki-view-edge-link:focus-visible .dsh-wiki-view-edge { stroke: var(--view-strong); stroke-width: 2.8; }
+.dsh-wiki-view-edge-link:hover text,
+.dsh-wiki-view-edge-link:focus-visible text { text-decoration: underline; }
+.dsh-wiki-view-edge-link[data-relation='return'] .dsh-wiki-view-edge { stroke-dasharray: 5 4; }
+.dsh-wiki-view-arrowhead { fill: var(--view-edge); }
+.dsh-wiki-view-open-arrowhead { fill: var(--wiki-paper); stroke: var(--view-edge); stroke-width: 1.35; }
+.dsh-wiki-view-lifeline { stroke: var(--view-edge); stroke-width: 1.2; stroke-dasharray: 5 5; opacity: .56; }
+.dsh-wiki-view-lane { fill: color-mix(in srgb, var(--view-hue) 4%, transparent); }
 .dsh-wiki-view-node { cursor: pointer; text-decoration: none; }
-.dsh-wiki-view-node :is(rect, ellipse, polygon, path, circle) { fill: var(--view-fill); stroke: var(--wiki-accent-ink); stroke-width: 1.4; }
+.dsh-wiki-view-node :is(rect, ellipse, polygon, path, circle) { fill: var(--view-fill); stroke: var(--view-strong); stroke-width: 1.4; }
+.dsh-wiki-view-node[data-node-role='decision'] { --view-fill: color-mix(in srgb, #b46b32 13%, var(--wiki-paper)); }
+.dsh-wiki-view-node[data-node-role='store'] { --view-fill: color-mix(in srgb, #27836b 13%, var(--wiki-paper)); }
 .dsh-wiki-view-node:hover :is(rect, ellipse, polygon, path, circle),
 .dsh-wiki-view-node:focus-visible :is(rect, ellipse, polygon, path, circle) { stroke-width: 2.6; }
 .dsh-wiki-view-actor path { fill: none; }
 .dsh-wiki-view-node-label { fill: var(--wiki-ink); font-weight: 600; }
+.dsh-wiki-view-node-detail { fill: var(--wiki-muted); }
+.dsh-wiki-view-node-member { fill: var(--wiki-ink); font-family: var(--ds-font-family-code, monospace); }
+.dsh-wiki-view-node .dsh-wiki-view-node-divider { stroke: var(--view-rule); stroke-width: 1; }
+.dsh-wiki-view-node .dsh-wiki-view-node-icon { color: var(--view-strong); fill: none; stroke: currentColor; stroke-width: 1.3; }
+.dsh-wiki-view-node .dsh-wiki-view-terminal-dot { fill: var(--view-strong); }
+.dsh-wiki-view-node .dsh-wiki-view-terminal-ring { fill: none; stroke-width: 1.2; }
 .dsh-wiki-view-message { fill: var(--wiki-ink); }
-.dsh-wiki-view-edge-label rect { fill: var(--wiki-paper); opacity: .97; }
+.dsh-wiki-view-edge-label rect { fill: var(--wiki-paper); stroke: var(--view-rule); stroke-width: 0.8; }
 .dsh-wiki-view-edge-label text { fill: var(--wiki-ink); }
 
 .dsh-code-wiki-view-relations { padding: 14px 22px 14px 40px; margin: 0; border-block-start: 1px solid var(--wiki-line); }
@@ -1011,13 +1058,72 @@ a.dsh-code-wiki-revision:hover {
 .dsh-code-wiki-view-relations strong, .dsh-code-wiki-view-relations span { display: block; }
 .dsh-code-wiki-view-relations strong { font-size: 12px; font-weight: 600; }
 
+.dsh-code-wiki-view-contracts {
+  padding: 12px clamp(14px, 3cqi, 25px);
+  border-block-start: 1px solid var(--view-rule);
+  background: color-mix(in srgb, var(--view-fill) 48%, var(--wiki-paper));
+}
+
+.dsh-code-wiki-view-contract-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dsh-code-wiki-view-contract-list > li {
+  min-inline-size: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--view-rule);
+  border-radius: 8px;
+  background: var(--wiki-paper);
+  color: var(--wiki-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-view-contract-route {
+  margin: 0 0 4px;
+  color: var(--wiki-muted);
+  font-size: 12px;
+}
+
+.dsh-code-wiki-view-contract-entry { color: var(--view-strong); font-weight: 650; }
+.dsh-code-wiki-view-contract-entry code { font-family: var(--ds-font-family-code, monospace); }
+.dsh-code-wiki-view-contract-list dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 9px; margin: 7px 0 0; }
+.dsh-code-wiki-view-contract-list dt { color: var(--wiki-muted); }
+.dsh-code-wiki-view-contract-list dd { min-inline-size: 0; margin: 0; }
+
 .dsh-code-wiki-view-sources { padding: 12px 16px; border-block-start: 1px solid var(--wiki-line); }
 .dsh-code-wiki-view-sources > summary { cursor: pointer; color: var(--wiki-muted); font-size: 12px; }
 .dsh-code-wiki-view-sources ul { padding-inline-start: 18px; margin-block: 12px 2px; }
 .dsh-code-wiki-view-sources li { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .dsh-code-wiki-view-sources li + li { margin-block-start: 10px; }
 .dsh-code-wiki-view-sources li > span { display: block; color: var(--wiki-ink); }
+.dsh-code-wiki-view-sources li p { margin: 3px 0; color: var(--wiki-muted); }
+.dsh-code-wiki-view-sources li ul { margin: 4px 0; }
+.dsh-code-wiki-view-sources li ul > li + li { margin-block-start: 2px; }
 .dsh-code-wiki-view-sources a { margin-inline-end: 10px; color: var(--wiki-accent-ink); }
+.dsh-code-wiki-view-sources a:focus-visible { outline: 2px solid var(--wiki-accent); outline-offset: 2px; }
+
+.dsh-code-wiki-article[data-chapter-design] .dsh-code-wiki-prose > div:first-child > blockquote:first-child {
+  margin: 0 0 24px;
+  padding: 11px 17px;
+  border-inline-start: 3px solid var(--wiki-accent);
+  border-radius: 0 7px 7px 0;
+  background: var(--wiki-accent-fill);
+  color: var(--wiki-ink);
+}
+
+.dsh-code-wiki-article[data-chapter-design] .dsh-code-wiki-prose > div:first-child > blockquote:first-child > p { margin: 0; }
+
+@media print {
+  .dsh-code-wiki-view { break-inside: avoid; }
+  .dsh-code-wiki-view .dsh-code-wiki-view-svg { min-width: 0 !important; }
+}
 
 @container dsh-code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {

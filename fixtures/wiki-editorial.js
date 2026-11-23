@@ -46,6 +46,33 @@ export function withWikiModuleCases(draft, { entry, core }) {
     ? { ...chapter, blocks: [...chapter.blocks, wikiModuleCaseFixture(chapter.id, entry, core)] } : chapter) }
 }
 
+const designKinds = { overview: 'scenario', architecture: 'component', entry: 'sequence', execution: 'sequence', core: 'component' }
+
+export function withChapterDiagramPlan(plan) {
+  return { ...plan, chapters: plan.chapters.map(chapter => ({ ...chapter,
+    diagrams: [{ kind: designKinds[chapter.id], question: chapter.question }],
+  })) }
+}
+
+export function withChapterDiagrams(draft, { docs, entry, core }) {
+  const refs = (...spans) => spans.map(({ evidence, start, end }) => ({ evidence, start, end }))
+  return { ...draft, chapters: draft.chapters.map(chapter => {
+    const kind = designKinds[chapter.id]
+    const diagram = wikiDiagramFixture({ docs, entry, core }, kind)
+    const overview = chapter.id === 'overview'
+    if (!overview) diagram.edges[0] = { ...diagram.edges[0], label: 'run()', refs: refs(entry, core),
+      contract: { entry: 'run()', input: 'Invocation with no arguments.', output: 'Returns the number 42.' } }
+    if (chapter.id === 'architecture') diagram.edges.push({ from: 'core', to: 'entry', label: 'Export run',
+      refs: refs(entry, core), contract: { entry: 'export const run', input: 'Import the named binding from core.js.', output: 'The callable function.' } })
+    const note = { id: chapter.id + '_design', type: 'design-note', refs: overview ? refs(docs) : refs(entry, core),
+      answer: 'The entry delegates the calculation to the core export.', rules: [
+        { rule: 'The call occurs in main.js.', consequence: 'Trace main.js before investigating run.', refs: refs(entry) },
+        { rule: 'The core supplies the return value.', consequence: 'Changing the return only requires an edit in core.js.', refs: refs(core) },
+      ] }
+    return { ...chapter, blocks: [...chapter.blocks, note, { ...diagram, id: chapter.id + '_diagram' }] }
+  }) }
+}
+
 export function wikiDraftFixture({ docs, entry, core }) {
   const ref = span => ({ evidence: span.evidence, start: span.start, end: span.end })
   const refs = span => [ref(span)]

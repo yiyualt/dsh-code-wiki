@@ -16,8 +16,12 @@ const list = (value, minimum, maximum, field) => {
 }
 const escape = value => value.replace(/[\\`*_{}\[\]()<>#!|]/g, '\\$&')
 const publicRefs = refs => refs.map(({ label, url }) => ({ label, url }))
-export const wikiViewKinds = ['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment']
+export const wikiViewKinds = ['flow', 'sequence', 'dataflow', 'dependency', 'scenario', 'deployment',
+  'component', 'activity', 'state', 'entity', 'class']
 export const wikiViewEdgeLimits = { sequence: 16, other: 10 }
+export const wikiChapterViewLimit = 12
+export const wikiViewRoles = ['actor', 'component', 'process', 'data', 'store', 'decision', 'start', 'end']
+export const wikiViewRelations = ['return', 'async', 'composition', 'association', 'inheritance']
 export const wikiCitationLimit = 6
 export const wikiWalkthroughTaskKinds = ['feature', 'debug']
 export const wikiChapterRoles = ['overview', 'quickstart', 'architecture', 'module', 'flow', 'extension']
@@ -26,7 +30,6 @@ export const wikiEdgeKinds = ['call', 'data', 'dependency']
 const roleRank = { overview: 0, quickstart: 1, architecture: 2, module: 3, flow: 4, extension: 5 }
 const roleLabel = { overview: '项目概览', quickstart: '快速开始', architecture: '系统架构', module: '核心模块', flow: '关键流程', extension: '扩展指南' }
 const architectureMarker = '```dsh-architecture\n```'
-const viewRoles = new Set(['actor', 'component', 'process', 'data', 'store'])
 function inline(value, terms = []) {
   if (!terms.length) return escape(value)
   const pattern = new RegExp('(' + terms.toSorted((a, b) => b.length - a.length)
@@ -62,15 +65,25 @@ export function normalizeWikiPlan(raw, source) {
   })
 
   const chapterIds = new Set()
+  const chapterDesign = Array.isArray(raw?.chapters) && raw.chapters.some(chapter => chapter?.diagrams !== undefined)
   const chapters = list(raw?.chapters, 4, 8, '研究提纲章节').map((chapter, index) => {
     check(id(chapter?.id) && !chapterIds.has(chapter.id), '研究提纲章节编号必须唯一。')
     chapterIds.add(chapter.id)
     check(wikiChapterRoles.includes(chapter?.role),
       `研究提纲第 ${index + 1} 章需要 role，取值为 ${wikiChapterRoles.join('、')}。`)
+    const kinds = new Set()
+    const diagrams = chapterDesign ? list(chapter.diagrams, 1, 2, `章节 ${chapter.id} 的计划图示`).map(view => {
+      check(wikiViewKinds.includes(view?.kind) && !kinds.has(view.kind), `章节 ${chapter.id} 的图示类型需有效且各不相同。`)
+      kinds.add(view.kind)
+      return { kind: view.kind, question: prose(view.question, 300, `章节 ${chapter.id} 的图示问题`) }
+    }) : undefined
     return { id: chapter.id, role: chapter.role,
       ...(chapter.role === 'module' && { module: chapter.module }),
-      title: prose(chapter.title, 40, '章节标题'), question: prose(chapter.question, 300, '章节要回答的问题') }
+      title: prose(chapter.title, 40, '章节标题'), question: prose(chapter.question, 300, '章节要回答的问题'),
+      ...(diagrams && { diagrams }) }
   })
+  if (chapterDesign) check(chapters.reduce((count, chapter) => count + chapter.diagrams.length, 0) <= wikiChapterViewLimit,
+    `全篇最多 ${wikiChapterViewLimit} 张计划图示。`)
 
   const count = role => chapters.filter(chapter => chapter.role === role).length
   check(chapters[0].role === 'overview', '第一章必须是 role=overview 的项目概览。')
@@ -102,18 +115,19 @@ export function normalizeWikiPlan(raw, source) {
     + [...invalidPaths.values()].join('；') + '。目录请先用 wiki_list 查看，再选择具体文件。')
 
   const kinds = new Set()
-  const views = list(raw.views, 0, 3, '计划视图').map(view => {
+  const views = chapterDesign ? [] : list(raw.views, 0, 3, '计划视图').map(view => {
     check(wikiViewKinds.includes(view?.kind) && !kinds.has(view.kind), '计划应选择不同且适用的软件视图类型。')
     kinds.add(view.kind)
     return { kind: view.kind, question: prose(view.question, 300, '视图要回答的问题'), why: prose(view.why, 350, '选择该视图的理由') }
   })
-  const viewOmission = views.length ? undefined : prose(raw.viewOmission, 350, '不使用额外视图的理由')
+  const viewOmission = chapterDesign || views.length ? undefined : prose(raw.viewOmission, 350, '不使用额外视图的理由')
   const walkthrough = raw.walkthrough === undefined ? undefined : {
     title: prose(raw.walkthrough?.title, 80, '案例计划标题'),
     question: prose(raw.walkthrough.question, 240, '案例要回答的问题'),
   }
   return { audience: prose(raw.audience, 250, '读者'), goal: prose(raw.goal, 350, '阅读目标'), modules, chapters, research, views,
-    ...(viewOmission && { viewOmission }), ...(walkthrough && { walkthrough }), ...(raw.moduleCases === true && { moduleCases: true }) }
+    ...(viewOmission && { viewOmission }), ...(walkthrough && { walkthrough }),
+    ...((chapterDesign || raw.moduleCases === true) && { moduleCases: true }) }
 }
 
 function references(raw, source, evidence, primary, field) {
@@ -157,6 +171,17 @@ function normalizeModuleCase(block, source, evidence) {
     verification: { action: prose(verification?.action, 240, '模块实例验证操作'),
       expected: prose(verification.expected, 240, '模块实例验证结果'), refs: cite(verification, '验证') },
   }
+}
+
+function normalizeDesignNote(block, planned, source, evidence) {
+  check(planned.diagrams, 'design-note 只能用于已计划章节图示的研究。')
+  const primary = !['overview', 'quickstart'].includes(planned.role)
+  const cite = (refs, field) => references(refs, source, evidence, primary, `章节 ${planned.id} 的${field}引用`)
+  return { id: block.id, type: block.type, answer: prose(block.answer, 420, '设计问题的简明回答'),
+    refs: cite(block.refs, '设计结论'), rules: list(block.rules, 2, 4, '设计细节').map(rule => ({
+      rule: prose(rule?.rule, 300, '当前设计规则'), consequence: prose(rule.consequence, 300, '设计规则的实际影响'),
+      refs: cite(rule.refs, '设计细节'),
+    })) }
 }
 
 function normalizeWalkthrough(raw, source, evidence, nodeIds, chapterIds) {
@@ -208,7 +233,8 @@ function normalizeWalkthrough(raw, source, evidence, nodeIds, chapterIds) {
 
 export function normalizeWikiDraft(raw, source, evidence, plan) {
   check(plan, '先提交研究计划，再提交草稿。')
-  check(JSON.stringify(raw).length <= 80_000, '草稿过长，请集中解释主要问题。')
+  const chapterDesign = Boolean(plan.chapters[0].diagrams)
+  check(JSON.stringify(raw).length <= (chapterDesign ? 120_000 : 80_000), '草稿过长，请集中解释主要问题。')
   const submitted = new Map()
   for (const chapter of list(raw?.chapters, 2, 8, '草稿章节')) {
     check(id(chapter?.id) && !submitted.has(chapter.id), '章节编号必须唯一。')
@@ -228,8 +254,9 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
       check(id(block?.id) && !ids.has(block.id), '正文块编号必须唯一。')
       ids.add(block.id)
       const type = block.type
-      check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading', 'module-case'].includes(type),
-        '正文只接受 paragraph、steps、code、table、diagram、heading、module-case。')
+      check(['paragraph', 'steps', 'code', 'table', 'diagram', 'heading', 'module-case', 'design-note'].includes(type),
+        '正文只接受 paragraph、steps、code、table、diagram、heading、module-case、design-note。')
+      if (type === 'design-note') return normalizeDesignNote(block, planned, source, evidence)
       if (type === 'module-case') {
         check(planned.role === 'module', 'module-case 只能出现在核心模块章。')
         return normalizeModuleCase(block, source, evidence)
@@ -265,16 +292,20 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
         check(result.lines.length === ref.end - ref.start + 1, '源码示例超出已读取内容。')
       }
       if (type === 'diagram') {
-        check(wikiViewKinds.includes(block.kind) && plan.views.some(view => view.kind === block.kind), '图示类型必须在研究计划中说明用途和适用理由。')
+        check((planned.diagrams ?? plan.views).some(view => view.kind === block.kind),
+          `章节 ${planned.id} 的图示类型必须来自研究计划。`)
         check(block.mermaid === undefined, '图示源码由程序生成，不接收模型编写的 Mermaid。')
         const nodeIds = new Set(), connected = new Set(), edgeIds = new Set()
         result.kind = block.kind
         result.title = prose(block.title, 100, '图示标题')
         result.purpose = prose(block.purpose, 450, '图示解释的问题')
         result.nodes = list(block.nodes, 2, 8, '图示节点').map(node => {
-          check(id(node?.id) && !nodeIds.has(node.id) && viewRoles.has(node.role), '图示节点需要唯一编号和明确角色。')
+          check(id(node?.id) && !nodeIds.has(node.id) && wikiViewRoles.includes(node.role), '图示节点需要唯一编号和明确角色。')
           nodeIds.add(node.id)
           return { id: node.id, label: prose(node.label, 60, '图示节点名称'), role: node.role,
+            ...(node.detail !== undefined && { detail: prose(node.detail, 120, '图示节点职责') }),
+            ...(node.members !== undefined && { members: list(node.members, 1, 4, '图示节点成员')
+              .map(member => prose(member, 100, '图示节点字段或方法')) }),
             refs: references(node.refs, source, evidence, primary, `图示节点 ${node.id} 的引用`) }
         })
         const edgeLimit = block.kind === 'sequence' ? wikiViewEdgeLimits.sequence : wikiViewEdgeLimits.other
@@ -283,8 +314,16 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
           const label = prose(edge.label, 60, '图示关系含义')
           const key = `${edge.from}:${edge.to}:${label}`
           check(block.kind === 'sequence' || !edgeIds.has(key), '图示关系不应重复。')
+          check(edge.relation === undefined || wikiViewRelations.includes(edge.relation), '图示关系类型无效。')
+          const contract = edge.contract === undefined ? undefined : {
+            entry: prose(edge.contract?.entry, 120, '接口名称'),
+            input: prose(edge.contract.input, 220, '接口输入'),
+            output: prose(edge.contract.output, 220, '接口输出'),
+          }
           edgeIds.add(key); connected.add(edge.from); connected.add(edge.to)
-          return { from: edge.from, to: edge.to, label, refs: references(edge.refs, source, evidence, primary, '图示关系引用') }
+          return { from: edge.from, to: edge.to, label,
+            ...(edge.relation !== undefined && { relation: edge.relation }), ...(contract && { contract }),
+            refs: references(edge.refs, source, evidence, primary || Boolean(contract), '图示关系引用') }
         })
         check(connected.size === nodeIds.size, '图示每个节点都应参与它要解释的关系。')
         if (block.kind === 'scenario') check(result.nodes.some(node => node.role === 'actor'), '用户场景视图需要真实的参与者角色。')
@@ -299,23 +338,37 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
       return result
     })
 
-    check(!['heading', 'module-case'].includes(blocks[0].type), `章节 ${planned.id} 的第一块应是段落或步骤，不能从小节标题或模块实例开始。`)
+    if (!chapterDesign) check(!['heading', 'module-case'].includes(blocks[0].type),
+      `章节 ${planned.id} 的第一块应是段落或步骤，不能从小节标题或模块实例开始。`)
     check(blocks.filter(block => block.type === 'heading').length <= 4, `章节 ${planned.id} 最多 4 个小节标题，请合并过于零碎的部分。`)
     if (planned.role === 'module') {
-      check(blocks.some(block => block.type === 'paragraph'), `核心模块章 ${planned.id} 需要段落说明这个模块解决什么问题。`)
-      check(blocks.some(block => block.type === 'table'), `核心模块章 ${planned.id} 需要一张表格列出主要文件与职责。`)
+      if (!chapterDesign) {
+        check(blocks.some(block => block.type === 'paragraph'), `核心模块章 ${planned.id} 需要段落说明这个模块解决什么问题。`)
+        check(blocks.some(block => block.type === 'table'), `核心模块章 ${planned.id} 需要一张表格列出主要文件与职责。`)
+      }
       const cases = blocks.filter(block => block.type === 'module-case').length
       check(cases <= 1, `核心模块章 ${planned.id} 最多包含一个 module-case。`)
       check(plan.moduleCases !== true || cases === 1, `核心模块章 ${planned.id} 缺少 module-case，请补全实现步骤、边界、修改位置和验证。`)
-    } else if (planned.role !== 'architecture') {
+    } else if (!chapterDesign && planned.role !== 'architecture') {
       check(blocks.some(block => block.type === 'table' || block.type === 'diagram'),
         `章节 ${planned.id} 需要至少一张表格或一张图，纯文字章节读者很难建立结构。`)
     }
-    return { id: planned.id, role: planned.role, title: prose(chapter.title, 40, '章节标题'), blocks }
+    if (chapterDesign) {
+      const notes = blocks.filter(block => block.type === 'design-note')
+      const diagrams = blocks.filter(block => block.type === 'diagram')
+      check(notes.length === 1, `章节 ${planned.id} 需要一个 design-note，包含设计结论与实际影响。`)
+      check(diagrams.length === planned.diagrams.length && planned.diagrams.every((view, index) => diagrams[index].kind === view.kind),
+        `章节 ${planned.id} 需要依次提供 ${planned.diagrams.map(view => view.kind).join('、')} 图示。`)
+      const minimum = planned.role === 'architecture' ? 2 : planned.role === 'module' ? 1 : 0
+      const entries = new Set(diagrams.flatMap(view => view.edges.flatMap(edge => edge.contract ? [edge.contract.entry] : [])))
+      check(entries.size >= minimum, `章节 ${planned.id} 至少要在图中标明 ${minimum} 个不同的接口，包含入口、输入和输出。`)
+    }
+    return { id: planned.id, role: planned.role, title: prose(chapter.title, 40, '章节标题'),
+      ...(chapterDesign && { question: planned.question }), blocks }
   })
 
   const diagrams = chapters.flatMap(chapter => chapter.blocks.filter(block => block.type === 'diagram'))
-  check(diagrams.length === plan.views.length && new Set(diagrams.map(view => view.kind)).size === plan.views.length,
+  if (!chapterDesign) check(diagrams.length === plan.views.length && new Set(diagrams.map(view => view.kind)).size === plan.views.length,
     '草稿需要逐一回答计划中的视图问题；没有适用视图时应在计划说明理由。')
   const coverage = list(raw.coverage, plan.research.length, plan.research.length, '研究覆盖记录').map(item => {
     const area = plan.research.find(area => area.id === item?.area)
@@ -407,11 +460,11 @@ export function renderWikiDocument(draft, source) {
     if (!numbers.has(ref.url)) numbers.set(ref.url, numbers.size + 1)
     return `[${numbers.get(ref.url)}](${ref.url})`
   }).join(' ')
-  const chapters = draft.chapters.map(chapter => {
+  const chapters = draft.chapters.map((chapter, chapterIndex) => {
     const used = new Map()
     const links = refs => { for (const ref of refs) used.set(ref.url, ref); return cite(refs) }
     const ordered = (items, terms) => items.map((item, i) => `${i + 1}. ${inline(item.text, terms)} ${links(item.refs)}`).join('\n')
-    const rendered = chapter.blocks.map(block => {
+    const renderBlock = block => {
       if (block.type === 'heading') return '### ' + inline(block.text, block.inlineCode)
       if (block.type === 'module-case') {
         const { boundary, change, verification } = block
@@ -431,18 +484,37 @@ export function renderWikiDocument(draft, source) {
       if (block.type === 'diagram') {
         const view = { id: block.id, kind: block.kind, title: block.title, purpose: block.purpose,
           nodes: block.nodes.map(node => ({ ...node, refs: publicRefs(node.refs) })),
-          edges: block.edges.map(edge => ({ ...edge, refs: publicRefs(edge.refs) })), mermaid: wikiViewMermaid(block) }
+          edges: block.edges.map(edge => ({ ...edge, refs: publicRefs(edge.refs) })),
+          ...(chapter.question && { chapter: chapterIndex }),
+          mermaid: (chapter.question ? `%% wiki-view:${block.id}\n` : '') + wikiViewMermaid(block) }
         views.push(view)
         const sourceRefs = [...new Map([...block.nodes.flatMap(node => node.refs), ...block.edges.flatMap(edge => edge.refs)]
           .map(ref => [ref.url, ref])).values()]
+        const interfaces = block.edges.filter(edge => edge.contract)
+        const names = new Map(block.nodes.map(node => [node.id, node.label]))
+        const contracts = !interfaces.length ? '' : `\n\n<!-- dsh-wiki-interfaces:${block.id} -->\n\n`
+          + interfaces.map(({ from, to, contract, refs }) =>
+            `- **${escape(names.get(from))} → ${escape(names.get(to))} · ${escape(contract.entry)}** ${links(refs)}\n`
+            + `  - 输入：${escape(contract.input)}\n  - 输出：${escape(contract.output)}`).join('\n')
+          + `\n\n<!-- /dsh-wiki-interfaces:${block.id} -->`
         return '**' + escape(block.title) + '**\n\n' + escape(block.purpose) + ' ' + citation
-          + '\n\n```mermaid\n' + view.mermaid + '\n```\n\n' + links(sourceRefs)
+          + '\n\n```mermaid\n' + view.mermaid + '\n```' + contracts + '\n\n' + links(sourceRefs)
       }
       const fence = '`'.repeat(Math.max(3, ...block.lines.flatMap(line => [...line.matchAll(/`+/g)].map(match => match[0].length + 1))))
       const language = ({ py: 'python', js: 'javascript', ts: 'typescript', rs: 'rust', sh: 'sh' })[block.path.split('.').at(-1)] || ''
       return inline(block.caption, block.inlineCode) + ' ' + citation + '\n\n' + fence + language + '\n' + block.lines.join('\n') + '\n' + fence
-    })
-    if (chapter.role === 'architecture') {
+    }
+    let rendered
+    if (chapter.question) {
+      const note = chapter.blocks.find(block => block.type === 'design-note')
+      const diagrams = chapter.blocks.filter(block => block.type === 'diagram')
+      const body = chapter.blocks.filter(block => !['design-note', 'diagram'].includes(block.type))
+      const details = () => '### 设计细节\n\n' + note.rules.map(rule =>
+        `- **${escape(rule.rule)}** ${escape(rule.consequence)} ${links(rule.refs)}`).join('\n\n')
+      rendered = [`> **${escape(chapter.question)}**\n>\n> ${escape(note.answer)} ${links(note.refs)}`,
+        ...diagrams.map(renderBlock), details(), ...body.map(renderBlock)]
+    } else rendered = chapter.blocks.map(renderBlock)
+    if (chapter.role === 'architecture' && !chapter.question) {
       const anchor = chapter.blocks.findIndex(block => block.type === 'paragraph')
       rendered.splice(anchor < 0 ? 0 : anchor + 1, 0, architectureMarker)
     }
@@ -469,14 +541,16 @@ export function wikiViewMermaid(view) {
   const name = id => 'n_' + id
   if (view.kind === 'sequence') return ['sequenceDiagram', ...view.nodes.map(node =>
     `    ${node.role === 'actor' ? 'actor' : 'participant'} ${name(node.id)} as ${label(node.label)}`),
-  ...view.edges.map(edge => `    ${name(edge.from)}->>${name(edge.to)}: ${label(edge.label)}`)].join('\n')
+  ...view.edges.map(edge => `    ${name(edge.from)}${edge.relation === 'return' ? '-->>'
+    : edge.relation === 'async' ? '-)' : '->>'}${name(edge.to)}: ${label(edge.label)}`)].join('\n')
   const nodes = view.nodes.map(node => {
-    const text = '"' + label(node.label) + '"'
+    const text = '"' + [node.label, node.detail, ...(node.members ?? [])].filter(Boolean).map(label).join('<br/>') + '"'
     const shape = node.role === 'store' ? `[(${text})]` : node.role === 'actor' ? `([${text}])`
-      : node.role === 'data' ? `[/${text}/]` : `[${text}]`
+      : node.role === 'data' ? `[/${text}/]` : node.role === 'decision' ? `{${text}}`
+        : ['start', 'end'].includes(node.role) || view.kind === 'state' ? `([${text}])` : `[${text}]`
     return '    ' + name(node.id) + shape
   })
-  return ['flowchart ' + (view.kind === 'flow' ? 'TD' : 'LR'), ...nodes,
+  return ['flowchart ' + (['flow', 'activity', 'state'].includes(view.kind) ? 'TD' : 'LR'), ...nodes,
     ...view.edges.map(edge => `    ${name(edge.from)} -->|"${label(edge.label)}"| ${name(edge.to)}`)].join('\n')
 }
 
@@ -597,7 +671,8 @@ export function wikiReviewMaterial(draft, plan, evidence) {
     ...walkthrough.tasks.flatMap(task => task.refs),
   ] : []
   const selected = [...new Map([...draft.coverage.flatMap(item => item.refs), ...draft.chapters.flatMap(chapter => chapter.blocks.flatMap(block =>
-    [...(block.refs ?? []), ...(block.items?.flatMap(item => item.refs) ?? []), ...(block.nodes?.flatMap(node => node.refs) ?? []),
+    [...(block.refs ?? []), ...(block.items?.flatMap(item => item.refs) ?? []), ...(block.rules?.flatMap(rule => rule.refs) ?? []),
+      ...(block.nodes?.flatMap(node => node.refs) ?? []),
       ...(block.edges?.flatMap(edge => edge.refs) ?? []), ...(block.boundary?.refs ?? []), ...(block.change?.refs ?? []),
       ...(block.verification?.refs ?? [])])), ...draft.graph.layers.flatMap(layer => layer.nodes.flatMap(node => node.refs)),
   ...draft.graph.edges.flatMap(edge => edge.refs), ...walkthroughRefs].map(ref => [`${ref.evidence}:${ref.start}:${ref.end}`, ref])).values()]
