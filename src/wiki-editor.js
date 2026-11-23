@@ -26,11 +26,11 @@ export const wikiResearchInstructions = `你为要接手这个仓库的工程师
 
 三、按问题选图
 图用 diagram 块 {id,type:"diagram",kind,title,purpose,claimType,refs,nodes,edges}。title 写实际主题，purpose 写从图可以得出的具体结论。nodes 为 2–8 项 {id,label,role,refs}，可附 detail（输入输出、职责或约束）和 members（最多 4 个核对过的字段、方法或成员）。角色为 actor|component|process|data|store|decision|start|end。edges 为 {from,to,label,refs}，可附 relation=return|async|composition|association|inheritance。sequence 按时间顺序，最多 ${wikiViewEdgeLimits.sequence} 条消息；其他图最多 ${wikiViewEdgeLimits.other} 条关系。所有节点都参与连线。图的结论、节点和边都要有证据。
-- 真实的模块交接在对应边填写 contract={entry,input,output}。entry 用真实路由、函数签名、事件名或数据契约名（1–120 字）；input 说明调用方准备哪些字段、形状或前提（1–220 字）；output 写实际返回、错误或状态副作用（1–220 字）。architecture 的图合计至少有两个不同的 entry，每个 module 章至少有一个；其余章节在接口能说明责任时使用。边的引用应覆盖契约，可分别引用调用、声明、实现及消费。库的函数和对象同样可以构成接口，只有源码证明时才称为服务。
+- 真实的模块交接在对应边填写 contract={entry,input,output}。entry 用真实路由、函数签名、事件名或数据契约名（1–120 字）；input 说明调用方准备哪些字段、形状或前提（1–220 字）；output 写实际返回、错误或状态副作用（1–220 字）。architecture 的图合计至少有两个不同的 entry，每个 module 章至少有一个；其余章节在接口能说明责任时使用。边的引用应覆盖契约，可分别引用调用、声明、实现及消费。场景图中的接口至少要有一处源码或实际配置，项目说明可以补充公开用法。库的函数和对象同样可以构成接口，只有源码证明时才称为服务。
 - scenario 用例图呈现真实参与者、公开入口及其能完成的目标。component 组件图说明模块提供方、调用方与边界；dependency 刻画静态依赖方向。flow 和 activity 表现动作顺序、判断与出口；sequence 表现先后消息以及影响决策、持久化或最终结果的返回。
 - state 状态图写实际状态和触发变化的事件或守卫；dataflow 数据流图写真实的数据结构、转换和消费方；entity 实体关系图、class 类型图分别讲数据关系与约束，或继承、接口和依赖。只有实现声明或约束证明时才写关系基数、所有权或继承。
 - deployment 只用于能证实进程、服务、容器或机器边界的仓库。避免把单进程库或算法包虚构成服务。不同图回答不同问题；不要只写「入口」「处理」「返回结果」而没有符号、数据或条件。
-- 节点用短的实际名称，边用明确动作并给出操作对象、触发条件或返回值。绘图源码由程序生成；不要提供 Mermaid、HTML 或 SVG。
+- 节点用短的实际名称，边用明确动作并给出操作对象、触发条件或返回值。提交前核对每条边的 from、to 都在本图 nodes 中，只有状态图和时序图能自连。没有跨接口的边省略 contract，有则写全三个字段。绘图源码由程序生成；不要提供 Mermaid、HTML 或 SVG。
 
 四、证据与字段
 段落只讲一件事，避免铺垫、比喻、评价或猜测。不在自由文本里嵌 Markdown 引用。可用 inlineCode:["实际术语"] 标记文本里已出现的符号（最多 8 项）。heading 只需 id、type、text（≤60 字）。paragraph 将结论写在 text；steps 有 2–7 项 {text,refs}；table 有 2–5 列、1–8 行；code 使用 caption 和单个 1–20 行证据范围。design-note={id,type:"design-note",answer,refs,rules:[{rule,consequence,refs}]}，结论和每条规则各自须有引用。module-case 将 refs 写在子项。其他块需要 claimType(purpose|usage|implementation) 和 refs。

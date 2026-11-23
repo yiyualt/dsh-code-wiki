@@ -162,7 +162,7 @@ window.__ModuleLoader__.load({
         if (!nodes.every(Boolean)) return []
         const edges = view.edges.map(edge => {
           const refs = references(edge?.refs)
-          if (!nodeIds.has(edge?.from) || !nodeIds.has(edge?.to) || edge.from === edge.to || !text(edge.label, 60)
+          if (!nodeIds.has(edge?.from) || !nodeIds.has(edge?.to) || edge.from === edge.to && !['state', 'sequence'].includes(view.kind) || !text(edge.label, 60)
             || !refs || edge.relation !== undefined && !relations.has(edge.relation)) return null
           const contract = edge.contract
           if (contract !== undefined && (!text(contract?.entry, 120) || !text(contract.input, 220) || !text(contract.output, 220))) return null

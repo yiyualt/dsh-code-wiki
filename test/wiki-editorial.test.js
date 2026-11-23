@@ -57,6 +57,21 @@ test('redesigned chapters require planned figures and source-backed interface co
   second.contract.entry = old
   second.refs = [{ ...spans.docs }]
   assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /图示关系引用.*有效实现证据/)
+  second.refs = [{ ...spans.entry }]
+  const scenario = raw.chapters[0].blocks.find(block => block.type === 'diagram').edges[0]
+  scenario.contract = { entry: 'main.js', input: 'Load the demo.', output: 'The entry calls run.' }
+  assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /overview_diagram.+接口至少需要一项有效实现证据/)
+  scenario.refs.push({ ...spans.entry })
+  const withDocumentedUsage = normalizeWikiDraft(raw, source, evidence, plan)
+  const accepted = withDocumentedUsage.chapters[0].blocks.find(block => block.type === 'diagram').edges[0]
+  assert.equal(accepted.refs.length, 2)
+  scenario.contract = { entry: '', input: '', output: '' }
+  assert.equal(normalizeWikiDraft(raw, source, evidence, plan).chapters[0].blocks.find(block => block.type === 'diagram').edges[0].contract, undefined)
+  const sequence = raw.chapters[2].blocks.find(block => block.type === 'diagram')
+  sequence.edges.push({ from: 'core', to: 'core', label: 'Compute result', refs: [{ ...spans.core }] })
+  assert.equal(normalizeWikiDraft(raw, source, evidence, plan).chapters[2].blocks.find(block => block.type === 'diagram').edges.length, 3)
+  sequence.edges.at(-1).to = 'missing'
+  assert.throws(() => normalizeWikiDraft(raw, source, evidence, plan), /execution_diagram.*core → missing.*未声明的节点/)
 })
 
 function draftWithWalkthrough(spans) {
@@ -308,7 +323,7 @@ test('Wiki view planning rejects unplanned, missing and raw Mermaid diagrams wit
   assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), /程序生成/)
   delete f.diagram.mermaid
   f.diagram.edges[0].to = 'missing'
-  assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), /已有节点/)
+  assert.throws(() => normalizeWikiDraft(f.raw, f.source, f.evidence, f.plan), /未声明的节点/)
 })
 
 test('every diagram node and message citation is included in independent reviewer evidence', async () => {

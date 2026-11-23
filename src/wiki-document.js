@@ -310,20 +310,29 @@ export function normalizeWikiDraft(raw, source, evidence, plan) {
         })
         const edgeLimit = block.kind === 'sequence' ? wikiViewEdgeLimits.sequence : wikiViewEdgeLimits.other
         result.edges = list(block.edges, 1, edgeLimit, '图示关系').map(edge => {
-          check(nodeIds.has(edge?.from) && nodeIds.has(edge?.to) && edge.from !== edge.to, '图示关系必须指向两个不同的已有节点。')
+          check(nodeIds.has(edge?.from) && nodeIds.has(edge?.to), `图示 ${block.id} 的关系 ${edge?.from} → ${edge?.to} 引用了未声明的节点。`)
+          check(edge.from !== edge.to || ['state', 'sequence'].includes(block.kind), `图示 ${block.id} 只在状态图或时序图里允许自连。`)
           const label = prose(edge.label, 60, '图示关系含义')
           const key = `${edge.from}:${edge.to}:${label}`
           check(block.kind === 'sequence' || !edgeIds.has(key), '图示关系不应重复。')
           check(edge.relation === undefined || wikiViewRelations.includes(edge.relation), '图示关系类型无效。')
-          const contract = edge.contract === undefined ? undefined : {
-            entry: prose(edge.contract?.entry, 120, '接口名称'),
-            input: prose(edge.contract.input, 220, '接口输入'),
-            output: prose(edge.contract.output, 220, '接口输出'),
+          const proposed = edge.contract
+          const blank = proposed && [proposed.entry, proposed.input, proposed.output].every(value => typeof value === 'string' && !value.trim())
+          const contract = proposed === undefined || blank ? undefined : {
+            entry: prose(proposed?.entry, 120, '接口名称'),
+            input: prose(proposed.input, 220, '接口输入'),
+            output: prose(proposed.output, 220, '接口输出'),
           }
           edgeIds.add(key); connected.add(edge.from); connected.add(edge.to)
+          const field = `图示关系引用 ${block.id}（${edge.from} → ${edge.to}：${label}）`
+          const refs = references(edge.refs, source, evidence, primary, field)
+          if (contract && !primary) check(refs.some(ref => {
+            const file = evidence[ref.evidence - 1]
+            return file.primary || file.kind === 'config'
+          }), `${field} 的接口至少需要一项有效实现证据或实际配置，文档只能作为补充。`)
           return { from: edge.from, to: edge.to, label,
             ...(edge.relation !== undefined && { relation: edge.relation }), ...(contract && { contract }),
-            refs: references(edge.refs, source, evidence, primary || Boolean(contract), '图示关系引用') }
+            refs }
         })
         check(connected.size === nodeIds.size, '图示每个节点都应参与它要解释的关系。')
         if (block.kind === 'scenario') check(result.nodes.some(node => node.role === 'actor'), '用户场景视图需要真实的参与者角色。')

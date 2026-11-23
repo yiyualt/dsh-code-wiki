@@ -13,7 +13,7 @@ DSH 代理通过只读目录、代码读取和搜索工具探索固定提交，�
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.17.0.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.17.1.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
