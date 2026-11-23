@@ -9,7 +9,7 @@
 ```sh
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.23.0.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.23.1.tgz
 ```
 
 所选仓库的源码片段会交给当前模型用于拟定目录。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。
