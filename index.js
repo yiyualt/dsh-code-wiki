@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,8 +22,49 @@ const sourceErrors = new Map([
   ['github-rate-limited', 429], ['github-request-failed', 502],
 ])
 
-function wikiError(message, status) {
-  return Response.json({ error: message }, { status, headers: responseHeaders })
+function generationFailure(error, route, label) {
+  const sourceStatus = sourceErrors.get(error?.code)
+  if (sourceStatus) return { status: sourceStatus, message: error.message }
+  if (error?.code === 'wiki-skill-unavailable') return { status: 500, message: '无法读取代码百科 Skill。' }
+  if (error?.code === 'wiki-model-unavailable') return { status: 502, message: '暂时无法使用 DSH 当前模型。' }
+  if (route === 'chapter' && error?.code === 'wiki-chapter-invalid') return { status: 502, message: error.message }
+  if (error?.code === `wiki-${route}-invalid` || error?.code === 'wiki-author-invalid') {
+    return { status: 502, message: `模型未能生成有效的${label}，请重试。` }
+  }
+  return { status: 500, message: `无法生成代码百科${label}，请重试。` }
+}
+
+function streamChapter(requestSignal, headers, execute, fail) {
+  const canceled = new AbortController()
+  const signal = AbortSignal.any([requestSignal, canceled.signal])
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    start(controller) {
+      const emit = event => {
+        if (!signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'))
+      }
+      void (async () => {
+        try {
+          const result = await execute(signal, emit)
+          emit({ type: 'done', warning: result.warning })
+        } catch (error) {
+          if (!signal.aborted) emit({ type: 'error', error: fail(error).message })
+        } finally {
+          if (!canceled.signal.aborted) controller.close()
+        }
+      })()
+    },
+    cancel(reason) {
+      canceled.abort(reason)
+    },
+  })
+  return new Response(stream, {
+    headers: {
+      ...headers,
+      'cache-control': 'no-store, no-transform',
+      'content-type': 'application/x-ndjson; charset=utf-8',
+    },
+  })
 }
 
 async function readSkill(signal) {
@@ -62,23 +104,38 @@ function registerGeneration(ctx, route, label, run) {
     async fetch(request) {
       const input = await request.json().catch(() => null)
       const { signal } = request
-      try {
-        const skill = await ctx.skills.get(skillName, { signal })
-        if (!skill?.content) return wikiError('无法读取代码百科 Skill。', 500)
-        const result = await run(input, {
-          instructions: skill.content, signal,
+      const requestId = route === 'chapter' ? randomUUID() : null
+      const headers = requestId
+        ? { ...responseHeaders, 'x-dsh-wiki-request-id': requestId, vary: 'Accept' }
+        : responseHeaders
+      // Generation diagnostics are supplied by the Skill and contain status details only.
+      const diagnostic = requestId
+        ? record => console.info('[dsh-code-wiki]', JSON.stringify({ requestId, ...record }))
+        : undefined
+      const fail = error => {
+        const failure = generationFailure(error, route, label)
+        const code = typeof error?.code === 'string' && /^[a-z][a-z\d_-]*$/i.test(error.code) ? error.code : 'internal'
+        diagnostic?.({ phase: 'request', status: 'failed', code, httpStatus: failure.status })
+        return failure
+      }
+      const execute = async (generationSignal, onEvent) => {
+        generationSignal.throwIfAborted()
+        const skill = await ctx.skills.get(skillName, { signal: generationSignal })
+        if (!skill?.content) throw Object.assign(new Error('Wiki Skill unavailable.'), { code: 'wiki-skill-unavailable' })
+        return run(input, {
+          instructions: skill.content, signal: generationSignal, onEvent, diagnostic,
           openAuthor: options => openWikiAuthor(ctx, options),
         })
-        return Response.json(result, { headers: responseHeaders })
+      }
+      if (requestId && request.headers.get('accept')?.includes('application/x-ndjson')) {
+        return streamChapter(signal, headers, execute, fail)
+      }
+      try {
+        return Response.json(await execute(signal), { headers })
       } catch (error) {
         if (signal.aborted) throw error
-        const sourceStatus = sourceErrors.get(error?.code)
-        if (sourceStatus) return wikiError(error.message, sourceStatus)
-        if (error?.code === 'wiki-model-unavailable') return wikiError('暂时无法使用 DSH 当前模型。', 502)
-        if (error?.code === `wiki-${route}-invalid` || error?.code === 'wiki-author-invalid') {
-          return wikiError(`模型未能生成有效的${label}，请重试。`, 502)
-        }
-        return wikiError(`无法生成代码百科${label}，请重试。`, 500)
+        const { status, message } = fail(error)
+        return Response.json({ error: message }, { status, headers })
       }
     },
   })

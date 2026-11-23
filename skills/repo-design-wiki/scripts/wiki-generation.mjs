@@ -6,7 +6,7 @@ const replyLimit = 24_000
 const sourceLimit = 16
 const outputSchema = { type: 'object', properties: { data: { type: 'string' } }, required: ['data'] }
 
-function tool(name, description, properties, required, run) {
+export function tool(name, description, properties, required, run) {
   return {
     name, description,
     parameters: { type: 'object', properties, required, additionalProperties: false },
@@ -39,10 +39,12 @@ function listPaths(repository, { directory = '', match = '', offset = 0 }) {
   }
 }
 
-function repositoryTools(repository, signal) {
+export function repositoryTools(repository, signal) {
   const paths = new Set(repository.paths)
   const cache = new Map()
   const evidence = new Map()
+  const rangeHandles = new Map()
+  const readsByHandle = new Map()
   let remainingReads = readLimit
 
   async function read({ path, start = 1, count = 72 }, callSignal) {
@@ -82,19 +84,39 @@ function repositoryTools(repository, signal) {
     }
     if (!excerpt.length) return { error: '该行过长，请从下一行开始读取。', path, nextLine: start + 1 }
     const end = start + excerpt.length - 1
-    if (!evidence.has(path)) evidence.set(path, [])
-    evidence.get(path).push({ start, end })
-    return { path, start, end, lines: excerpt.join('\n'), nextLine: end < lines.length ? end + 1 : null, remainingReads }
+    const rangeKey = JSON.stringify([path, start, end])
+    if (!rangeHandles.has(rangeKey)) {
+      const handle = 'r' + (readsByHandle.size + 1)
+      rangeHandles.set(rangeKey, handle)
+      readsByHandle.set(handle, { path, start, end })
+      if (!evidence.has(path)) evidence.set(path, [])
+      evidence.get(path).push({ start, end })
+    }
+    return {
+      path, start, end, handle: rangeHandles.get(rangeKey), lines: excerpt.join('\n'),
+      nextLine: end < lines.length ? end + 1 : null, remainingReads,
+    }
+  }
+
+  function sourceFor(reference) {
+    if (typeof reference !== 'string') return null
+    const match = /^(r[1-9]\d*):([1-9]\d*)$/.exec(reference)
+    if (!match) return null
+    const range = readsByHandle.get(match[1])
+    const line = Number(match[2])
+    if (!range || !Number.isSafeInteger(line) || line < range.start || line > range.end) return null
+    return { path: range.path, line }
   }
 
   const string = { type: 'string' }
   const integer = { type: 'integer' }
   return {
     evidence,
+    sourceFor,
     tools: [
       tool('wiki_list', '列出已固定提交中的目录和可读文件。设定 match 可在目录内按路径递归匹配，使用 nextOffset 翻页。',
         { directory: string, match: string, offset: integer }, [], args => listPaths(repository, args)),
-      tool('wiki_read', `读取已固定提交中的源码行。默认从第 1 行读 72 行，每次最多 ${rangeLimit} 行。引用须落在实际返回的 start 至 end 范围内。`,
+      tool('wiki_read', `读取已固定提交中的源码行。默认从第 1 行读 72 行，每次最多 ${rangeLimit} 行。引用须落在实际返回的 start 至 end 范围内。返回 handle 供章节提交时引用。`,
         { path: string, start: integer, count: integer }, ['path'], read),
     ],
   }
@@ -112,7 +134,7 @@ export function readSources(sources, evidence) {
   return sources.map(({ path, line }) => ({ path, line }))
 }
 
-function parseReply(response, invalid) {
+export function parseReply(response, invalid) {
   if (typeof response !== 'string' || !response.trim() || response.length > replyLimit) {
     throw invalid('结果为空或过长。')
   }

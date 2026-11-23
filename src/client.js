@@ -12,6 +12,8 @@ window.__ModuleLoader__.load({
     const panelTitle = '代码百科'
     const outlineError = '无法生成目录，请重试。'
     const chapterError = '无法生成本章，请重试。'
+    const chapterDataError = '章节生成返回了无法读取的数据。'
+    const chapterInterrupted = '读取章节生成结果时连接中断。'
     const commitId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
     const markdownLabels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
@@ -50,19 +52,23 @@ window.__ModuleLoader__.load({
         Number.isSafeInteger(source.line) && source.line > 0)
     }
 
-    async function requestWiki(action, input, fallbackError) {
-      const response = await fetch(new URL(`api/dsh-code-wiki/${action}`, document.baseURI), {
+    function requestWiki(action, input, accept = 'application/json') {
+      return fetch(new URL(`api/dsh-code-wiki/${action}`, document.baseURI), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', accept },
         body: JSON.stringify(input),
       })
+    }
+
+    async function wikiJson(response, fallbackError) {
       const result = await response.json().catch(() => null)
       if (!response.ok) return { error: hasText(result?.error) ? result.error : fallbackError }
       return { result }
     }
 
     async function loadOutline(repository) {
-      const { result, error } = await requestWiki('outline', repositoryInput(repository), outlineError)
+      const response = await requestWiki('outline', repositoryInput(repository))
+      const { result, error } = await wikiJson(response, outlineError)
       if (error) return { error }
       const { mainline, commit, chapters } = result ?? {}
       if (!hasText(mainline) || typeof commit !== 'string' || !commitId.test(commit) ||
@@ -82,22 +88,94 @@ window.__ModuleLoader__.load({
         typeof svg === 'string' && svg.length <= 160_000 && /^<svg(?:\s|>)[\s\S]*<\/svg>$/.test(svg.trim())
     }
 
-    async function loadChapter(repository, chapterIndex, previousHandoff) {
+    function validChapterContent(content) {
+      return hasText(content?.markdown) && typeof content.handoff === 'string' && validSources(content.sources) &&
+        Array.isArray(content.diagrams) && content.diagrams.every(validDiagram)
+    }
+
+    async function* chapterLines(stream) {
+      const reader = stream.getReader()
+      const decoder = new TextDecoder()
+      let remainder = ''
+      try {
+        while (true) {
+          const { value, done } = await reader.read()
+          const lines = (remainder + decoder.decode(value, { stream: !done })).split('\n')
+          remainder = lines.pop()
+          for (const line of lines) if (line.trim()) yield line
+          if (done) {
+            if (remainder.trim()) yield remainder
+            return
+          }
+        }
+      } finally {
+        void reader.cancel().catch(() => {})
+        reader.releaseLock()
+      }
+    }
+
+    async function loadChapterStream(stream, onContent) {
+      let content
+      try {
+        for await (const line of chapterLines(stream)) {
+          let message
+          try {
+            message = JSON.parse(line)
+          } catch {
+            return { error: chapterDataError }
+          }
+          switch (message?.type) {
+            case 'body':
+              if (content || !validChapterContent(message.content) || message.content.diagrams.length) {
+                return { error: chapterDataError }
+              }
+              content = message.content
+              onContent(content)
+              break
+            case 'diagram':
+              if (!content || !validDiagram(message.diagram) || !validSources(message.sources) ||
+                content.sources.some(({ path, line }, index) =>
+                  message.sources[index]?.path !== path || message.sources[index]?.line !== line)) {
+                return { error: chapterDataError }
+              }
+              content = { ...content, sources: message.sources, diagrams: [...content.diagrams, message.diagram] }
+              onContent(content)
+              break
+            case 'done':
+              if (!content || (message.warning !== undefined && typeof message.warning !== 'string')) {
+                return { error: chapterDataError }
+              }
+              return { warning: message.warning?.trim() ?? '' }
+            case 'error':
+              return { error: hasText(message.error) ? message.error : chapterDataError }
+            default:
+              return { error: chapterDataError }
+          }
+        }
+      } catch {
+        return { error: chapterInterrupted }
+      }
+      return { error: chapterInterrupted }
+    }
+
+    async function loadChapter(repository, chapterIndex, previousHandoff, onContent) {
       const { commit, mainline, chapters } = repository
       const { title, sources } = chapters[chapterIndex]
       const previous = chapters[chapterIndex - 1]
       const next = chapters[chapterIndex + 1]
-      const { result, error } = await requestWiki('chapter', {
+      const response = await requestWiki('chapter', {
         ...repositoryInput(repository), commit, mainline, chapter: { title, sources },
         previous: previous ? { title: previous.title, handoff: previousHandoff } : null,
         next: next?.title ?? null,
-      }, chapterError)
-      if (error) return { error }
-      if (!hasText(result?.markdown) || typeof result.handoff !== 'string' || !validSources(result.sources) ||
-        !Array.isArray(result.diagrams) || !result.diagrams.every(validDiagram)) {
-        return { error: chapterError }
+      }, 'application/x-ndjson')
+      const mimeType = response.headers?.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      if (response.ok && mimeType === 'application/x-ndjson') {
+        return loadChapterStream(response.body, onContent)
       }
-      return { content: result }
+      const fallbackError = response.status >= 400 ? `生成本章的请求失败（HTTP ${response.status}），请重试。` : chapterError
+      const { result, error } = await wikiJson(response, fallbackError)
+      if (error) return { error }
+      return validChapterContent(result) ? { content: result } : { error: chapterError }
     }
 
     function createWikiStore(pickDirectory) {
@@ -172,18 +250,20 @@ window.__ModuleLoader__.load({
           const current = chapterWork[chapterIndex]
           if (view !== 'reader' || !document?.chapters[chapterIndex] || current?.pending || current?.content) return
 
-          function updateChapter(work) {
+          function updateChapter(patch) {
             if (snapshot.document !== document) return
             const chapters = [...snapshot.chapterWork]
-            chapters[chapterIndex] = work
+            chapters[chapterIndex] = { ...chapters[chapterIndex], ...patch }
             update({ chapterWork: chapters })
           }
 
-          updateChapter({ pending: true })
+          updateChapter({ pending: true, error: '', warning: '' })
           try {
-            updateChapter(await loadChapter(document, chapterIndex, chapterWork[chapterIndex - 1]?.content?.handoff ?? ''))
+            const previousHandoff = chapterWork[chapterIndex - 1]?.content?.handoff ?? ''
+            const result = await loadChapter(document, chapterIndex, previousHandoff, content => updateChapter({ content }))
+            updateChapter({ ...result, pending: false })
           } catch {
-            updateChapter({ error: chapterError })
+            updateChapter({ error: chapterError, pending: false })
           }
         },
       }
@@ -377,7 +457,9 @@ window.__ModuleLoader__.load({
       }, [chapterIndex, reading])
 
       const chapter = document?.chapters[chapterIndex]
-      const { pending, content, error: chapterFailure } = chapterWork[chapterIndex] ?? {}
+      const { pending, content, error: chapterFailure, warning } = chapterWork[chapterIndex] ?? {}
+      const chapterNotice = content && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…'))
+      const chapterAnnouncement = pending ? '正在生成本章…' : content ? '本章已生成。' : ''
       const generated = chapterWork.filter(work => work?.content).length
       return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': reading ? '' : undefined, ref: page },
         h('style', null, wikiStyles),
@@ -403,7 +485,10 @@ window.__ModuleLoader__.load({
             h(ChapterDirectory, { chapters: document.chapters, chapterIndex, mainlineId, onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
               h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
-              h('p', { className: 'dsh-code-wiki-announcement', role: 'status' }, pending ? '正在生成本章…' : content ? '本章已生成。' : ''),
+              h('p', {
+                className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
+                role: chapterNotice && chapterFailure ? 'alert' : 'status',
+              }, chapterNotice || chapterAnnouncement),
               content ? h(ChapterContent, { repository: document, content }) : h('div', { className: 'dsh-code-wiki-chapter-action' },
                 h(Button, { type: 'button', variant: 'primary', disabled: Boolean(pending), onClick: store.generateChapter },
                   pending ? '正在生成本章…' : chapterFailure ? '重试生成本章' : '生成本章'),

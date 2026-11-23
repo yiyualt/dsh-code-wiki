@@ -415,6 +415,7 @@
 
 .dsh-code-wiki-chapter-action { justify-items: start; gap: 12px; }
 .dsh-code-wiki-chapter-content { gap: 24px; }
+.dsh-code-wiki-chapter-notice { padding: 12px var(--wiki-article-pad) 0; }
 .dsh-code-wiki-prose { min-width: 0; }
 .dsh-code-wiki-prose > div { font-size: calc(var(--dsh-content-font-size, 14px) + 1px); line-height: 1.75; }
 

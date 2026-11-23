@@ -10,7 +10,7 @@ export async function openWikiAuthor(ctx, { tools, signal }) {
   try {
     handle = await ctx.agents.create({
       sessionId: 'code-wiki-' + randomUUID(),
-      agentOptions: { ...ctx.agentDefaultModel.currentSelection(), maxTokens: 12_000 },
+      agentOptions: ctx.agentDefaultModel.currentSelection(),
       signal,
       setup(agentCtx) {
         agentCtx.tools.restrict({ allow: [] })
@@ -35,30 +35,41 @@ export async function openWikiAuthor(ctx, { tools, signal }) {
   }
   const events = () => agent.session.snapshotEvents()
 
+  async function run(prompt) {
+    signal.throwIfAborted()
+    const cursor = events().length
+    try {
+      agent.followup({
+        id: randomUUID(), role: 'user', source: { kind: 'user' },
+        content: [{ type: 'text', text: prompt }],
+      })
+      await agent.whenIdle()
+    } catch {
+      signal.throwIfAborted()
+      return { kind: 'agent-exception', text: null, modelFailed: true, pendingTool: false }
+    }
+    signal.throwIfAborted()
+    const turn = events().slice(cursor)
+    const end = turn.findLast(event => event.type === 'turn/end')?.data
+    const content = end && turn.findLast(event => event.type === 'assistant/message' && event.data?.turn === end.turn)
+      ?.data?.message?.content
+    const blocks = Array.isArray(content) ? content : null
+    return {
+      kind: end?.reason?.kind ?? 'missing-end',
+      text: blocks && blocks.filter(block => block.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text).join('\n\n'),
+      modelFailed: Boolean(end?.reason?.error || end?.reason?.failure),
+      pendingTool: blocks?.some(block => block.type === 'tool-call') ?? false,
+    }
+  }
+
   return {
+    run,
     async reply(prompt) {
-      signal.throwIfAborted()
-      const cursor = events().length
-      try {
-        agent.followup({
-          id: randomUUID(), role: 'user', source: { kind: 'user' },
-          content: [{ type: 'text', text: prompt }],
-        })
-        await agent.whenIdle()
-      } catch {
-        signal.throwIfAborted()
-        throw authorError('wiki-model-unavailable')
-      }
-      signal.throwIfAborted()
-      const turn = events().slice(cursor)
-      const end = turn.findLast(event => event.type === 'turn/end')?.data
-      if (end?.reason?.error || end?.reason?.failure) throw authorError('wiki-model-unavailable')
-      if (end?.reason?.kind !== 'completed') throw authorError('wiki-author-invalid')
-      const content = turn.findLast(event => event.type === 'assistant/message' && event.data?.turn === end.turn)
-        ?.data?.message?.content
-      if (!Array.isArray(content) || content.some(block => block.type === 'tool-call')) throw authorError('wiki-author-invalid')
-      return content.filter(block => block.type === 'text' && typeof block.text === 'string')
-        .map(block => block.text).join('\n\n')
+      const result = await run(prompt)
+      if (result.modelFailed) throw authorError('wiki-model-unavailable')
+      if (result.kind !== 'completed' || result.text === null || result.pendingTool) throw authorError('wiki-author-invalid')
+      return result.text
     },
     dispose,
   }
