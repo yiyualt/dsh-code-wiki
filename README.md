@@ -1,6 +1,6 @@
 # DSH 代码百科
 
-在 DeepSeek Harness Web 侧栏打开「代码百科」，选择 GitHub 地址或本地仓库文件夹。提交后可浏览 `repo-design-wiki` Skill 提供的示例文档，每个 `##` 标题对应一个目录项。
+在 DeepSeek Harness Web 侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库。点击「生成文档」后，`repo-design-wiki` Skill 使用 DSH 当前模型，根据所选仓库已提交的源码拟定目录。本阶段展示章名，正文留空。
 
 ## 本地安装
 
@@ -9,7 +9,7 @@
 ```sh
 npm run check
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.22.0.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.23.0.tgz
 ```
 
-插件启用后可在侧栏打开。示例 Markdown 位于 `skills/repo-design-wiki/references/preview.md`，插件在打开示例文档时从 DSH 已注册的 Skill 读取该文件。
+所选仓库的源码片段会交给当前模型用于拟定目录。Skill 的组织原则见 `skills/repo-design-wiki/SKILL.md`。

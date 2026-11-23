@@ -8,6 +8,7 @@ window.__ModuleLoader__.load({
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const panelId = 'dsh-code-wiki'
     const panelTitle = '代码百科'
+    const outlineError = '无法生成目录，请重试。'
     const markdownLabels = {
       code: { copyLabel: '复制', copiedLabel: '已复制' },
       footnotes: '脚注',
@@ -28,21 +29,31 @@ window.__ModuleLoader__.load({
       return { source: 'local', title, location }
     }
 
-    async function loadPreview() {
-      const response = await fetch(new URL('api/dsh-code-wiki/preview', document.baseURI))
-      if (!response.ok) throw new Error('Preview request failed')
-      const { chapters } = await response.json()
+    async function loadOutline(repository) {
+      const input = repository.source === 'github'
+        ? { repositoryUrl: repository.location }
+        : { repositoryPath: repository.location }
+      const response = await fetch(new URL('api/dsh-code-wiki/outline', document.baseURI), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) {
+        return { error: typeof result?.error === 'string' && result.error.trim() ? result.error : outlineError }
+      }
+      const chapters = result?.chapters
       if (!Array.isArray(chapters) || !chapters.length || chapters.some(chapter =>
         typeof chapter?.title !== 'string' || !chapter.title.trim() || typeof chapter.markdown !== 'string')) {
-        throw new Error('Invalid preview chapters')
+        return { error: outlineError }
       }
-      return chapters
+      return { chapters }
     }
 
     function createWikiStore(pickDirectory) {
       let snapshot = {
         draft: { source: 'github', repositoryUrl: '', repositoryPath: '' },
-        view: 'library', document: null, chapterIndex: 0, picker: null, loadingPreview: false, error: '',
+        view: 'library', document: null, chapterIndex: 0, picker: null, generatingOutline: false, error: '',
       }
       const listeners = new Set()
 
@@ -63,7 +74,7 @@ window.__ModuleLoader__.load({
         },
         changeDraft,
         toggleForm() {
-          if (snapshot.loadingPreview) return
+          if (snapshot.generatingOutline) return
           update({ view: snapshot.view === 'form' ? 'library' : 'form', error: '' })
         },
         returnToLibrary: () => update({ view: 'library' }),
@@ -72,7 +83,7 @@ window.__ModuleLoader__.load({
           if (snapshot.document?.chapters[chapterIndex] && snapshot.chapterIndex !== chapterIndex) update({ chapterIndex })
         },
         async chooseFolder() {
-          if (snapshot.picker || snapshot.loadingPreview) return
+          if (snapshot.picker || snapshot.generatingOutline) return
           update({ picker: 'native', error: '' })
           const failure = { picker: null, error: '无法打开文件夹选择器，请重试。' }
           try {
@@ -84,9 +95,9 @@ window.__ModuleLoader__.load({
             update(failure)
           }
         },
-        async previewDocument() {
-          const { draft, picker, loadingPreview } = snapshot
-          if (picker || loadingPreview) return
+        async generateDocument() {
+          const { draft, picker, generatingOutline } = snapshot
+          if (picker || generatingOutline) return
           const local = draft.source === 'local'
           const repository = local ? localRepository(draft.repositoryPath) : githubRepository(draft.repositoryUrl)
           if (!repository) {
@@ -94,12 +105,16 @@ window.__ModuleLoader__.load({
             return
           }
 
-          update({ loadingPreview: true, error: '' })
+          update({ generatingOutline: true, error: '' })
           try {
-            const chapters = await loadPreview()
-            update({ document: { ...repository, chapters }, chapterIndex: 0, view: 'reader', loadingPreview: false })
+            const { chapters, error } = await loadOutline(repository)
+            if (error) {
+              update({ generatingOutline: false, error })
+              return
+            }
+            update({ document: { ...repository, chapters }, chapterIndex: 0, view: 'reader', generatingOutline: false })
           } catch {
-            update({ loadingPreview: false, error: '无法读取 Skill 示例文档，请重试。' })
+            update({ generatingOutline: false, error: outlineError })
           }
         },
       }
@@ -151,20 +166,20 @@ window.__ModuleLoader__.load({
       listing?.truncated && h('p', null, '此处仅显示部分文件夹。'))
     }
 
-    function SourceForm({ id, draft, onChange, onSubmit, error, picker, loadingPreview, onChooseFolder, listDirectory }) {
+    function SourceForm({ id, draft, onChange, onSubmit, error, picker, generatingOutline, onChooseFolder, listDirectory }) {
       const sourceId = useId()
       const titleId = useId()
       const heading = useRef(null)
       const local = draft.source === 'local'
       const ready = local ? draft.repositoryPath : draft.repositoryUrl.trim()
-      const busy = Boolean(picker) || loadingPreview
+      const busy = Boolean(picker) || generatingOutline
       useEffect(() => { heading.current?.focus() }, [])
 
       return h('section', { id, className: 'dsh-code-wiki-form-card', 'aria-labelledby': titleId },
         h('h2', { id: titleId, ref: heading, tabIndex: -1 }, '新建 Wiki'),
         h('form', {
           className: 'dsh-code-wiki-form',
-          'aria-busy': loadingPreview,
+          'aria-busy': generatingOutline,
           onSubmit(event) {
             event.preventDefault()
             onSubmit()
@@ -186,7 +201,7 @@ window.__ModuleLoader__.load({
             h('span', null, '公开 GitHub 仓库地址'),
             h(Input, { type: 'url', name: 'repositoryUrl', value: draft.repositoryUrl, required: true, disabled: busy,
               autoComplete: 'off', spellCheck: false, onChange: event => onChange({ repositoryUrl: event.target.value }) })),
-        h(Button, { type: 'submit', variant: 'primary', disabled: !ready || busy }, loadingPreview ? '正在读取…' : '生成文档'),
+        h(Button, { type: 'submit', variant: 'primary', disabled: !ready || busy }, generatingOutline ? '正在生成目录…' : '生成文档'),
         picker === 'native' && h('p', { role: 'status', className: 'dsh-code-wiki-feedback' }, '正在打开文件夹选择器…'),
         error && h('p', { role: 'alert', className: 'dsh-code-wiki-feedback' }, error),
         picker === 'browser' && h(FolderBrowser, {
@@ -213,7 +228,7 @@ window.__ModuleLoader__.load({
     }
 
     function CodeWikiPage({ store, listDirectory }) {
-      const { draft, view, document, chapterIndex, picker, loadingPreview, error } = useSyncExternalStore(store.subscribe, store.getSnapshot)
+      const { draft, view, document, chapterIndex, picker, generatingOutline, error } = useSyncExternalStore(store.subscribe, store.getSnapshot)
       const formId = useId()
       const page = useRef(null)
       const articleHeading = useRef(null)
@@ -241,7 +256,7 @@ window.__ModuleLoader__.load({
               : h('h1', { className: 'dsh-code-wiki-brand' },
                 h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true }, h(IconCodeOutlineRegular, { size: 20 })), '文档库'),
             !reading && h(Button, {
-              type: 'button', variant: formOpen ? 'outline' : 'primary', size: 'sm', disabled: Boolean(picker) || loadingPreview,
+              type: 'button', variant: formOpen ? 'outline' : 'primary', size: 'sm', disabled: Boolean(picker) || generatingOutline,
               icon: formOpen ? undefined : h(IconPlusOutlineRegular, { size: 16 }),
               'aria-expanded': formOpen, 'aria-controls': formOpen ? formId : undefined,
               onClick: store.toggleForm,
@@ -249,15 +264,16 @@ window.__ModuleLoader__.load({
           reading ? h('div', { className: 'dsh-code-wiki-columns' },
             h(ChapterDirectory, { chapters: document.chapters, chapterIndex, onSelect: store.selectChapter }),
             h('article', { className: 'dsh-code-wiki-article', 'aria-label': '文档正文' },
-              h('header', null, h('p', null, '示例文档'), h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
-              h('div', { className: 'dsh-code-wiki-prose' }, h(MarkdownText, { text: chapter.markdown, labels: markdownLabels, omitHtml: true }))))
+              h('header', null, h('h1', { ref: articleHeading, tabIndex: -1 }, chapter.title)),
+              chapter.markdown.trim() && h('div', { className: 'dsh-code-wiki-prose' },
+                h(MarkdownText, { text: chapter.markdown, labels: markdownLabels, omitHtml: true }))))
             : h('div', { className: 'dsh-code-wiki-library' },
-              formOpen && h(SourceForm, { id: formId, draft, onChange: store.changeDraft, onSubmit: store.previewDocument,
-                error, picker, loadingPreview, onChooseFolder: store.chooseFolder, listDirectory }),
-              document ? h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: loadingPreview, onClick: store.openDocument },
+              formOpen && h(SourceForm, { id: formId, draft, onChange: store.changeDraft, onSubmit: store.generateDocument,
+                error, picker, generatingOutline, onChooseFolder: store.chooseFolder, listDirectory }),
+              document ? h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: generatingOutline, onClick: store.openDocument },
                 h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
                   h(document.source === 'local' ? IconFolderOpenOutlineRegular : IconCodeOutlineRegular, { size: 19 })),
-                h('span', null, h('strong', null, document.title), h('small', null, '示例文档')),
+                h('span', null, h('strong', null, document.title), h('small', null, '目录草稿')),
                 h(IconChevronRightOutlineRegular, { size: 16, 'aria-hidden': true }))
                 : !formOpen && h('p', { className: 'dsh-code-wiki-empty' }, '还没有 Wiki'))))
     }
