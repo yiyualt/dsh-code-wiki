@@ -67,13 +67,21 @@ test('SVG rendering preserves labels as React text and exposes source links with
   assert.equal(nodes.some(item => ['script', 'iframe', 'foreignObject', 'img'].includes(item.type)), false)
 })
 
-test('vertical views start centered in their own viewport without recentering other view kinds', () => {
-  for (const kind of ['flow', 'dataflow', 'sequence', 'scenario', 'dependency', 'deployment']) {
-    const element = { scrollWidth: 640, clientWidth: 320, scrollLeft: 0 }
-    const React = { useId: () => kind, useRef: () => ({ current: element }), useLayoutEffect: effect => effect(),
-      useState: value => [value, () => {}], createElement: () => null }
-    createWikiViewRenderer(React)({ view: fixture(kind) })
-    assert.equal(element.scrollLeft, ['flow', 'dataflow'].includes(kind) ? 160 : 0)
+test('views fit the reader by default and scroll-mode vertical views remain centered', () => {
+  for (const kind of ['flow', 'dataflow', 'activity', 'state', 'sequence', 'scenario', 'dependency', 'deployment']) {
+    for (const scrollMode of [false, true]) {
+      const element = { scrollWidth: 640, clientWidth: 320, scrollLeft: 0 }
+      let minimumWidth
+      const React = { useId: () => kind, useRef: () => ({ current: element }), useLayoutEffect: effect => effect(),
+        useState: initial => [scrollMode ? false : initial, () => {}], createElement(type, props) {
+          if (type === 'svg') minimumWidth = props.style.minWidth
+          return null
+        } }
+      createWikiViewRenderer(React)({ view: fixture(kind) })
+      assert.equal(minimumWidth === 0, !scrollMode)
+      const centered = scrollMode && ['flow', 'dataflow', 'activity', 'state'].includes(kind)
+      assert.equal(element.scrollLeft, centered ? 160 : 0)
+    }
   }
 })
 

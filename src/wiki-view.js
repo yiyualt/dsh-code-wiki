@@ -338,7 +338,7 @@ const wikiViews = (() => {
     return function WikiView({ view }) {
       const prefix = 'wiki-view-' + React.useId().replace(/[^a-z\d_-]/gi, '')
       const viewport = React.useRef(null)
-      const [fit, setFit] = React.useState(false)
+      const [fit, setFit] = React.useState(true)
       const [overflow, setOverflow] = React.useState(false)
       const geometry = layout(view)
       const readableWidth = Math.ceil(geometry.width * .9)
