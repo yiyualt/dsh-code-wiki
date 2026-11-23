@@ -163,8 +163,9 @@
 }
 
 .dsh-code-wiki-rail-label {
-  margin: 0 0 9px;
-  padding-inline: 11px;
+  margin: 0 0 8px;
+  padding: 2px 10px 9px;
+  border-block-end: 1px solid var(--wiki-line);
   color: var(--wiki-muted);
   font-size: 12px;
   font-weight: 650;
@@ -179,33 +180,58 @@
 }
 
 .dsh-code-wiki-sidebar .dsh-code-wiki-chapter-button {
-  position: relative;
-  display: block;
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
   width: 100%;
   min-height: 38px;
-  height: auto;
-  padding: 9px 11px;
+  padding: 9px 10px;
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--wiki-muted);
+  color: var(--wiki-ink);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
   text-align: start;
   line-height: 1.5;
+}
+
+.dsh-code-wiki-chapter-number {
+  color: var(--wiki-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.dsh-code-wiki-chapter-copy {
   overflow-wrap: anywhere;
+}
+
+.dsh-code-wiki-chapter-title {
+  display: block;
+  font-weight: 620;
+}
+
+.dsh-code-wiki-chapter-detail {
+  display: block;
+  margin-block-start: 2px;
+  color: var(--wiki-muted);
+  font-size: 12px;
 }
 
 .dsh-code-wiki-sidebar .dsh-code-wiki-chapter-button:hover {
   background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--wiki-ink);
 }
 
 .dsh-code-wiki-sidebar .dsh-code-wiki-chapter-button[aria-current='page'] {
   background: var(--wiki-accent-fill);
   color: var(--wiki-accent-ink);
-  font-weight: 650;
+}
+
+.dsh-code-wiki-chapter-button[aria-current='page'] .dsh-code-wiki-chapter-number {
+  color: inherit;
 }
 
 .dsh-code-wiki-chapter-picker {
@@ -1130,7 +1156,7 @@ a.dsh-wiki-view-node:focus-visible :is(rect, ellipse, polygon, path, circle) { s
 
 @container dsh-code-wiki (min-width: 705px) {
   .dsh-code-wiki-columns {
-    grid-template-columns: minmax(165px, 210px) minmax(0, 1fr);
+    grid-template-columns: clamp(190px, 26cqi, 248px) minmax(0, 1fr);
     gap: clamp(18px, 2.7cqi, 32px);
   }
 

@@ -322,10 +322,23 @@ window.__ModuleLoader__.load({
         : { introduction: lines.slice(0, boundary).join('\n'), remaining: lines.slice(boundary).join('\n') }
     }
 
+    function headingText(value) {
+      return value?.replace(/[ \t]+#+[ \t]*$/, '').trim().replace(
+        /\\([^a-z\d\s])|(?<!`)(`+)(?!`)(.*?)\2(?!`)|\[([^\]\[]+)\]\([^\s()]+\)|\*\*([^*]+)\*\*/gi,
+        (_match, escaped, _ticks, code, link, strong) => escaped ?? code?.trim() ?? link ?? strong,
+      )
+    }
+
+    function chapterHeading(heading) {
+      const title = headingText(heading)
+      const label = heading.replace(/^(?:\d{1,3}\\?[.．)]\s+|\d{1,3}、\s*)/, '') || heading
+      const parts = /^([^`：:]{1,24}?)(?:：|:[ \t]+)[ \t]*(\S.*)$/.exec(label)
+      return { title, directoryTitle: headingText(parts?.[1] ?? label), directoryDetail: headingText(parts?.[2]) }
+    }
+
     function splitChapters(markdown) {
       const lines = markdown.split(/\r?\n/)
       const firstLine = lines.findIndex(line => line.trim())
-      const headingText = value => value?.replace(/[ \t]+#+[ \t]*$/, '').trim().replace(/\\([^\w\s])/g, '$1')
       const documentTitle = headingText(/^ {0,3}#[ \t]+(.+)$/.exec(lines[firstLine] ?? '')?.[1])
       const headings = []
       let fence = null
@@ -339,8 +352,8 @@ window.__ModuleLoader__.load({
           fence = marker[1]
           continue
         }
-        const title = headingText(/^ {0,3}##[ \t]+(.+)$/.exec(line)?.[1])
-        if (title) headings.push({ title, index })
+        const heading = /^ {0,3}##[ \t]+(.+)$/.exec(line)?.[1]?.trim()
+        if (heading) headings.push({ ...chapterHeading(heading), index })
         else if (headings.length) lines[index] = line.replace(/^( {0,3})#(?=#{2,5}[ \t])/, '$1')
       }
       const start = documentTitle ? firstLine + 1 : 0
@@ -349,9 +362,9 @@ window.__ModuleLoader__.load({
       }
 
       const preamble = lines.slice(start, headings[0].index).join('\n').trimEnd()
-      const chapters = headings.map(({ title, index }, i) => {
+      const chapters = headings.map(({ index, ...heading }, i) => {
         const chapter = lines.slice(index + 1, headings[i + 1]?.index).join('\n')
-        return { title, markdown: i === 0 && preamble ? preamble + '\n\n' + chapter : chapter }
+        return { ...heading, markdown: i === 0 && preamble ? preamble + '\n\n' + chapter : chapter }
       })
       return { documentTitle, chapters }
     }
@@ -786,21 +799,25 @@ window.__ModuleLoader__.load({
       const selectId = useId()
       return h('nav', { 'aria-label': '章节目录' },
         h('h2', { className: 'dsh-code-wiki-rail-label' }, '章节目录'),
-        h('ul', { className: 'dsh-code-wiki-chapter-list' },
-          chapters.map(({ title }, index) => h('li', { key: index },
+        h('ol', { className: 'dsh-code-wiki-chapter-list', role: 'list' },
+          chapters.map(({ title, directoryTitle = title, directoryDetail }, index) => h('li', { key: index },
             h('button', {
               type: 'button',
               className: 'dsh-code-wiki-chapter-button',
               'aria-current': index === chapterIndex ? 'page' : undefined,
               onClick: () => selectChapter(index),
-            }, title),
+            }, h('span', { className: 'dsh-code-wiki-chapter-number', 'aria-hidden': true }, index + 1),
+            h('span', { className: 'dsh-code-wiki-chapter-copy' },
+              h('span', { className: 'dsh-code-wiki-chapter-title' }, directoryTitle),
+              directoryDetail && h('span', { className: 'dsh-code-wiki-chapter-detail' }, directoryDetail))),
           )),
         ),
         h('div', { className: 'dsh-code-wiki-chapter-picker' },
           h('label', { htmlFor: selectId }, '章节'),
           h('div', null,
             h('select', { id: selectId, value: chapterIndex, onChange: event => selectChapter(Number(event.target.value)) },
-              chapters.map(({ title }, index) => h('option', { key: index, value: index }, title))),
+              chapters.map(({ title, directoryTitle = title, directoryDetail }, index) => h('option', { key: index, value: index },
+                (index + 1) + '. ' + directoryTitle + (directoryDetail ? '：' + directoryDetail : '')))),
             h(IconChevronDownOutlineRegular, { size: 15, 'aria-hidden': true }))),
       )
     }

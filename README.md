@@ -8,7 +8,7 @@ DeepSeek Harness Web 插件。在侧栏打开「代码百科」，选择公开 G
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.19.0.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.19.1.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。

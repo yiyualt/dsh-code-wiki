@@ -57,6 +57,51 @@ function find(node, predicate) {
   }
 }
 
+test('the chapter directory separates its numbering and short topics from Markdown subtitles', async () => {
+  const data = { ...record('# RecBole\n\n## 1. 仓库形态：配置驱动的四层骨架\n\nOverview.\n\n'
+    + '## 2. **数据层**：`Dataset`、`DataLoader` 与 `Interaction` 的契约\n\nInterfaces.\n\n'
+    + '## 评估指标\n\nMetrics.\n\n## `name: value` 配置\n\nExample.'), format: 'skill-markdown' }
+  const { wiki, Page } = await reader(data)
+  const directory = () => {
+    const nav = find(Page({ wiki }), node => node.type?.name === 'ChapterDirectory')
+    return nav.type(nav.props)
+  }
+  const nav = directory()
+  const items = find(nav, node => node.type === 'ol').children.map(item => item.children[0])
+  const copy = (button, name) => find(button, node => node.props.className === 'dsh-code-wiki-chapter-' + name)?.children[0]
+  assert.deepEqual(Array.from(items, button => copy(button, 'number')), [1, 2, 3, 4])
+  assert.equal(copy(items[0], 'title'), '仓库形态')
+  assert.equal(copy(items[0], 'detail'), '配置驱动的四层骨架')
+  assert.equal(copy(items[1], 'title'), '数据层')
+  assert.equal(copy(items[1], 'detail'), 'Dataset、DataLoader 与 Interaction 的契约')
+  assert.equal(copy(items[2], 'detail'), undefined)
+  assert.equal(copy(items[3], 'title'), 'name: value 配置')
+  assert.equal(items[0].props['aria-current'], 'page')
+  const select = find(nav, node => node.type === 'select')
+  assert.equal(select.children[1].children[0], '2. 数据层：Dataset、DataLoader 与 Interaction 的契约')
+  items[1].props.onClick()
+  assert.equal(find(directory(), node => node.props['aria-current'] === 'page').children[0].children[0], 2)
+  const article = find(Page({ wiki }), node => node.type?.name === 'WikiArticle')
+  assert.equal(find(article.type(article.props), node => node.type === 'h1').children[0],
+    '2. 数据层：Dataset、DataLoader 与 Interaction 的契约')
+  select.props.onChange({ target: { value: '2' } })
+  assert.equal(wiki.getSnapshot().chapterIndex, 2)
+})
+
+test('older saved headings and single-section documents keep a usable chapter label', async () => {
+  const data = record('# Wiki\n\n## 1\\. 错误处理: handle\\_error\\(\\)\n\nDescription.\n\n'
+    + '## 2.3 compatibility\n\nAnother section.')
+  const legacy = await reader(data)
+  const [first, second] = legacy.wiki.getSnapshot().result.chapters
+  assert.equal(first.directoryTitle, '错误处理')
+  assert.equal(first.directoryDetail, 'handle_error()')
+  assert.equal(second.directoryTitle, '2.3 compatibility')
+  assert.equal(second.directoryDetail, undefined)
+  const single = await reader(record('# Plain guide\n\nOne paragraph.'))
+  const nav = find(single.Page({ wiki: single.wiki }), node => node.type?.name === 'ChapterDirectory')
+  assert.equal(find(nav.type(nav.props), node => node.type === 'option').children[0], '1. Plain guide')
+})
+
 test('legacy Wiki citations become compact sources while code, links and chapter introductions retain their meaning', async () => {
   const citation = '[src/main\\.js\\:10–20](' + sourceUrl + ')'
   const code = '```js\nconst source = "' + citation + '"\n## Inside code\n```'
