@@ -1,21 +1,7 @@
-import { randomUUID } from 'node:crypto'
-import { modelError } from './model-error.js'
-import { repositoryTools } from './repository-tools.js'
-import { normalizeWikiChapter, renderWikiDocument, restoreWikiDraft, wikiInvalid } from './wiki-document.js'
-import { maxWikiMarkdownLength, readMarkdownReply, resolveMarkdownCitations, savedWikiHeadings } from './wiki-markdown.js'
+import { repositoryTools } from './repository-tools.mjs'
+import { invalidMarkdown, maxWikiMarkdownLength, readMarkdownReply, resolveMarkdownCitations, savedWikiHeadings } from './markdown.mjs'
 
 const recoverable = new Set(['MALFORMED_RESPONSE', 'EMPTY_RESPONSE', 'STREAM_CLOSED'])
-
-function previousMarkdown(checkpoint, source, evidence, plan) {
-  if (!plan || !checkpoint.chapters?.length) return ''
-  const byId = new Map(checkpoint.chapters.map(chapter => [chapter.id, chapter]))
-  const chapters = plan.chapters.filter(chapter => byId.has(chapter.id))
-    .map(chapter => normalizeWikiChapter(byId.get(chapter.id), source, evidence, plan))
-  // Legacy local URLs belonged to the previous job. Preserve their original evidence index.
-  return renderWikiDocument({ chapters, graph: { layers: [], edges: [] } }, source).markdown.trim()
-    .replace(/\[\d+\]\(https:\/\/dsh-code-wiki\.invalid\/source\?key=[a-f0-9-]+&file=(\d+)&start=(\d+)&end=(\d+)\)/g,
-      (_match, id, start, end) => `[E${id}:${start}-${end}]`)
-}
 
 function savedEvidenceTool(evidence) {
   return {
@@ -40,29 +26,13 @@ function savedEvidenceTool(evidence) {
   }
 }
 
-function settledReply(events) {
-  const end = events.findLast(event => event.type === 'turn/end')?.data
-  const failure = end?.reason?.error ?? end?.reason?.failure
-  if (failure) {
-    const wrapped = failure.code === 'UNKNOWN' ? modelError({ code: failure.message }) : undefined
-    throw wrapped?.providerCode ? wrapped : modelError(failure)
-  }
-  if (end?.reason?.kind === 'max-tokens') throw wikiInvalid('本轮达到输出上限，请提交一个更短的完整片段。')
-  if (end?.reason?.kind !== 'completed') throw wikiInvalid('模型本轮没有返回完整的 Markdown。')
-  const response = events.findLast(event => event.type === 'assistant/message' && event.data?.turn === end.turn)?.data?.message?.content
-  if (!Array.isArray(response) || response.some(block => block.type === 'tool-call')) throw wikiInvalid('本轮没有可保存的 Markdown 正文。')
-  return readMarkdownReply(response.filter(block => block.type === 'text' && typeof block.text === 'string')
-    .map(block => block.text).join('\n\n'))
-}
-
-export async function runWikiSkill(ctx, source, selection, adapter, signal, onRead, onPhase, { checkpoint, loadSkill, onCheckpoint }) {
+export async function generateWiki({ source, signal, checkpoint, loadSkill, openAuthor, restoreLegacy, onRead, onPhase, onCheckpoint }) {
   const { definitions, evidence } = repositoryTools(source, signal, onRead, checkpoint?.evidence)
-  const legacy = checkpoint && !checkpoint.textDraft ? restoreWikiDraft(checkpoint, source, evidence) : undefined
-  if (legacy?.draft) return { ...renderWikiDocument(legacy.draft, source), files: evidence }
-  let textDraft = checkpoint?.textDraft ?? { markdown: previousMarkdown(checkpoint ?? {}, source, evidence, legacy?.plan), complete: false }
-  let handle, disposeAdapter, lastSnapshot
+  const legacy = checkpoint && !checkpoint.textDraft ? restoreLegacy(checkpoint, source, evidence) : undefined
+  if (legacy?.document) return { ...legacy.document, files: evidence }
+  let textDraft = checkpoint?.textDraft ?? { markdown: legacy?.markdown ?? '', complete: false }
+  let author, lastSnapshot
   let writes = Promise.resolve()
-  const abort = () => handle?.agent.cancel({ kind: 'user' })
   const result = () => ({ markdown: resolveMarkdownCitations(textDraft.markdown, source, evidence), format: 'skill-markdown', files: evidence })
   async function save(snapshot = textDraft) {
     const copy = structuredClone({ textDraft: snapshot, evidence })
@@ -100,18 +70,7 @@ export async function runWikiSkill(ctx, source, selection, adapter, signal, onRe
         }
       }
     }
-    const provider = adapter ? 'code-wiki-' + randomUUID() : selection.provider
-    if (adapter) disposeAdapter = ctx.llm.registerAdapter([provider], adapter)
-    handle = await ctx.agents.create({
-      sessionId: 'code-wiki-' + randomUUID(), agentOptions: { ...selection, provider, maxTokens: 24_000 }, signal,
-      setup(agentCtx) {
-        agentCtx.tools.restrict({ allow: [] })
-        for (const definition of [...definitions, savedEvidenceTool(evidence)]) agentCtx.tools.register(definition)
-      },
-    })
-    signal.addEventListener('abort', abort, { once: true })
-    const { agent } = handle
-    const events = () => agent.session?.snapshotEvents?.() ?? []
+    author = await openAuthor({ tools: [...definitions, savedEvidenceTool(evidence)], signal })
     const repository = source.owner ? `${source.owner}/${source.repo}` : source.repo
     const headings = () => savedWikiHeadings(textDraft.markdown)
     let prompt = `[${skill.name} · SKILL.md]\n${skill.content}\n\n[${skill.name} · references/diagrams.md]\n${skill.guide}`
@@ -125,16 +84,14 @@ export async function runWikiSkill(ctx, source, selection, adapter, signal, onRe
     let stalled = 0, rejections = 0
     for (let turn = 0; turn < 24; turn++) {
       signal.throwIfAborted()
-      const cursor = events().length
       onPhase('writing', { step: stalled ? 'submission-retry' : 'drafting', attempt: stalled + 1, attemptLimit: 3, rejections })
-      agent.followup({ id: randomUUID(), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: prompt }] })
-      await agent.whenIdle()
-      signal.throwIfAborted()
       let part, markdown
       try {
-        part = settledReply(events().slice(cursor))
+        const reply = await author.reply(prompt)
+        signal.throwIfAborted()
+        part = readMarkdownReply(reply)
         markdown = [textDraft.markdown, part.markdown].filter(Boolean).join('\n\n')
-        if (markdown.length > maxWikiMarkdownLength) throw wikiInvalid('文档达到长度上限，请提交更短的片段。')
+        if (markdown.length > maxWikiMarkdownLength) throw invalidMarkdown('文档达到长度上限，请提交更短的片段。')
         resolveMarkdownCitations(part.markdown, source, evidence)
       } catch (error) {
         if (error?.code !== 'model-output-invalid' && !recoverable.has(error?.providerCode)) throw error
@@ -154,12 +111,8 @@ export async function runWikiSkill(ctx, source, selection, adapter, signal, onRe
       stalled = 0
       prompt = `已保存这一部分。继续 Skill 的 Markdown 存档模式。已保存标题：\n${headings()}`
     }
-    throw wikiInvalid('文档已保存进度，但尚未收到完成标记。')
-  } catch (error) {
-    if (signal.aborted || ['model-output-invalid', 'model-unavailable', 'wiki-skill-invalid'].includes(error?.code)) throw error
-    throw modelError(error)
+    throw invalidMarkdown('文档已保存进度，但尚未收到完成标记。')
   } finally {
-    signal.removeEventListener('abort', abort)
-    try { await handle?.dispose() } finally { disposeAdapter?.() }
+    await author?.dispose()
   }
 }

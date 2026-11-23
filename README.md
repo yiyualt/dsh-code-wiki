@@ -1,14 +1,16 @@
 # DSH 代码百科
 
-DeepSeek Harness Web 插件。在侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库，以 `repo-design-wiki` Skill 生成 Markdown 文档。Skill 定义研究方法、章节、接口、图示及验证要求。插件提供固定提交的只读仓库工具、源码链接、图示渲染、续写和文档库。
+DeepSeek Harness Web 插件。在侧栏打开「代码百科」，选择公开 GitHub 仓库或本地 Git 仓库，由 `repo-design-wiki` Skill 生成 Markdown 文档。
 
-模型通过普通文本回复交付完整 Markdown 片段。插件将证据编号与行范围绑定到实际读过的源码，并按保存的 Markdown 生成目录。支持的 Mermaid 流程图、时序图和状态图显示为 SVG，其他语法保留为 Mermaid 源码。已有结构化 Wiki 继续使用原有图示和引用。
+- `skills/repo-design-wiki/SKILL.md` 和 `references/` 定义源码研究、章节写作、图示和交付格式。
+- `skills/repo-design-wiki/scripts/` 提供只读证据工具，调度模型逐段生成，校验 Markdown 和源码引用，提交可续写的片段。
+- 插件向 DSH 注册随包 Skill，提供仓库快照与模型接入，保存任务、进度和文档，并从存档的 Markdown `##` 标题生成目录。支持的 Mermaid 流程图、时序图和状态图显示为 SVG，其他语法保留为 Mermaid 源码。已有结构化 Wiki 继续使用原有图示和引用。
 
 ## 打包和安装
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-code-wiki-0.19.2.tgz
+dsh plugin --profile web add ./dsh-code-wiki-0.20.0.tgz
 ```
 
 也可以在 DSH 的「插件 → 添加插件」输入安装包的绝对路径，安装后启用。若 DSH 提示需要重启，请按原命令重启 Web 服务。
@@ -30,9 +32,9 @@ dsh plugin --profile web add ./dsh-code-wiki-0.19.2.tgz
 
 已读证据和完整的 Markdown 片段保存在 profile 的 `dsh-code-wiki-checkpoints/`。点「继续生成」即可恢复同一提交的正文及原证据编号，并按需读取已保存的片段。旧版有效完整草稿可直接保存。生成成功后清理本次任务和直接恢复的检查点。API 的 `resumeFrom` 接收原任务编号。
 
-每次生成加载 DSH 用户技能目录中的 `repo-design-wiki/SKILL.md` 和 `references/diagrams.md`。首次安装可以直接使用随包版本。个人 Skill 更新后，下次生成会读取新版。
+启用插件后，随包 Skill 可以在 DSH 技能目录中发现。面板生成时优先读取 DSH 用户技能目录里的 `repo-design-wiki/SKILL.md` 和 `references/diagrams.md`。个人写作指令的更新在下次生成生效，面板的 Node.js 入口随插件包安装和升级。
 
-模型输出截断或存档格式错误时，插件在当前任务内重试该片段。连续三轮没有新增进度时结束本次尝试，保留可恢复记录。
+模型输出截断或存档格式错误时，Skill 在当前任务内重试该片段。连续三轮没有新增进度时结束本次尝试，保留可恢复记录。
 
 使用单独配置的模型服务生成 Wiki 时，请求采用流式传输，收到完整结果后才执行工具；连接中断或暂时服务错误最多自动重试两次。认证错误、无效请求和取消不重试。仓库介绍视频沿用原有请求方式。
 

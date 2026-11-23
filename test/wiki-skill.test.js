@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { loadWikiSkill } from '../src/wiki-skill.js'
+import { fileURLToPath } from 'node:url'
+import { loadWikiSkill, registerWikiSkill } from '../src/wiki-skill.js'
 
+const bundled = new URL('../skills/repo-design-wiki/', import.meta.url)
 const entry = body => `---\nname: repo-design-wiki\ndescription: Test wiki authoring skill\n---\n\n${body}\n`
 
 async function temporaryHome(t) {
@@ -17,12 +19,35 @@ async function temporaryHome(t) {
 
 test('falls back to the packaged skill and its diagram guide when no local skill exists', async t => {
   const { home } = await temporaryHome(t)
+  const [instructions, guide] = await Promise.all([
+    readFile(new URL('SKILL.md', bundled), 'utf8'),
+    readFile(new URL('references/diagrams.md', bundled), 'utf8'),
+  ])
   const skill = await loadWikiSkill(home)
   assert.equal(skill.name, 'repo-design-wiki')
   assert.equal(skill.source, 'bundled')
-  assert.match(skill.content, /把只有文件列表的章节并入相关主题/)
-  assert.match(skill.guide, /区分同步回执、任务实际执行和持久化完成/)
+  assert.equal(skill.content, instructions.split('\n---\n', 2)[1].trim())
+  assert.equal(skill.guide, guide.trim())
   assert.deepEqual(await loadWikiSkill(), skill)
+})
+
+test('registers the packaged skill with a resource directory and precedence below the user directory', async () => {
+  let provider
+  const dispose = () => { provider = undefined }
+  assert.equal(registerWikiSkill({ registerProvider(create) { provider = create(); return dispose } }), dispose)
+  const [candidate] = await provider.list({})
+  const definition = await provider.get(candidate, {})
+  assert.equal(candidate.name, 'repo-design-wiki')
+  assert.equal(candidate.path, fileURLToPath(new URL('SKILL.md', bundled)))
+  assert.equal(candidate.rank, 600)
+  assert.equal(definition.provider, provider.name)
+  assert.deepEqual(definition.invocation, { modelInvocable: true, userInvocable: true })
+  assert.equal(definition.content, (await loadWikiSkill()).content)
+  const guide = await readFile(join(definition.resourceBase.path, 'references', 'diagrams.md'), 'utf8')
+  assert.equal(guide.trim(), (await loadWikiSkill()).guide)
+  dispose()
+  assert.equal(provider, undefined)
+  assert.equal(registerWikiSkill(undefined), undefined)
 })
 
 test('loads the exact installed skill including its relative guide and follows authorized directory symlinks', async t => {

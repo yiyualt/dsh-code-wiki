@@ -5,7 +5,7 @@ const protocolMarker = /^ {0,3}<!--[ \t]*wiki:(continue|complete)[ \t]*-->[ \t]*
 const reference = /\[E(?=[ \t]*[\d:+-])([^\[\]\n]*:[^\[\]\n]*)\]/g
 const referenceNumbers = /^([1-9]\d*):([1-9]\d*)(?:-([1-9]\d*))?$/
 
-function invalid(message) {
+export function invalidMarkdown(message) {
   return Object.assign(new Error(message), { code: 'model-output-invalid' })
 }
 
@@ -114,19 +114,19 @@ export function savedWikiHeadings(markdown) {
 
 export function readMarkdownReply(text) {
   if (typeof text !== 'string' || text.length > maxWikiMarkdownLength || controls.test(text)) {
-    throw invalid('请返回长度有效的纯文本 Markdown 正文。')
+    throw invalidMarkdown('请返回长度有效的纯文本 Markdown 正文。')
   }
   const normalized = text.replace(/\r\n?/g, '\n')
   const markers = [...transformMarkdown(normalized, part => part, maskCode).matchAll(protocolMarker)]
   const marker = markers[0]
   if (markers.length !== 1 || normalized.slice(marker.index + marker[0].length).trim()) {
-    throw invalid('请在 Markdown 正文末尾另起一行放置唯一的 Wiki 结束标记。')
+    throw invalidMarkdown('请在 Markdown 正文末尾另起一行放置唯一的 Wiki 结束标记。')
   }
   const markdown = normalized.slice(0, marker.index).replace(/\n(?:[ \t]*\n)*$/, '')
-  if (!markdown.trim()) throw invalid('Markdown 正文为空。')
+  if (!markdown.trim()) throw invalidMarkdown('Markdown 正文为空。')
   const blocks = markdownBlocks(markdown.replace(/^(?:[ \t]*\n)+/, ''))
   if (blocks.length === 1 && blocks[0].plainWrapper) {
-    throw invalid('请直接返回 Markdown 正文。')
+    throw invalidMarkdown('请直接返回 Markdown 正文。')
   }
   return { markdown, complete: marker[1] === 'complete' }
 }
@@ -151,14 +151,14 @@ export function resolveMarkdownCitations(markdown, source, evidence) {
     .replace(reference, (raw, numbers, index, prose) => {
       if (escaped(prose, index)) return raw
       const match = referenceNumbers.exec(numbers)
-      if (!match) throw invalid(`源码引用 ${raw.slice(0, 80)} 的编号或行号格式无效。`)
+      if (!match) throw invalidMarkdown(`源码引用 ${raw.slice(0, 80)} 的编号或行号格式无效。`)
       const [, evidenceNumber, first, last = first] = match
       const [id, start, end] = [evidenceNumber, first, last].map(Number)
       const file = evidence[id - 1]
       if (![id, start, end].every(Number.isSafeInteger) || !validPath(file?.path)
         || !Number.isSafeInteger(file.start) || !Number.isSafeInteger(file.end)
         || start < file.start || end > file.end || end < start) {
-        throw invalid(`源码引用 ${raw} 超出已读取的证据范围。`)
+        throw invalidMarkdown(`源码引用 ${raw} 超出已读取的证据范围。`)
       }
       const links = []
       for (let firstLine = start; firstLine <= end; firstLine += 25) {

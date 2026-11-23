@@ -1,10 +1,14 @@
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const name = 'repo-design-wiki'
+const provider = 'dsh-code-wiki'
 const maxBytes = 32 * 1024
 const bundled = new URL('../skills/repo-design-wiki/', import.meta.url)
+const bundledEntry = fileURLToPath(new URL('SKILL.md', bundled))
+const bundledRank = 600 // Same precedence as DSH's bundled skill directory.
 
 function skillError(message, cause) {
   return Object.assign(new Error(`代码百科 Skill ${name}：${message}`, { cause }), { code: 'wiki-skill-invalid' })
@@ -41,14 +45,37 @@ async function readText(path, label, signal, optional = false) {
   }
 }
 
-function skillContent(text) {
+function parseSkill(text) {
   const document = /^---\n([\s\S]+?)\n---\n([\s\S]+)$/.exec(text)
   const names = document && Array.from(document[1].matchAll(/^name:[ \t]*(.+)$/gm), match => match[1].trim())
+  const description = document && /^description:[ \t]*(\S[^\n]*)/m.exec(document[1])?.[1].trim()
   if (names?.length !== 1 || ![name, `'${name}'`, `"${name}"`].includes(names[0])
-    || !/^description:[ \t]*\S/m.test(document[1]) || !document[2].trim()) {
+    || !description || !document[2].trim()) {
     throw skillError('SKILL.md 需要匹配的 name、description 和正文。')
   }
-  return document[2].trim()
+  return { description, content: document[2].trim() }
+}
+
+function bundledSummary(description) {
+  return {
+    name, description, provider, source: 'bundled', path: bundledEntry,
+    invocation: { modelInvocable: true, userInvocable: true },
+    resourceBase: { kind: 'directory', path: dirname(bundledEntry).split(sep).join('/') },
+  }
+}
+
+export function registerWikiSkill(skills) {
+  return skills?.registerProvider(() => ({
+    name: provider,
+    async list({ signal }) {
+      const { description } = parseSkill(await readText(bundledEntry, 'SKILL.md', signal))
+      return [{ ...bundledSummary(description), rank: bundledRank, locator: bundledEntry }]
+    },
+    async get(_candidate, { signal }) {
+      const { description, content } = parseSkill(await readText(bundledEntry, 'SKILL.md', signal))
+      return { ...bundledSummary(description), content }
+    },
+  }))
 }
 
 export async function loadWikiSkill(home, signal) {
@@ -57,7 +84,7 @@ export async function loadWikiSkill(home, signal) {
   const entry = installed === undefined ? undefined : await readText(join(installed, 'SKILL.md'), 'SKILL.md', signal, true)
   const root = entry === undefined ? bundled : installed
   const resource = path => typeof root === 'string' ? join(root, path) : new URL(path, root)
-  const content = skillContent(entry ?? await readText(resource('SKILL.md'), 'SKILL.md', signal))
+  const { content } = parseSkill(entry ?? await readText(resource('SKILL.md'), 'SKILL.md', signal))
   const guide = await readText(resource('references/diagrams.md'), 'references/diagrams.md', signal)
   return { name, content, guide: guide.trim(), source: entry === undefined ? 'bundled' : 'installed' }
 }

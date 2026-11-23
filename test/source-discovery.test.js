@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { openGithubRepository, readPinnedGithubFile } from '../src/github-source.js'
 import { openLocalRepository } from '../src/local-source.js'
-import { repositoryTools } from '../src/repository-tools.js'
+import { repositoryTools } from '../skills/repo-design-wiki/scripts/repository-tools.mjs'
 
 const repo = 'https://github.com/example/repo'
 const commit = '1'.repeat(40)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { maxWikiMarkdownLength, readMarkdownReply, resolveMarkdownCitations, savedWikiHeadings } from '../src/wiki-markdown.js'
+import { maxWikiMarkdownLength, readMarkdownReply, resolveMarkdownCitations, savedWikiHeadings } from '../skills/repo-design-wiki/scripts/markdown.mjs'
 
 const commit = 'f'.repeat(40)
 const github = { owner: 'owner', repo: 'project', commit }

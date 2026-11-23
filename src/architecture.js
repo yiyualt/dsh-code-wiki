@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { modelError } from './generate-wiki.js'
-import { repositoryTools } from './repository-tools.js'
+import { repositoryTools } from '../skills/repo-design-wiki/scripts/repository-tools.mjs'
 import { normalizeWikiPlan, normalizeWikiChapter, normalizeWikiDraft, restoreWikiDraft, renderWikiDocument, wikiInvalid } from './wiki-document.js'
 import { wikiPublicationSchema, wikiResearchInstructions, reviewWikiDraft, wikiSkillPlanSchema, wikiSkillChapterSchema,
   wikiSkillFinishSchema, wikiSkillTransportInstructions } from './wiki-editor.js'

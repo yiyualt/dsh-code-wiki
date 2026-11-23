@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
+import { generateWiki } from './skills/repo-design-wiki/scripts/generate.mjs'
 import { readConfiguredModel } from './src/configured-model.js'
-import { runWikiSkill } from './src/wiki-skill-runner.js'
 import { openGithubRepository, sameGithubRepository } from './src/github-source.js'
 import { modelError } from './src/model-error.js'
 import { openLocalRepository } from './src/local-source.js'
+import { openWikiAuthor } from './src/wiki-author.js'
+import { restoreLegacyWiki } from './src/wiki-document.js'
 import { createWikiStorage } from './src/wiki-storage.js'
 import { createWikiCheckpoints } from './src/wiki-checkpoint.js'
 import { createWikiProgress } from './src/wiki-progress.js'
-import { loadWikiSkill } from './src/wiki-skill.js'
+import { loadWikiSkill, registerWikiSkill } from './src/wiki-skill.js'
 import { registerVideoApi } from './src/video-api.js'
 
 export const name = 'dsh-code-wiki'
@@ -177,17 +179,25 @@ export function apply(ctx, config) {
       try {
         const { llm, selection } = await selectModel(ctx, config?.modelConfigFile, signal,
           { toolCallLimit: 64, streamResponses: true, transportRetries: 2, onProgress: tracking.model })
-        result = await runWikiSkill(ctx, source, selection, config?.modelConfigFile === undefined ? null : llm,
-          signal, (count, path) => { job.filesRead = count; job.currentFile = path; tracking.activity('source-read') },
-          tracking.phase, { checkpoint, loadSkill: () => loadWikiSkill(ctx.profileContext.home, signal),
-            async onCheckpoint(material) {
-              await checkpoints.save(job.id, { version: 1,
-                ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
-                commit: source.commit, ...material })
-              job.canResume = true
-              tracking.activity('checkpoint', { evidenceCount: material.evidence.length, hasDraft: material.textDraft.complete })
-            },
-          })
+        const adapter = config?.modelConfigFile === undefined ? null : llm
+        result = await generateWiki({
+          source, signal, checkpoint,
+          loadSkill: () => loadWikiSkill(ctx.profileContext.home, signal),
+          openAuthor: options => openWikiAuthor(ctx, selection, adapter, options),
+          restoreLegacy: restoreLegacyWiki,
+          onRead(count, path) {
+            Object.assign(job, { filesRead: count, currentFile: path })
+            tracking.activity('source-read')
+          },
+          onPhase: tracking.phase,
+          async onCheckpoint(material) {
+            await checkpoints.save(job.id, { version: 1,
+              ...(github ? { repositoryUrl: body.repositoryUrl.trim() } : { repositoryPath: body.repositoryPath.trim() }),
+              commit: source.commit, ...material })
+            job.canResume = true
+            tracking.activity('checkpoint', { evidenceCount: material.evidence.length, hasDraft: material.textDraft.complete })
+          },
+        })
         model = selection.model
       } catch (error) {
         if (!signal.aborted && error?.code === 'wiki-skill-invalid') {
@@ -273,6 +283,11 @@ export function apply(ctx, config) {
   }
 
   ctx.effect(() => () => lifetime.abort())
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['skills'], scope => { registerWikiSkill(scope.skills) })
+  } else {
+    registerWikiSkill(ctx.skills)
+  }
   ctx.connection.fetch.register({
     path: generationRoute,
     methods: ['GET', 'POST'],

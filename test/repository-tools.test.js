@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { repositoryTools } from '../src/repository-tools.js'
+import { repositoryTools } from '../skills/repo-design-wiki/scripts/repository-tools.mjs'
 
 function fixture(t) {
   const source = {
