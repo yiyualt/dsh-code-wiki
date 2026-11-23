@@ -107,7 +107,8 @@ test('renders a single logical band with a group and optional components omitted
 
 test('gives long labels more space and preserves punctuation when wrapping', () => {
   const groupLabel = '初始化运行环境和工作区索引（加载并核对项目配置、插件路径、默认运行参数及用户覆盖项）'
-  const componentLabel = 'WorkspaceConfigurationEnvironmentResolverFactoryDefaultOptionsMapper（启动时同步并验证项目与用户配置）'
+  const overwideAlias = 'WorkspaceConfigurationEnvironmentResolverFactoryDefaultOptionsMapperProjectDiscoveryRegistrationScheduler'
+  const componentLabel = overwideAlias + '（启动时同步并验证项目与用户配置）'
   const { svg } = render({
     title: '配置启动分层',
     layers: [{
@@ -123,13 +124,62 @@ test('gives long labels more space and preserves punctuation when wrapping', () 
   })
   const capability = assertLabelFits(svg, groupLabel)
   const component = assertLabelFits(svg, componentLabel)
-  assert.ok(component.lines.length > 1)
-  for (const [{ box: longBox, lines }, shortLabel] of [[capability, '启动'], [component, '加载']]) {
-    const { box: shortBox } = assertLabelFits(svg, shortLabel)
-    assert.ok(longBox.width > shortBox.width, 'Long peer gets more width for ' + shortLabel)
-    assert.equal(longBox.y, shortBox.y, 'Peers share a row for ' + shortLabel)
-    assertPunctuationFollowsText(lines)
-  }
+  const { box: shortCapability } = assertLabelFits(svg, '启动')
+  assertLabelFits(svg, '加载')
+  assert.ok(capability.box.width > shortCapability.width)
+  assert.equal(capability.box.y, shortCapability.y)
+  assert.ok(component.lines.length > 1 && component.lines.every(line => !line.includes(overwideAlias)))
+  assertPunctuationFollowsText(capability.lines)
+  assertPunctuationFollowsText(component.lines)
+})
+
+test('stacks tight tiles so complete technical names fit next to their citations', () => {
+  const broadcastLabel = 'session/event 广播'
+  const handlerLabel = 'WorkspaceEventHandler'
+  const { svg } = render({
+    title: '事件分发',
+    layers: [{
+      id: 'entry', label: '接入层',
+      groups: [
+        { label: '事件通信', source: 104, components: [
+          { label: broadcastLabel, source: 125 },
+          { label: handlerLabel, source: 103 },
+        ] },
+        { label: '请求路由', source: 1, components: [{ label: 'ScopedRequestDispatchPipeline', source: 2 }] },
+        { label: '配置合并', source: 1, components: [{ label: 'ConfigurationMergePipeline', source: 2 }] },
+      ],
+    }],
+  })
+  const broadcast = assertLabelFits(svg, broadcastLabel)
+  const handler = assertLabelFits(svg, handlerLabel)
+  assert.equal(broadcast.box.x, handler.box.x)
+  assert.equal(broadcast.box.width, handler.box.width)
+  assert.ok(handler.box.y >= broadcast.box.y + broadcast.box.height)
+  assert.ok(broadcast.lines.some(line => line.includes('session/event')))
+  assert.deepEqual(handler.lines, [handlerLabel])
+  const [tile] = svgGroup(svg, broadcastLabel).content.split('</g>', 1)
+  assert.match(tile, /src\/defaults\.js#L125"/u)
+  assert.match(tile, />【125】<\/tspan>/u)
+})
+
+test('aligns connector arrows by direction across gaps with different labels', () => {
+  const input = architecture()
+  input.layers.push({ id: 'archive', label: '归档层', groups: [{ label: '归档结果', source: 3 }] })
+  input.relations = [
+    { from: 'entry', to: 'process', label: '提交', source: 102 },
+    { from: 'process', to: 'entry', label: '向调用方返回已检查的参数与中间运行状态', source: 103 },
+    { from: 'process', to: 'output', label: '交出已经准备好的结果和它所引用的数据', source: 104 },
+    { from: 'archive', to: 'output', label: '反馈', source: 105 },
+  ]
+  const { svg } = render(input)
+  const arrows = [...svg.matchAll(/<path d="M([\d.]+) [\d.]+V[\d.]+M[\d.]+ [\d.]+l4 (-?[\d.]+) 4 /gu)]
+  const down = arrows.filter(([, , tip]) => Number(tip) > 0).map(([, x]) => Number(x))
+  const up = arrows.filter(([, , tip]) => Number(tip) < 0).map(([, x]) => Number(x))
+  assert.equal(down.length, 2)
+  assert.equal(up.length, 2)
+  assert.equal(down[0], down[1])
+  assert.equal(up[0], up[1])
+  assert.notEqual(down[0], up[0])
 })
 
 test('renders a separate shared column with the selected bands in diagram order', () => {
@@ -148,6 +198,19 @@ test('renders a separate shared column with the selected bands in diagram order'
   assert.ok(lines.length > 1)
   assertPunctuationFollowsText(lines)
   assert.ok(svg.includes(`href="${repository.webUrl}/blob/${repository.commit}/src/main.js#L3"`))
+})
+
+test('ends the sidebar after its last card when later bands do not use it', () => {
+  const input = architecture()
+  input.sharedGroups = [{ label: '请求日志', source: 3, layers: ['entry', 'process'] }]
+  const { svg } = render(input)
+  const panel = rectangle(svgGroup(svg, '跨层公共能力'))
+  const item = rectangle(svgGroup(svg, '请求日志'))
+  const output = rectangle(svgGroup(svg, '结果层'))
+  const panelBottom = panel.y + panel.height
+  assert.ok(item.y > panel.y)
+  assert.ok(panelBottom >= item.y + item.height)
+  assert.ok(panelBottom < output.y)
 })
 
 test('rejects shared groups with absent, repeated or unknown layer scope', () => {

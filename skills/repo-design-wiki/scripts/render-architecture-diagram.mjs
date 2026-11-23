@@ -25,6 +25,7 @@ const sharedGap = 10
 const sharedPadding = 9
 const sharedColors = { band: '#edf2f8', border: '#9fb1c8', tile: '#edf3fb', ink: '#344b6b' }
 const words = new Intl.Segmenter('zh', { granularity: 'word' })
+const codeToken = /(@?[\w$]+(?:[./:@-][\w$]+)*)/g
 const identifierBreak = /(?<=[./_@-])|(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/u
 const openingPunctuation = /^[\p{Ps}\p{Pi}]+$/u
 const closingPunctuation = /^[\p{Pe}\p{Pf}、。，；：！？…,.!?;:]+$/u
@@ -103,10 +104,17 @@ function readRelations(input, indices, sourceCount, invalid) {
   return byGap
 }
 
+function* labelTokens(label) {
+  for (const [index, part] of label.split(codeToken).entries()) {
+    if (index % 2) yield part
+    else for (const { segment } of words.segment(part)) yield segment
+  }
+}
+
 function labelSegments(label) {
   const parts = []
   let prefix = ''
-  for (const { segment } of words.segment(label)) {
+  for (const segment of labelTokens(label)) {
     if (openingPunctuation.test(segment) || (prefix && !segment.trim())) {
       prefix += segment
     } else if (!prefix && parts.length && closingPunctuation.test(segment)) {
@@ -161,36 +169,47 @@ function measureLabel(item, availableWidth, size, lineHeight) {
   }
 }
 
-function paintLabel(label, x, y, availableWidth, weight, fill, sourceAt) {
+function paintLabel(label, x, y, availableWidth, weight, fill, sourceAt, citationY = y) {
   const text = svgText(label.lines, {
     x, y, fontSize: label.size, lineHeight: label.lineHeight, anchor: 'start', weight, fill,
   })
   if (label.source === undefined) return text
-  return text + renderCitation(label.source, x + availableWidth - label.citationWidth / 2, y, sourceAt)
+  return text + renderCitation(label.source, x + availableWidth - label.citationWidth / 2, citationY, sourceAt)
 }
 
-function measureGrid(items, availableWidth, minCellWidth, gap, preferredWidth, measure) {
+function measureGrid(items, availableWidth, minCellWidth, gap, preferredWidth, measure, protectedWidth = () => 0) {
   if (!items.length) return { rows: [], height: 0 }
   const columns = Math.max(1, Math.floor((availableWidth + gap) / (minCellWidth + gap)))
   const rowLength = Math.ceil(items.length / Math.ceil(items.length / columns))
+  const floor = Math.min(availableWidth, Math.ceil(minCellWidth * 2 / 3))
+  const preferred = items.map(item => ({
+    item, ideal: preferredWidth(item), minimum: Math.min(availableWidth, Math.max(floor, protectedWidth(item))),
+  }))
   const rows = []
   let height = 0
-  for (let start = 0; start < items.length; start += rowLength) {
-    const row = items.slice(start, start + rowLength)
+  let next = 0
+  while (next < preferred.length) {
+    const row = [preferred[next++]]
+    let occupiedWidth = row[0].minimum
+    while (next < preferred.length && row.length < rowLength && occupiedWidth + gap + preferred[next].minimum <= availableWidth) {
+      const cell = preferred[next++]
+      occupiedWidth += gap + cell.minimum
+      row.push(cell)
+    }
     const usableWidth = availableWidth - (row.length - 1) * gap
     const evenWidth = usableWidth / row.length
-    const floor = Math.min(evenWidth, Math.ceil(minCellWidth * 2 / 3))
-    const sizes = row.map(item => {
-      const want = preferredWidth(item)
-      const base = Math.max(floor, Math.min(want, evenWidth))
-      return { base, extra: Math.max(0, want - base) }
+    const balanced = row.map(({ ideal, minimum }) => Math.max(minimum, Math.min(ideal, evenWidth)))
+    const useBalanced = balanced.reduce((total, width) => total + width, 0) <= usableWidth
+    const sizes = row.map(({ ideal, minimum }, index) => {
+      const base = useBalanced ? balanced[index] : minimum
+      return { base, extra: Math.max(0, ideal - base) }
     })
-    const free = Math.max(0, usableWidth - sizes.reduce((total, size) => total + size.base, 0))
+    const free = usableWidth - sizes.reduce((total, size) => total + size.base, 0)
     const demand = sizes.reduce((total, size) => total + size.extra, 0)
     const ratio = demand ? Math.min(1, free / demand) : 0
     const spread = (free - demand * ratio) / row.length
     let allocated = 0
-    const cells = row.map((item, column) => {
+    const cells = row.map(({ item }, column) => {
       const { base, extra } = sizes[column]
       const left = Math.round(allocated)
       allocated += base + extra * ratio + spread
@@ -223,6 +242,17 @@ function preferredTileWidth(component) {
   return textWidth(component.label, 13) + citationSpace + 2 * tilePadding
 }
 
+function widestIdentifier(label) {
+  let width = 0
+  for (const [token] of label.matchAll(codeToken)) width = Math.max(width, textWidth(token, 13))
+  return width
+}
+
+function protectedTileWidth(component) {
+  const citationSpace = component.showCitation ? measureCitation(component.source) + 6 : 0
+  return widestIdentifier(component.label) + citationSpace + 2 * tilePadding
+}
+
 function preferredGroupWidth(capability) {
   const headingWidth = textWidth(capability.label, 14) + measureCitation(capability.source) + 6
   const contentWidth = capability.components.reduce((longest, component) =>
@@ -232,10 +262,17 @@ function preferredGroupWidth(capability) {
 
 function measureTile(component, cellWidth) {
   const availableWidth = cellWidth - 2 * tilePadding
-  const heading = component.showCitation
-    ? measureLabel(component, availableWidth, 13, 16)
-    : measureText(component.label, availableWidth, 13, 16)
-  return { label: component.label, heading, height: heading.height + 2 * tilePadding }
+  const fullText = measureText(component.label, availableWidth, 13, 16)
+  let heading = fullText
+  let citationLine = 0
+  if (component.showCitation) {
+    heading = measureLabel(component, availableWidth, 13, 16)
+    if (protectedTileWidth(component) > cellWidth && fullText.height < heading.height) {
+      heading = { ...heading, ...fullText }
+      citationLine = 14
+    }
+  }
+  return { label: component.label, heading, citationLine, height: heading.height + citationLine + 2 * tilePadding }
 }
 
 function measureGroup(capability, cellWidth) {
@@ -243,7 +280,7 @@ function measureGroup(capability, cellWidth) {
   const heading = measureLabel(capability, availableWidth, 14, 17)
   const scopeHeading = capability.scope && measureText(capability.scope, availableWidth, 12, 16)
   const scopeHeight = scopeHeading ? scopeHeading.height + 3 : 0
-  const tiles = measureGrid(capability.components, availableWidth, 94, tileGap, preferredTileWidth, measureTile)
+  const tiles = measureGrid(capability.components, availableWidth, 94, tileGap, preferredTileWidth, measureTile, protectedTileWidth)
   const height = heading.height + scopeHeight + 2 * groupPadding + (tiles.height ? tileGap + tiles.height : 0)
   return { label: capability.label, heading, scope: capability.scope, scopeHeading, scopeHeight, tiles, height: Math.max(40, height) }
 }
@@ -258,9 +295,12 @@ function paintCapability(capability, x, y, height, colors, sourceAt) {
     x: contentX, y: bodyTop + 3 + scopeHeading.height / 2, fontSize: scopeHeading.size,
     lineHeight: scopeHeading.lineHeight, anchor: 'start', fill: diagramColors.muted,
   }) : ''
-  const tilesBody = paintGrid(tiles, contentX, bodyTop + scopeHeight + tileGap, (tile, tx, ty, th) =>
-    group(tile.label, box(tx, ty, tile.width, th, colors.tile, colors.border, 3)
-      + paintLabel(tile.heading, tx + tilePadding, ty + th / 2, tile.width - 2 * tilePadding, 540, diagramColors.ink, sourceAt)))
+  const tilesBody = paintGrid(tiles, contentX, bodyTop + scopeHeight + tileGap, (tile, tx, ty, th) => {
+    const titleY = ty + (th - tile.citationLine) / 2
+    const citationY = tile.citationLine ? ty + th - tilePadding - tile.citationLine / 2 : titleY
+    const title = paintLabel(tile.heading, tx + tilePadding, titleY, tile.width - 2 * tilePadding, 540, diagramColors.ink, sourceAt, citationY)
+    return group(tile.label, box(tx, ty, tile.width, th, colors.tile, colors.border, 3) + title)
+  })
   return group(capability.label, box(x, y, groupWidth, height, diagramColors.paper, colors.border) + title + scopeBody + tilesBody, scope)
 }
 
@@ -291,17 +331,19 @@ function paintRelationGap(relations, layers, y, sourceAt, { groupsWidth, groupsX
   const directions = [true, false].map(down => ({
     down, items: relations.filter(({ from, to }) => (from < to) === down),
   })).filter(({ items }) => items.length)
-  const laneWidth = Math.floor(groupsWidth / directions.length)
+  const downX = groupsX + Math.round(groupsWidth * 0.28)
+  const upX = groupsX + Math.round(groupsWidth * 0.64)
   const lanes = directions.map(lane => {
-    const labels = lane.items.map(item => measureLabel(item, laneWidth - 44, 12, 16))
+    const x = lane.down ? downX : upX
+    const laneRight = lane.down && directions.length > 1 ? upX : groupsX + groupsWidth
+    const labels = lane.items.map(item => measureLabel(item, laneRight - x - 24, 12, 16))
     const height = labels.reduce((total, label) => total + label.height, 0) + 4 * (labels.length - 1)
     const labelWidth = Math.max(...labels.map(({ lines, citationWidth }) =>
       Math.max(...lines.map(line => textWidth(line, 12))) + citationWidth + 8))
-    return { ...lane, labels, height, labelWidth }
+    return { ...lane, x, labels, height, labelWidth }
   })
   const height = Math.max(...lanes.map(lane => lane.height)) + 14
-  const body = lanes.map(({ down, items, labels, height: labelHeight, labelWidth }, index) => {
-    const x = Math.round(groupsX + laneWidth * (index + 0.5) - (labelWidth + 14) / 2)
+  const body = lanes.map(({ down, x, items, labels, height: labelHeight, labelWidth }) => {
     const start = y + 2
     const end = y + height - 2
     const tip = down ? end : start
@@ -320,18 +362,19 @@ function paintRelationGap(relations, layers, y, sourceAt, { groupsWidth, groupsX
   return { body, height }
 }
 
-function paintSharedColumn(capabilities, layerWidth, layerTops, bandsBottom, sourceAt) {
+function paintSharedColumn(capabilities, layerWidth, layerTops, sourceAt) {
   const label = '跨层公共能力'
   const x = canvasPadding + layerWidth + sharedGap
-  const top = canvasPadding
   const headingHeight = 24
+  const headingSpace = sharedPadding + headingHeight + 5
+  const top = Math.max(canvasPadding, layerTops[capabilities[0].firstLayer] - headingSpace)
   const contentX = x + sharedPadding
   const contentWidth = sharedWidth - 2 * sharedPadding
   const title = svgText([label], {
     x: contentX, y: top + sharedPadding + headingHeight / 2, fontSize: 14, weight: 700,
     anchor: 'start', fill: sharedColors.ink,
   })
-  let y = top + sharedPadding + headingHeight + 5
+  let y = top + headingSpace
   const items = capabilities.map(capability => {
     y = Math.max(y, layerTops[capability.firstLayer])
     const item = measureGroup(capability, contentWidth)
@@ -339,7 +382,7 @@ function paintSharedColumn(capabilities, layerWidth, layerTops, bandsBottom, sou
     y += item.height + groupGap
     return body
   })
-  const bottom = Math.max(bandsBottom, y - groupGap + sharedPadding)
+  const bottom = y - groupGap + sharedPadding
   const outline = box(x, top, sharedWidth, bottom - top, sharedColors.band, sharedColors.border, 7)
   return { bottom, body: group(label, outline + title + items.join('')) }
 }
@@ -378,9 +421,9 @@ export function renderArchitectureDiagram(input, sources, repository, invalid) {
     }
   }
   if (shared.length) {
-    const column = paintSharedColumn(shared, layerWidth, layerTops, y, sourceAt)
+    const column = paintSharedColumn(shared, layerWidth, layerTops, sourceAt)
     parts.push(column.body)
-    y = column.bottom
+    y = Math.max(y, column.bottom)
   }
   const height = y + canvasPadding
   const frame = box(4, 4, width - 8, height - 8, '#f8fafc', diagramColors.border, 11)
