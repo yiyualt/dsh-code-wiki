@@ -10,5 +10,5 @@
 npm ci
 mkdir -p ~/.dsh/plugin-packages
 npm pack --pack-destination ~/.dsh/plugin-packages
-dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-0.34.2.tgz
+dsh plugin --profile web add ~/.dsh/plugin-packages/dsh-code-wiki-1.0.0.tgz
 ```
