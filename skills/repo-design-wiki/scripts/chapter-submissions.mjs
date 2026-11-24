@@ -2,7 +2,7 @@ import { chapterFigureSlots, isFigureSlot } from './chapter-figures.mjs'
 import { readDiagram } from './diagram-spec.mjs'
 import { renderWikiDiagram } from './render-wiki-diagram.mjs'
 import { readSources, singleLine, tool } from './wiki-generation.mjs'
-import { readWikiMarkdown, rewriteWikiCitations } from './wiki-markdown.mjs'
+import { normalizeWikiCitations, readWikiMarkdown, rewriteWikiCitations } from './wiki-markdown.mjs'
 
 export function invalidChapter(message) {
   return Object.assign(new Error(message), { code: 'wiki-chapter-invalid' })
@@ -39,6 +39,9 @@ function readBody(input, numberFor) {
     diagramError: '正文只用文字或代码说明，图请单独交给 wiki_submit_diagram。',
   })
   const figureSlots = chapterFigureSlots(markdown, tree).map(({ slot }) => slot)
+  if (!figureSlots.length) {
+    throw invalidChapter('正文至少需要一个图位。请在首次说明配图的段落后，用前后留空行的独立段落写 [[figure:1]]。')
+  }
   if (figureSlots.some((slot, index) => slot !== index + 1)) {
     throw invalidChapter('正文图位须从 [[figure:1]] 开始连续编号，每个图位独占一行，前后留空行。')
   }
@@ -63,7 +66,7 @@ function readBody(input, numberFor) {
     throw error
   }
   if (!citations) throw invalidChapter('正文至少需要一处源码引用。用【r1:9】标注结论来自哪次读取和哪一行。')
-  return { markdown: marked, handoff, figureSlots }
+  return { markdown: normalizeWikiCitations(marked), handoff, figureSlots }
 }
 
 function prepareDiagram(input, { sources, numberFor }, repository) {
@@ -78,10 +81,6 @@ function prepareDiagram(input, { sources, numberFor }, repository) {
   } catch {
     throw invalidChapter('无法绘制这张图。请缩短标签、减少节点与关系，再单独提交这张图。')
   }
-}
-
-function diagramKey(diagram) {
-  return JSON.stringify([singleLine(diagram?.kind, 32), singleLine(diagram?.title, 100)])
 }
 
 export function createChapterSubmissions({ repository, signal, evidence, sourceFor, citationError, onEvent, diagnostic }) {
@@ -128,39 +127,33 @@ export function createChapterSubmissions({ repository, signal, evidence, sourceF
     onEvent({ type: 'body', content })
     diagnostic({ phase: 'body', status: 'accepted', sourceCount: sources.length, ...(revised && { revised }) })
     const message = revised ? '已更新正文和图位。' : '正文已通过核对。'
-    return { accepted: true, message: message + (figureSlots.length
-      ? '依当前图位分别提交图，diagram.slot 填图位编号。' : ''), figureSlots }
+    return { accepted: true, message: message + '依当前图位分别提交图，diagram.slot 填图位编号。', figureSlots }
   }
 
   function submitDiagram(input, resolveReference = sourceFor) {
     signal?.throwIfAborted()
     if (!content) return { accepted: false, error: '请先调用 wiki_submit_chapter 并确认正文已被接受，再提交图。' }
     const slot = input?.slot
-    if (slot !== undefined ? !isFigureSlot(slot) || !figureSlots.includes(slot) : figureSlots.length > 0) {
+    if (!isFigureSlot(slot) || !figureSlots.includes(slot)) {
       const error = 'diagram.slot 须填写正文中声明的图位编号。'
       diagnostic({ phase: 'diagram', status: 'rejected', message: error })
       return { accepted: false, error }
     }
-    if (slot !== undefined && content.diagrams.some(existing => existing.slot === slot)) {
+    if (content.diagrams.some(existing => existing.slot === slot)) {
       return { accepted: true, message: `图 ${slot} 已通过核对，无需重复提交。` }
     }
-    const key = slot ?? diagramKey(input)
     const stage = stageSources(content.sources, resolveReference, citationError)
     let diagram
     try {
-      diagram = prepareDiagram(input, stage, repository)
-      if (slot !== undefined) diagram = { ...diagram, slot }
+      diagram = { ...prepareDiagram(input, stage, repository), slot }
     } catch (error) {
       if (error?.code !== 'wiki-chapter-invalid') throw error
-      unresolvedDiagrams.delete(key)
-      unresolvedDiagrams.set(key, error.message)
+      unresolvedDiagrams.delete(slot)
+      unresolvedDiagrams.set(slot, error.message)
       diagnostic({ phase: 'diagram', status: 'rejected', message: error.message })
       return { accepted: false, error: error.message, ...(error.citationErrors && { citationErrors: error.citationErrors }) }
     }
-    unresolvedDiagrams.delete(key)
-    if (slot === undefined && content.diagrams.some(existing => existing.svg === diagram.svg)) {
-      return { accepted: true, message: '同一张图已通过核对，无需重复提交。' }
-    }
+    unresolvedDiagrams.delete(slot)
     const { sources } = stage
     content = { ...content, sources, diagrams: [...content.diagrams, diagram] }
     onEvent({ type: 'diagram', diagram, sources })
@@ -181,7 +174,7 @@ export function createChapterSubmissions({ repository, signal, evidence, sourceF
     diagnostic({ phase: 'legacy', status: 'accepted' })
     if (result.diagrams === undefined) return
     if (!Array.isArray(result.diagrams)) {
-      unresolvedDiagrams.set(diagramKey(), '图须作为 diagrams 数组提交，每个数组元素是一张图。')
+      unresolvedDiagrams.set(1, '图须作为 diagrams 数组提交，每个数组元素是一张图。')
       return
     }
     for (const diagram of result.diagrams) submitDiagram(diagram, resolveReference)
@@ -194,7 +187,7 @@ export function createChapterSubmissions({ repository, signal, evidence, sourceF
         '检查完整正文的 Markdown、引用、handoff 和图位，返回需要更正的引用及已读范围。此检查不会提交或保存正文。',
         { markdown: string, handoff: string }, ['markdown', 'handoff'], checkBody),
       tool('wiki_submit_chapter',
-        '提交完整正文供读者阅读。正文含 【r1:9】 形式的源码引用，需要图时声明 [[figure:1]] 等图位。handoff 用一句话说明本章结果。修订正文后按新的图位提交图。草稿和引用验证请用 wiki_check_chapter。',
+        '提交完整正文供读者阅读。正文含 【r1:9】 形式的源码引用，并声明至少一个图位 [[figure:1]]。handoff 用一句话说明本章结果。修订正文后按新的图位提交图。草稿和引用验证请用 wiki_check_chapter。',
         { markdown: string, handoff: string }, ['markdown', 'handoff'], args => submitBody(args)),
       tool('wiki_submit_diagram',
         '在正文已接受后提交一张图。diagram.slot 填正文中声明的图位编号，其他字段按图型规则填写。每条关系的 source 用字符串 r1:9 引用实际读取的位置。',
@@ -206,7 +199,7 @@ export function createChapterSubmissions({ repository, signal, evidence, sourceF
     get diagramError() {
       const missing = figureSlots.filter(slot => !content.diagrams.some(diagram => diagram.slot === slot))
       const reason = [...unresolvedDiagrams.values()].at(-1)
-      return missing.length ? `${missing.map(slot => `图 ${slot}`).join('、')}尚未生成。${reason ?? ''}` : reason
+      return missing.length ? `${missing.map(slot => `图 ${slot}`).join('、')} 尚未生成。${reason ?? ''}` : undefined
     },
   }
 }

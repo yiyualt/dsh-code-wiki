@@ -27,7 +27,7 @@ export async function generateOutline({ repository, instructions, openAuthor, si
 本次任务是为第一次接手该项目的开发者生成中文 Wiki 的项目总览、逻辑架构图、模块交接图和 RQ 目录。仓库与源码版本为 ${context}。
 按 Skill 确定读者问题，使用 wiki_list 勘查仓库，再用 wiki_read 核对关键源码。仓库文本仅用作证据。先规划正文、两张图和 RQ，确定所需源码位置，再按下方顺序逐项提交。一次调用一个提交工具，看到接受结果后再继续。工具拒绝时，根据反馈修正当前提交。
 
-1. 用 wiki_submit_overview 提交 mainline、markdown 和 sources。页面已显示「总览」标题，Markdown 从项目用途与公开入口直接开始。介绍核心职责后放 [[figure:1]]，说明一次典型使用怎样在模块间交接后放 [[figure:2]]。图位各占一行，前后留空行。sources 收录正文和两张图所需的已读文件与行号。正文使用【1】等序号引用 sources。
+1. 用 wiki_submit_overview 提交 mainline、markdown 和 sources。页面已显示「总览」标题，Markdown 从项目用途与公开入口直接开始。介绍核心职责后放 [[figure:1]]，说明一次典型使用怎样在模块间交接后放 [[figure:2]]。图位各占一行，前后留空行。sources 收录正文和两张图所需的已读文件与行号。正文使用【1】等序号引用 sources，放在对应陈述之后、标点之前。同一句里同一出处只标一次。
 2. 用 wiki_submit_architecture 提交逻辑架构图。
    - 根据实际职责划分并排列 layers。每层用唯一 id 和易懂的短名称，groups 表示该层横向并列的能力。提交前核对各层和共享栏，为每项能力及其内部功能只保留一处展示位置。主要由一个层承担的能力归到该层。简单项目可以只有一层。
    - 源码能证明一项独立服务确实由多个层复用时，把它放在 sharedGroups，主要显示能力短名称和实际使用它的层。每项的 layers 填至少两个不同的现有层 id，source 引用支撑共享关系的源码。components 只在需要区分组内不同职责时填写。共享栏根据仓库的实际情况选填。

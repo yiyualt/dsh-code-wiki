@@ -438,7 +438,7 @@ window.__ModuleLoader__.load({
           if (view !== 'reader' || !opened || opened.legacy || chapterIndex === null) return
           const { id, document, chapterWork } = opened
           const current = chapterWork[chapterIndex]
-          if (!document.chapters[chapterIndex] || current?.pending || current?.content) return
+          if (!document.chapters[chapterIndex] || current?.pending || current?.content?.diagrams.length) return
 
           function updateChapter(patch) {
             const record = records.get(id)
@@ -781,7 +781,7 @@ window.__ModuleLoader__.load({
       const titleId = useId()
       const date = Date.parse(updatedAt)
       const draftStatus = hasOverview ? '已生成总览' : '目录草稿'
-      const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章` : draftStatus
+      const summary = legacy ? '历史文档' : generatedCount ? `已生成 ${generatedCount} / ${chapterCount} 章正文` : draftStatus
       return h('li', { className: 'dsh-code-wiki-document-row' },
         h('button', { type: 'button', className: 'dsh-code-wiki-document', disabled: disabled || opening, onClick: () => onOpen(id) },
           h('span', { className: 'dsh-code-wiki-icon', 'aria-hidden': true },
@@ -939,7 +939,9 @@ window.__ModuleLoader__.load({
       const connection = chapter?.connection
       const { pending, content: chapterContent, error: chapterFailure, warning } = chapterWork?.[chapterIndex] ?? {}
       const content = showingOverview ? document?.overview : chapterContent
-      const chapterNotice = chapterContent && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…'))
+      const missingDiagrams = !legacy && chapterContent?.diagrams.length === 0
+      const chapterNotice = chapterContent && (chapterFailure || warning || (pending && '正文已生成，正在处理配图…') ||
+        (missingDiagrams && '本章配图尚未生成。'))
       const chapterAnnouncement = pending ? '正在生成本章…' : chapterContent ? '本章已生成。' : ''
       return h('section', { 'aria-label': panelTitle, className: 'dsh-code-wiki-page', 'data-reading': reading ? '' : undefined, ref: page },
         h('style', null, wikiStyles),
@@ -986,6 +988,8 @@ window.__ModuleLoader__.load({
                 className: chapterNotice ? 'dsh-code-wiki-feedback dsh-code-wiki-chapter-notice' : 'dsh-code-wiki-announcement',
                 role: chapterNotice && chapterFailure ? 'alert' : 'status',
               }, chapterNotice || chapterAnnouncement),
+              missingDiagrams && !pending && h('div', { className: 'dsh-code-wiki-chapter-notice' },
+                h(Button, { type: 'button', size: 'sm', variant: 'outline', onClick: store.generateChapter }, '重新生成本章')),
               content ? h(ChapterContent, { key: chapterIndex ?? 'overview', repository: document, content, pending, title })
                 : h('div', { className: 'dsh-code-wiki-chapter-action' }, legacy
                   ? h('p', { className: 'dsh-code-wiki-feedback' }, '这份历史文档未保存本章正文。')

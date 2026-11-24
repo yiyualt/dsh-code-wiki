@@ -153,6 +153,15 @@ function registerDocuments(ctx, storage, active) {
   })
 }
 
+function savedChapterResult({ content, warning }, onEvent) {
+  if (onEvent) {
+    const { diagrams, sources } = content
+    onEvent({ type: 'body', content: { ...content, diagrams: [] } })
+    for (const diagram of diagrams) onEvent({ type: 'diagram', diagram, sources })
+  }
+  return { ...content, ...(warning && { warning }) }
+}
+
 async function generateSavedChapter({ documentId, chapterIndex }, storage, active, options) {
   if (typeof documentId !== 'string' || !Number.isSafeInteger(chapterIndex) || chapterIndex < 0) {
     throw wikiProblem('invalid-chapter-request', '请打开文档并选择要生成的章节。')
@@ -172,12 +181,7 @@ async function generateSavedChapter({ documentId, chapterIndex }, storage, activ
     if (!chapter) throw wikiProblem('wiki-chapter-not-found', '找不到这个章节。')
 
     const saved = chapterWork[chapterIndex]
-    if (saved?.content) {
-      const { diagrams, sources } = saved.content
-      options.onEvent?.({ type: 'body', content: { ...saved.content, diagrams: [] } })
-      for (const diagram of diagrams) options.onEvent?.({ type: 'diagram', diagram, sources })
-      return { ...saved.content, ...(saved.warning ? { warning: saved.warning } : {}) }
-    }
+    if (saved?.content.diagrams.length) return savedChapterResult(saved, options.onEvent)
 
     const repository = await openRepository(repositoryInput(document), options.signal, commit)
     const previousChapter = chapters[chapterIndex - 1]
@@ -186,19 +190,25 @@ async function generateSavedChapter({ documentId, chapterIndex }, storage, activ
       handoff: chapterWork[chapterIndex - 1]?.content?.handoff ?? '',
     } : null
     const next = chapters[chapterIndex + 1]?.title ?? null
+    let retained = saved
+    let stagedBody
     let writes = Promise.resolve()
     const onEvent = event => {
+      if (saved && event.type === 'body') {
+        // Keep the saved text until a replacement has a verified diagram.
+        stagedBody = event
+        return
+      }
+      const replacement = stagedBody
+      stagedBody = undefined
       writes = writes.then(async () => {
-        await storage.updateChapter(documentId, chapterIndex, current => event.type === 'body'
-          ? { content: event.content }
-          : {
-              ...current,
-              content: {
-                ...current.content,
-                sources: event.sources,
-                diagrams: [...current.content.diagrams, event.diagram],
-              },
-            })
+        const updated = await storage.updateChapter(documentId, chapterIndex, current => {
+          if (event.type === 'body') return { content: event.content }
+          const body = replacement?.content ?? current.content
+          return { content: { ...body, sources: event.sources, diagrams: [...body.diagrams, event.diagram] } }
+        })
+        retained = updated.chapterWork[chapterIndex]
+        if (replacement) options.onEvent?.(replacement)
         options.onEvent?.(event)
       })
       // Keep accepted output queued for storage even if the browser disconnects.
@@ -211,12 +221,14 @@ async function generateSavedChapter({ documentId, chapterIndex }, storage, activ
     } finally {
       await writes
     }
+    const replay = retained === saved
     if (result.warning) {
-      await storage.updateChapter(documentId, chapterIndex, current => ({
+      const updated = await storage.updateChapter(documentId, chapterIndex, current => ({
         ...current, warning: result.warning,
       }))
+      retained = updated.chapterWork[chapterIndex]
     }
-    return result
+    return savedChapterResult(retained, replay ? options.onEvent : undefined)
   } finally {
     running.delete(chapterIndex)
     if (!running.size) active.chapters.delete(documentId)

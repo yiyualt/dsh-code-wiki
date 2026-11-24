@@ -49,3 +49,138 @@ export function rewriteWikiCitations(markdown, tree, replace) {
       ? replace(reference, original) : original
   }), tree)
 }
+
+const numericCitation = /【([1-9]\d*)】/gu
+const sentenceToken = /【([1-9]\d*)】|[。！？!?]+|\.(?=[\s"'”’」』）)\]【]|$)/gu
+const authoredLink = new Set(['link', 'linkReference', 'image', 'imageReference'])
+const tableDelimiter = /^[ \t]*(?=[^\r\n]*\|)\|?[ \t]*:?-+:?(?:[ \t]*\|[ \t]*:?-+:?)*[ \t]*\|?[ \t]*$/mu
+
+export function normalizeWikiCitations(markdown, citationNumber = number => number) {
+  if (!markdown.includes('【')) return markdown
+  const edits = []
+
+  function edit(start, end, text) {
+    if (markdown.slice(start, end) !== text) edits.push({ start, end, text })
+  }
+
+  function paragraph(node) {
+    let citations = []
+    let contentEnd
+    let previousSentence
+
+    function rewriteSentence({ citations, contentEnd, punctuation }) {
+      const keep = new Map()
+      for (const citation of citations) {
+        if (!keep.has(citation.marker) || !citation.leading || keep.get(citation.marker).leading) {
+          keep.set(citation.marker, citation)
+        }
+      }
+      const moved = []
+      for (const citation of citations) {
+        const { start, end, marker, leading } = citation
+        if (keep.get(marker) === citation) {
+          if (!leading || contentEnd === undefined) {
+            edit(start, end, marker)
+            continue
+          }
+          moved.push(marker)
+        }
+        const { start: removeStart, end: removeEnd } = citation.wrapper ?? citation
+        let stop = removeEnd
+        if (leading || /[ \t]/u.test(markdown[removeStart - 1] ?? '')) {
+          while (/[ \t]/u.test(markdown[stop] ?? '')) stop++
+        }
+        edit(removeStart, stop, '')
+      }
+      if (moved.length) edit(punctuation ?? contentEnd, punctuation ?? contentEnd, moved.join(''))
+    }
+
+    function finishSentence(punctuation) {
+      // A citation-only tail after the last punctuation belongs to the preceding sentence.
+      if (previousSentence) {
+        if (punctuation === undefined && contentEnd === undefined && previousSentence.contentEnd !== undefined) {
+          previousSentence.citations.push(...citations)
+          citations = []
+        }
+        rewriteSentence(previousSentence)
+      }
+      const sentence = { citations, contentEnd, punctuation }
+      if (punctuation === undefined) rewriteSentence(sentence)
+      else previousSentence = sentence
+      citations = []
+      contentEnd = undefined
+    }
+
+    function noteText(text, start) {
+      const trimmed = text.trimEnd()
+      if (trimmed && (contentEnd !== undefined || /[\p{L}\p{N}]/u.test(trimmed))) contentEnd = start + trimmed.length
+    }
+
+    function scan(node) {
+      const start = node.position.start.offset
+      const end = node.position.end.offset
+      if (node.type === 'text') {
+        const text = markdown.slice(start, end)
+        let cursor = 0
+        for (const token of text.matchAll(sentenceToken)) {
+          const [original, reference] = token
+          const offset = start + token.index
+          noteText(text.slice(cursor, token.index), start + cursor)
+          cursor = token.index + original.length
+          if (reference) {
+            const number = citationNumber(reference)
+            if (number) citations.push({ start: offset, end: start + cursor, marker: `【${number}】`, leading: contentEnd === undefined })
+          } else {
+            finishSentence(markdown[offset - 1] === '\\' ? offset - 1 : offset)
+          }
+        }
+        noteText(text.slice(cursor), start + cursor)
+      } else if (node.type === 'inlineCode' || authoredLink.has(node.type)) {
+        contentEnd = end
+      } else if (node.children) {
+        const before = contentEnd
+        node.children.forEach(scan)
+        if (contentEnd !== undefined && contentEnd !== before) contentEnd = end
+        const last = citations.at(-1)
+        if (last && node.children.length === 1 && (node.type === 'emphasis' || node.type === 'strong')) {
+          const { start: innerStart, end: innerEnd } = node.children[0].position
+          const wrapped = last.wrapper ?? last
+          if (wrapped.start === innerStart.offset && wrapped.end === innerEnd.offset) last.wrapper = { start, end }
+        }
+      }
+    }
+
+    node.children.forEach(scan)
+    finishSentence()
+  }
+
+  function visit(node) {
+    if (authoredLink.has(node.type)) return
+    if (node.type === 'text' || node.type === 'paragraph') {
+      const start = node.position.start.offset
+      const source = markdown.slice(start, node.position.end.offset)
+      if (node.type === 'paragraph' && !tableDelimiter.test(source)) {
+        paragraph(node)
+        return
+      }
+      if (node.type === 'text') {
+        for (const { 0: marker, 1: reference, index } of source.matchAll(numericCitation)) {
+          const number = citationNumber(reference)
+          if (number) edit(start + index, start + index + marker.length, `【${number}】`)
+        }
+      }
+    }
+    node.children?.forEach(visit)
+  }
+
+  visit(fromMarkdown(markdown))
+  if (!edits.length) return markdown
+  edits.sort((a, b) => a.start - b.start || a.end - b.end)
+  const parts = []
+  let offset = 0
+  for (const { start, end, text } of edits) {
+    parts.push(markdown.slice(offset, start), text)
+    offset = end
+  }
+  return parts.join('') + markdown.slice(offset)
+}

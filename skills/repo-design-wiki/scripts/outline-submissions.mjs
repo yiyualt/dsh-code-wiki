@@ -4,7 +4,7 @@ import { readDiagram } from './diagram-spec.mjs'
 import { renderArchitectureDiagram } from './render-architecture-diagram.mjs'
 import { renderWikiDiagram } from './render-wiki-diagram.mjs'
 import { readSources, singleLine, tool } from './wiki-generation.mjs'
-import { readWikiMarkdown, rewriteWikiCitations } from './wiki-markdown.mjs'
+import { normalizeWikiCitations, readWikiMarkdown, rewriteWikiCitations } from './wiki-markdown.mjs'
 
 const internalRoles = new Set(['component', 'module', 'package'])
 const sections = {
@@ -57,7 +57,7 @@ function readOverview(input, evidence) {
     return `【${reference}】`
   })
   if (!cited) throw invalidOutline('总览正文需要源码引用，例如【1】，对应 overview.sources 中列出的实际位置。')
-  return { mainline, markdown: marked, sources }
+  return { mainline, markdown: normalizeWikiCitations(marked), sources }
 }
 
 function readModuleMap(spec, sources, repository) {

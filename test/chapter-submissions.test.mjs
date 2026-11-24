@@ -19,10 +19,11 @@ async function chapterFixture() {
 }
 
 const handoff = '将合并后的配置交给训练入口。'
+const figureSlot = '\n\n[[figure:1]]'
 
 test('citation checks and probes never publish a chapter', async () => {
   const { call, events, submissions, path } = await chapterFixture()
-  const draft = '程序加载用户配置【r1:2】，将其与默认配置合并【r1:3】，然后交出结果【r7:1】。'
+  const draft = '程序加载用户配置【r1:2】，将其与默认配置合并【r1:3】，然后交出结果【r7:1】。' + figureSlot
   const check = await call('wiki_check_chapter', { markdown: draft, handoff })
   assert.equal(check.valid, false)
   assert.deepEqual(check.citationErrors.map(({ reference, suggestedReference }) => [reference, suggestedReference]),
@@ -35,12 +36,28 @@ test('citation checks and probes never publish a chapter', async () => {
     '本章已生成。测试引用【r1:1】。测试引用【r1:2】。',
     '加载用户配置。\n\n<!-- 【r1:2】 -->',
   ]) {
-    assert.equal((await call('wiki_submit_chapter', { markdown, handoff })).accepted, false)
+    assert.equal((await call('wiki_submit_chapter', { markdown: markdown + figureSlot, handoff })).accepted, false)
   }
   const markdown = '程序把用户配置合入默认值，再交出最终配置【r2:3】。'
-  assert.equal((await call('wiki_check_chapter', { markdown, handoff })).valid, true)
+  assert.equal((await call('wiki_check_chapter', { markdown: markdown + figureSlot, handoff })).valid, true)
   assert.equal(submissions.content, undefined)
   assert.deepEqual(events, [])
+})
+
+test('a chapter needs a standalone figure slot', async () => {
+  const { call, events } = await chapterFixture()
+  const prose = '程序将用户配置覆盖到默认配置上【r2:3】。'
+  for (const markdown of [prose, `${prose} [[figure:1]]`, `${prose}\n\n\`\`\`\n[[figure:1]]\n\`\`\``]) {
+    const draft = { markdown, handoff }
+    const check = await call('wiki_check_chapter', draft)
+    assert.equal(check.valid, false)
+    assert.match(check.error, /至少需要一个图位/)
+    assert.equal((await call('wiki_submit_chapter', draft)).accepted, false)
+  }
+  assert.deepEqual(events, [])
+  assert.equal((await call('wiki_submit_chapter', { markdown: prose + figureSlot, handoff })).accepted, true)
+  assert.equal((await call('wiki_submit_diagram', { diagram: {} })).accepted, false)
+  assert.deepEqual(events.map(({ type }) => type), ['body'])
 })
 
 test('corrected body replaces the saved draft and keeps diagrams on an identical retry', async () => {
@@ -62,7 +79,7 @@ test('corrected body replaces the saved draft and keeps diagrams on an identical
   assert.equal(submissions.content.diagrams.length, 1)
   assert.equal(submissions.content.sources.length, 3)
   const revised = {
-    markdown: '程序用用户配置覆盖同名默认值【r2:3】。' + '接着，训练入口读取合并后的配置。'.repeat(800),
+    markdown: '程序用用户配置覆盖同名默认值【r2:3】。' + '接着，训练入口读取合并后的配置。'.repeat(800) + figureSlot,
     handoff: '交给训练入口的结果包括' + '校验后的配置项、'.repeat(55) + '最终参数。',
   }
   assert(revised.markdown.length > 10_000 && revised.handoff.length > 400)
