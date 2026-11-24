@@ -54,6 +54,7 @@ const numericCitation = /【([1-9]\d*)】/gu
 const sentenceToken = /【([1-9]\d*)】|[。！？!?]+|\.(?=[\s"'”’」』）)\]【]|$)/gu
 const authoredLink = new Set(['link', 'linkReference', 'image', 'imageReference'])
 const tableDelimiter = /^[ \t]*(?=[^\r\n]*\|)\|?[ \t]*:?-+:?(?:[ \t]*\|[ \t]*:?-+:?)*[ \t]*\|?[ \t]*$/mu
+const onlyCitationMarkers = /^(?:【[1-9]\d*】[ \t]*)+$/u
 
 export function normalizeWikiCitations(markdown, citationNumber = number => number) {
   if (!markdown.includes('【')) return markdown
@@ -75,17 +76,18 @@ export function normalizeWikiCitations(markdown, citationNumber = number => numb
           keep.set(citation.marker, citation)
         }
       }
+      const stays = citation => keep.get(citation.marker) === citation && (!citation.leading || contentEnd === undefined)
       const moved = []
       for (const citation of citations) {
-        const { start, end, marker, leading } = citation
-        if (keep.get(marker) === citation) {
-          if (!leading || contentEnd === undefined) {
-            edit(start, end, marker)
-            continue
-          }
-          moved.push(marker)
+        const { start, end, marker, leading, wrapper } = citation
+        if (stays(citation)) {
+          edit(start, end, marker)
+          continue
         }
-        const { start: removeStart, end: removeEnd } = citation.wrapper ?? citation
+        if (keep.get(marker) === citation) moved.push(marker)
+        const removeWrapper = wrapper && !wrapper.citations.some(stays)
+        if (removeWrapper && wrapper.citations[0] !== citation) continue
+        const { start: removeStart, end: removeEnd } = removeWrapper ? wrapper : citation
         let stop = removeEnd
         if (leading || /[ \t]/u.test(markdown[removeStart - 1] ?? '')) {
           while (/[ \t]/u.test(markdown[stop] ?? '')) stop++
@@ -139,13 +141,20 @@ export function normalizeWikiCitations(markdown, citationNumber = number => numb
         contentEnd = end
       } else if (node.children) {
         const before = contentEnd
+        const citationCount = citations.length
         node.children.forEach(scan)
         if (contentEnd !== undefined && contentEnd !== before) contentEnd = end
-        const last = citations.at(-1)
-        if (last && node.children.length === 1 && (node.type === 'emphasis' || node.type === 'strong')) {
-          const { start: innerStart, end: innerEnd } = node.children[0].position
-          const wrapped = last.wrapper ?? last
-          if (wrapped.start === innerStart.offset && wrapped.end === innerEnd.offset) last.wrapper = { start, end }
+        if (citations.length > citationCount && node.children.length === 1 && (node.type === 'emphasis' || node.type === 'strong')) {
+          const [child] = node.children
+          const inner = citations.slice(citationCount)
+          const wrapper = inner[0].wrapper
+          const text = markdown.slice(child.position.start.offset, child.position.end.offset)
+          if (wrapper?.start === child.position.start.offset && wrapper.end === child.position.end.offset) {
+            Object.assign(wrapper, { start, end })
+          } else if (child.type === 'text' && onlyCitationMarkers.test(text) && inner.length === [...text.matchAll(numericCitation)].length) {
+            const group = { start, end, citations: inner }
+            for (const citation of inner) citation.wrapper = group
+          }
         }
       }
     }

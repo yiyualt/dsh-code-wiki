@@ -15,6 +15,7 @@ test('moves sentence-leading citations after the evidence and before punctuation
   assert.equal(normalizeWikiCitations(markdown), expected)
   assert.equal(normalizeWikiCitations('【1】**前端选择**'), '**前端选择**【1】')
   assert.equal(normalizeWikiCitations('**【1】** 入口运行【1】。'), '入口运行【1】。')
+  assert.equal(normalizeWikiCitations('***【1】【2】*** 入口运行【1】。'), '入口运行【1】【2】。')
 })
 
 test('moves citations placed after the final punctuation back into their sentence', () => {
