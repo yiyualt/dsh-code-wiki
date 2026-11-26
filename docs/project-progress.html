@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH 代码百科插件开发进展</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #f7f5f2;
+      --text: #262321;
+      --accent: #8c1515;
+      --border: #e2dcd6;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--text);
+      font: 1rem/1.65 system-ui, sans-serif;
+    }
+
+    main {
+      max-width: 55rem;
+      margin: 0 auto;
+      padding: clamp(2rem, 6vw, 3rem) clamp(1rem, 4vw, 1.5rem) 3rem;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 6vw, 3.25rem);
+      line-height: 1.18;
+    }
+
+    h1 span { display: inline-block; }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+      margin: 1.2rem 0 1.75rem;
+      padding-bottom: 1.15rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9375rem;
+    }
+
+    a {
+      color: var(--accent);
+      text-underline-offset: 0.22em;
+    }
+
+    a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    section {
+      min-height: 6.25rem;
+      padding: 1rem 1.2rem;
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      background: #fff;
+      scroll-margin-top: 1rem;
+    }
+
+    section + section { margin-top: 0.8rem; }
+    section:target { border-color: var(--accent); }
+
+    h2 {
+      display: flex;
+      align-items: baseline;
+      gap: 0.65rem;
+      margin: 0;
+      font-size: 1.25rem;
+      line-height: 1.4;
+    }
+
+    .number {
+      color: var(--accent);
+      font-size: 0.9375rem;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>DSH 代码百科插件<span>开发进展</span></h1>
+    </header>
+
+    <nav aria-label="章节目录">
+      <a href="#requirements">需求与验收标准</a>
+      <a href="#design">技术方案</a>
+      <a href="#development">开发与评审</a>
+      <a href="#release">测试与发布</a>
+      <a href="#retrospective">复盘与改进</a>
+    </nav>
+
+    <section id="requirements" aria-labelledby="requirements-title">
+      <h2 id="requirements-title"><span class="number" aria-hidden="true">01</span>需求与验收标准</h2>
+    </section>
+
+    <section id="design" aria-labelledby="design-title">
+      <h2 id="design-title"><span class="number" aria-hidden="true">02</span>技术方案</h2>
+    </section>
+
+    <section id="development" aria-labelledby="development-title">
+      <h2 id="development-title"><span class="number" aria-hidden="true">03</span>开发与评审</h2>
+    </section>
+
+    <section id="release" aria-labelledby="release-title">
+      <h2 id="release-title"><span class="number" aria-hidden="true">04</span>测试与发布</h2>
+    </section>
+
+    <section id="retrospective" aria-labelledby="retrospective-title">
+      <h2 id="retrospective-title"><span class="number" aria-hidden="true">05</span>复盘与改进</h2>
+    </section>
+  </main>
+</body>
+</html>
