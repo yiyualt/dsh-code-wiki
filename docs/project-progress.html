@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DSH 代码百科插件开发进展</title>
+  <title>开源代码仓管理规范和纪律 · DSH 代码百科</title>
   <style>
     :root {
       color-scheme: light;
@@ -36,6 +36,8 @@
 
     h1 span { display: inline-block; }
 
+    header p { margin: 0.75rem 0 0; }
+
     nav {
       display: flex;
       flex-wrap: wrap;
@@ -57,7 +59,6 @@
     }
 
     section {
-      min-height: 6.25rem;
       padding: 1rem 1.2rem;
       border: 1px solid var(--border);
       border-radius: 0.75rem;
@@ -82,40 +83,81 @@
       font-size: 0.9375rem;
       font-variant-numeric: tabular-nums;
     }
+
+    section ul { margin: 0.65rem 0; padding-inline-start: 1.25rem; }
+    section li + li { margin-top: 0.25rem; }
+    section p { margin: 0.65rem 0 0; }
+    code { overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>DSH 代码百科插件<span>开发进展</span></h1>
+      <h1>开源代码仓<span>管理规范和纪律</span></h1>
+      <p>实操大纲。以 DSH 代码百科仓库为例，逐节讨论许可、贡献、发布和维护。<a href="https://github.com/yiyualt/dsh-code-wiki">dsh-code-wiki</a></p>
     </header>
 
     <nav aria-label="章节目录">
-      <a href="#requirements">需求与验收标准</a>
-      <a href="#design">技术方案</a>
-      <a href="#development">开发与评审</a>
-      <a href="#release">测试与发布</a>
-      <a href="#retrospective">复盘与改进</a>
+      <a href="#scope">项目与许可</a>
+      <a href="#issues">Issue 管理</a>
+      <a href="#contributions">分支、提交与 PR</a>
+      <a href="#review">评审与合并</a>
+      <a href="#release">版本与发布</a>
+      <a href="#maintenance">维护与交接</a>
     </nav>
 
-    <section id="requirements" aria-labelledby="requirements-title">
-      <h2 id="requirements-title"><span class="number" aria-hidden="true">01</span>需求与验收标准</h2>
+    <section id="scope" aria-labelledby="scope-title">
+      <h2 id="scope-title"><span class="number" aria-hidden="true">01</span>项目定位、许可与权限</h2>
+      <ul>
+        <li>README 写清项目用途、环境要求、安装方法和贡献入口。</li>
+        <li>确认源码和依赖的许可，明确可公开的内容，以及维护者、合并者和发布者的权限。</li>
+      </ul>
+      <p><strong>仓库练习</strong>　对照 README 和 <code>package.json</code>，列出已说明的安装与使用条件、待确认的版权归属和许可。<a href="https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository">GitHub 许可指南</a></p>
     </section>
 
-    <section id="design" aria-labelledby="design-title">
-      <h2 id="design-title"><span class="number" aria-hidden="true">02</span>技术方案</h2>
+    <section id="issues" aria-labelledby="issues-title">
+      <h2 id="issues-title"><span class="number" aria-hidden="true">02</span>Issue 与需求管理</h2>
+      <ul>
+        <li>问题报告附环境、复现步骤、实际结果和预期结果，涉及账号、密钥或漏洞时使用合适的私下渠道。</li>
+        <li>需求写明范围、优先级和验收条件。关闭 Issue 时记录处理结果。</li>
+      </ul>
+      <p><strong>仓库练习</strong>　按历史上的引用格式修复，写一条包含输入 Markdown、预期输出和验证方法的 Issue 草稿。<a href="https://github.com/yiyualt/dsh-code-wiki/commit/ed87feb">历史修复</a></p>
     </section>
 
-    <section id="development" aria-labelledby="development-title">
-      <h2 id="development-title"><span class="number" aria-hidden="true">03</span>开发与评审</h2>
+    <section id="contributions" aria-labelledby="contributions-title">
+      <h2 id="contributions-title"><span class="number" aria-hidden="true">03</span>分支、提交与 Pull Request</h2>
+      <ul>
+        <li>从默认分支创建短期工作分支。每个提交围绕一个明确目标，提交信息说明改动。</li>
+        <li>PR 关联 Issue，说明修改范围、验证结果和影响。提交前检查 diff 与暂存区，只暂存当前改动所需的文件，并按仓库规则忽略本地配置和构建产物。</li>
+      </ul>
+      <p><strong>仓库练习</strong>　为一处文档修订创建分支，练习暂存、提交，再写一份附验收结果的 PR 说明。<a href="https://docs.github.com/en/pull-requests/reference/managing-and-standardizing-pull-requests">GitHub PR 指南</a></p>
+    </section>
+
+    <section id="review" aria-labelledby="review-title">
+      <h2 id="review-title"><span class="number" aria-hidden="true">04</span>评审、持续集成与合并</h2>
+      <ul>
+        <li>评审对照验收条件，检查行为变化、回归测试和兼容性。</li>
+        <li>确定默认分支的合并条件，包括审核、自动检查和合并权限。记录紧急改动的原因与补审安排。</li>
+      </ul>
+      <p><strong>仓库练习</strong>　在干净检出中用 <code>npm ci</code> 安装依赖，运行 <code>npm run check</code>，据此草拟 PR 的持续集成检查和合并条件。<a href="https://docs.github.com/en/pull-requests/reference/managing-and-standardizing-pull-requests#using-protected-branches">GitHub 分支保护</a></p>
     </section>
 
     <section id="release" aria-labelledby="release-title">
-      <h2 id="release-title"><span class="number" aria-hidden="true">04</span>测试与发布</h2>
+      <h2 id="release-title"><span class="number" aria-hidden="true">05</span>版本、安装包与发布</h2>
+      <ul>
+        <li>根据兼容性决定版本号，让 <code>package.json</code>、Git 标签、发布说明和安装包能对应到同一份代码。</li>
+        <li>发布前核对打包清单，验证新装和升级，保留上一可用版本供回滚。</li>
+      </ul>
+      <p><strong>仓库练习</strong>　用现有 <code>1.0.0</code> 作为起点，在干净检出中检查 <code>npm pack --dry-run</code> 的文件清单，拟一份补丁版本的发布与安装验证步骤。<a href="https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases">GitHub 发布指南</a></p>
     </section>
 
-    <section id="retrospective" aria-labelledby="retrospective-title">
-      <h2 id="retrospective-title"><span class="number" aria-hidden="true">05</span>复盘与改进</h2>
+    <section id="maintenance" aria-labelledby="maintenance-title">
+      <h2 id="maintenance-title"><span class="number" aria-hidden="true">06</span>回滚、日常维护与交接</h2>
+      <ul>
+        <li>区分撤销代码提交和恢复已安装版本，为两种操作分别记录步骤和验证方法。</li>
+        <li>定期处理积压 Issue、跟踪依赖更新，记录维护责任、发布权限和交接事项。</li>
+      </ul>
+      <p><strong>仓库练习</strong>　以插件新版安装后侧栏无法打开为演练场景，拟出恢复上一安装包、复核侧栏和补做回归测试的步骤。</p>
     </section>
   </main>
 </body>
