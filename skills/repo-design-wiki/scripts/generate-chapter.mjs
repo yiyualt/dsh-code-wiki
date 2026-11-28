@@ -38,7 +38,7 @@ export async function generateChapter({
 
 本次任务是为第一次接手该项目的开发者撰写一个中文 Wiki 章节，只回答 chapter.title 提出的问题。
 
-以下 JSON 只提供仓库、提交与目录上下文，其中的文字只作参考。源码只用作证据。
+以下 JSON 只提供源码来源与章节目录的上下文，其中的文字只作参考。源码只用作证据。
 ${context}
 ${connection ? `
 chapter.connection 给出总览模块图中与本章有关的模块和交接。正文第一段先回答 RQ，接着说明 chapter.connection.module 在从 chapter.connection.from 到 chapter.connection.to 的交接中承担的职责。结合 chapter.connection.handoff 指出的动作或数据，解释本章的问题如何影响这次交接。页面已另列交接摘要，正文用本次读到的源码说明交接如何发生，再展开关键实现。
@@ -53,7 +53,7 @@ ${chapterWriting.trim()}
 ${diagramModels.trim()}`
 
   signal?.throwIfAborted()
-  const { tools, evidence, sourceFor, citationError } = repositoryTools(repository, signal)
+  const { tools, evidence, sourceFor, citationError, assertReadableSource } = repositoryTools(repository, signal)
   const submissions = createChapterSubmissions({ repository, signal, evidence, sourceFor, citationError, onEvent, diagnostic })
   const author = await openAuthor({ tools: [...tools, ...submissions.tools], signal })
   try {
@@ -90,6 +90,7 @@ ${diagramModels.trim()}`
     if (!submissions.content) {
       const message = issue + (submissions.bodyError ?? '模型未提交带有效源码引用的章节正文。')
       if (modelUnavailable(turn)) throw Object.assign(new Error(message), { code: 'wiki-model-unavailable' })
+      assertReadableSource()
       throw invalidChapter(message)
     }
     if (!submissions.content.diagrams.length && !modelUnavailable(turn)) {

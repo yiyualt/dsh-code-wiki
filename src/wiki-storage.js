@@ -51,11 +51,14 @@ function sourceList(value) {
 }
 
 function validLocation(source, location, commit, legacy = false) {
-  if (!hasText(location) || location.includes('\0') || typeof commit !== 'string' || !gitCommit.test(commit)) return false
+  if (!hasText(location) || location.includes('\0')) return false
+  const local = source === 'local' && (isAbsolute(location) || (legacy && win32.isAbsolute(location)))
+  if (commit === null) return local && !legacy
+  if (typeof commit !== 'string' || !gitCommit.test(commit)) return false
   if (source === 'github') {
     return commit.length === 40 && githubLocation.test(location) && !/\/\.{1,2}$/.test(location)
   }
-  return source === 'local' && (isAbsolute(location) || (legacy && win32.isAbsolute(location)))
+  return local
 }
 
 export function readChapterConnection(value) {
