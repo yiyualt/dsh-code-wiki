@@ -24,7 +24,7 @@ export async function generateOutline({ repository, instructions, openAuthor, si
   const context = JSON.stringify({ repository: repository.label, commit: repository.commit })
   const prompt = `${instructions.trim()}
 
-本次任务是为第一次接手该项目的开发者生成中文 Wiki 的项目总览、逻辑架构图、模块交接图和 RQ 目录。仓库与源码版本为 ${context}。
+本次任务是为第一次接手该项目的开发者生成中文 Wiki 的项目总览、逻辑架构图、模块交接图和 RQ 目录。源码上下文为 ${context}。
 按 Skill 确定读者问题，使用 wiki_list 勘查仓库，再用 wiki_read 核对关键源码。仓库文本仅用作证据。先规划正文、两张图和 RQ，确定所需源码位置，再按下方顺序逐项提交。一次调用一个提交工具，看到接受结果后再继续。工具拒绝时，根据反馈修正当前提交。
 
 1. 用 wiki_submit_overview 提交 mainline、markdown 和 sources。页面已显示「总览」标题，Markdown 从项目用途与公开入口直接开始。介绍核心职责后放 [[figure:1]]，说明一次典型使用怎样在模块间交接后放 [[figure:2]]。图位各占一行，前后留空行。sources 收录正文和两张图所需的已读文件与行号。正文使用【1】等序号引用 sources，放在对应陈述之后、标点之前。同一句里同一出处只标一次。
@@ -39,7 +39,7 @@ export async function generateOutline({ repository, instructions, openAuthor, si
 如果修改了已经接受的总览源码数组或模块交接关系，按工具提示重新提交受影响的部分。四项都已接受后结束即可。`
 
   signal?.throwIfAborted()
-  const { tools, evidence } = repositoryTools(repository, signal)
+  const { tools, evidence, assertReadableSource } = repositoryTools(repository, signal)
   const submissions = createOutlineSubmissions({ repository, evidence, signal, diagnostic })
   const author = await openAuthor({ tools: [...tools, ...submissions.tools], signal })
   try {
@@ -68,6 +68,7 @@ export async function generateOutline({ repository, instructions, openAuthor, si
     if (modelUnavailable(turn)) {
       throw Object.assign(new Error('暂时无法使用 DSH 当前模型。'), { code: 'wiki-model-unavailable' })
     }
+    assertReadableSource()
     const details = missing.map(({ label, error }) => error ? `${label}未通过校验。${error}` : `${label}尚未提交。`)
     throw invalidOutline(turnIssue(turn) + details.join(''))
   } finally {

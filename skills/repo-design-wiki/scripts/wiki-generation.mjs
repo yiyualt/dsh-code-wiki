@@ -46,6 +46,7 @@ export function repositoryTools(repository, signal) {
   const rangeHandles = new Map()
   const readsByHandle = new Map()
   let remainingReads = readLimit
+  let readFailed = false
 
   async function read({ path, start = 1, count = 72 }, callSignal) {
     if (!paths.has(path)) return { error: '只能读取 wiki_list 中可见的仓库文件。' }
@@ -69,6 +70,7 @@ export function repositoryTools(repository, signal) {
     } catch {
       cache.delete(path)
       readSignal?.throwIfAborted()
+      readFailed = true
       return { error: '无法读取该文件的文本。请选择其他源码位置。', path, remainingReads }
     }
     readSignal?.throwIfAborted()
@@ -120,12 +122,17 @@ export function repositoryTools(repository, signal) {
   const integer = { type: 'integer' }
   return {
     evidence,
+    assertReadableSource() {
+      if (repository.commit === null && readFailed && !cache.size) {
+        throw Object.assign(new Error('未能从所选目录读取可供解读的源码或文档。'), { code: 'repository-no-evidence' })
+      }
+    },
     sourceFor: reference => inspectReference(reference).source ?? null,
     citationError: reference => inspectReference(reference).error,
     tools: [
-      tool('wiki_list', '列出已固定提交中的目录和可读文件。设定 match 可在目录内按路径递归匹配，使用 nextOffset 翻页。',
+      tool('wiki_list', '列出当前源码来源中的目录和可读文件。设定 match 可在目录内按路径递归匹配，使用 nextOffset 翻页。',
         { directory: string, match: string, offset: integer }, [], args => listPaths(repository, args)),
-      tool('wiki_read', `读取已固定提交中的源码行。默认从第 1 行读 72 行，每次最多 ${rangeLimit} 行。引用须落在实际返回的 start 至 end 范围内。返回 handle 供章节提交时引用。`,
+      tool('wiki_read', `读取当前源码来源中的文件行。默认从第 1 行读 72 行，每次最多 ${rangeLimit} 行。引用须落在实际返回的 start 至 end 范围内。返回 handle 供章节提交时引用。`,
         { path: string, start: integer, count: integer }, ['path'], read),
     ],
   }

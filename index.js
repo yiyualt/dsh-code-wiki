@@ -20,9 +20,9 @@ const sourceErrors = new Map([
   ['invalid-repository-source', 400], ['invalid-repository-url', 400], ['invalid-local-path', 400],
   ['invalid-repository-commit', 400], ['invalid-chapter-request', 400],
   ['repository-unavailable', 404], ['repository-no-evidence', 422],
-  ['local-directory-unavailable', 404], ['local-not-git-repository', 422],
+  ['local-directory-unavailable', 404], ['local-directory-forbidden', 403], ['local-directory-too-large', 422],
+  ['local-not-git-repository', 422],
   ['local-git-unavailable', 503], ['local-git-forbidden', 403],
-  ['local-git-unborn-head', 422], ['local-git-invalid-head', 422],
   ['local-git-commit-unavailable', 404], ['local-git-tree-unavailable', 422],
   ['github-rate-limited', 429], ['github-request-failed', 502],
   ['wiki-document-not-found', 404], ['wiki-chapter-not-found', 404],
@@ -87,7 +87,7 @@ async function readSkill(signal) {
 
 function chapterRequest(input) {
   const { commit, mainline, chapter, previous, next, ...source } = input ?? {}
-  if (typeof commit !== 'string' || !singleLine(mainline, 4_000) || !singleLine(chapter?.title, 500)
+  if ((commit !== null && typeof commit !== 'string') || !singleLine(mainline, 4_000) || !singleLine(chapter?.title, 500)
     || !Array.isArray(chapter.sources) || !chapter.sources.length || chapter.sources.length > 16
     || chapter.sources.some(ref => typeof ref?.path !== 'string' || !ref.path || ref.path.length > 512
       || !Number.isSafeInteger(ref.line) || ref.line < 1)

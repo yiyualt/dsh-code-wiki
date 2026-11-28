@@ -1,10 +1,12 @@
 import { execFile, spawn } from 'node:child_process'
-import { realpath, stat } from 'node:fs/promises'
-import { basename, isAbsolute } from 'node:path'
+import { constants } from 'node:fs'
+import { lstat, open, opendir, realpath, stat } from 'node:fs/promises'
+import { basename, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execGit = promisify(execFile)
 const githubTreeLimit = 12 * 1024 * 1024
+const folderEntryLimit = 100_000
 const fileLimit = 128 * 1024
 const pathLimit = 512
 const treeEntryLimit = pathLimit * 3 + '100644 blob \t'.length + 64
@@ -29,10 +31,11 @@ function unreadable() {
   return repositoryError('repository-file-unavailable', '无法读取此源码文件的文本。')
 }
 
-function eligiblePath(path) {
+function eligiblePath(path, isDirectory = false) {
   if (typeof path !== 'string' || path.length > pathLimit || !path.isWellFormed() || /[\\\u0000-\u001f\u007f]/.test(path)) return false
   const parts = path.split('/')
   if (parts.some(part => !part || part === '.' || part === '..' || sensitivePart.test(part))) return false
+  if (isDirectory) return true
   const name = parts.at(-1)
   return !privateFile.test(name) && (sourceName.test(name) || projectFile.test(name))
 }
@@ -124,6 +127,102 @@ async function openGitHub(repositoryUrl, signal, revision) {
   }
 }
 
+function folderError(error) {
+  if (['EACCES', 'EPERM'].includes(error?.code)) {
+    return repositoryError('local-directory-forbidden', 'DSH 没有读取所选文件夹的权限，请检查目录访问权限。')
+  }
+  return repositoryError('local-directory-unavailable', 'DSH 找不到或无法打开所选目录，请重新选择文件夹。')
+}
+
+async function readFolderTree(root, signal) {
+  const files = new Map()
+  const pending = ['']
+  let visited = 0
+  while (pending.length) {
+    signal?.throwIfAborted()
+    const relative = pending.pop()
+    const directory = relative ? join(root, ...relative.split('/')) : root
+    try {
+      if (await realpath(directory) !== directory) throw folderError()
+      const entries = await opendir(directory)
+      try {
+        if (await realpath(directory) !== directory) throw folderError()
+        for (let entry; (entry = await entries.read());) {
+          signal?.throwIfAborted()
+          if (++visited > folderEntryLimit) {
+            throw repositoryError('local-directory-too-large', '所选目录包含的文件过多，请选择更具体的源码目录。')
+          }
+          const path = relative ? `${relative}/${entry.name}` : entry.name
+          if (entry.isDirectory() && eligiblePath(path, true)) pending.push(path)
+          if (entry.isFile() && eligiblePath(path)) files.set(path, join(directory, entry.name))
+        }
+      } finally {
+        await entries.close()
+      }
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (error.code === 'local-directory-too-large') throw error
+      if (!relative || !['ENOENT', 'ENOTDIR', 'ELOOP', 'EACCES', 'EPERM', 'local-directory-unavailable'].includes(error.code)) {
+        throw folderError(error)
+      }
+    }
+  }
+  return files
+}
+
+async function readFolderFile(path, signal) {
+  try {
+    signal?.throwIfAborted()
+    if (await realpath(path) !== path) throw unreadable()
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const opened = await file.stat()
+      const current = await lstat(path)
+      if (!opened.isFile() || !current.isFile() || opened.dev !== current.dev || opened.ino !== current.ino
+        || await realpath(path) !== path) throw unreadable()
+
+      const buffer = Buffer.alloc(fileLimit + 1)
+      let length = 0
+      while (length < buffer.length) {
+        signal?.throwIfAborted()
+        const { bytesRead } = await file.read(buffer, length, buffer.length - length, length)
+        if (bytesRead === 0) break
+        length += bytesRead
+      }
+      signal?.throwIfAborted()
+      if (length > fileLimit) {
+        const prefix = buffer.subarray(0, fileLimit)
+        length = prefix.lastIndexOf(10) + 1
+      }
+      return sourceText(buffer.subarray(0, length))
+    } finally {
+      await file.close()
+    }
+  } catch {
+    signal?.throwIfAborted()
+    throw unreadable()
+  }
+}
+
+async function openLocalFolder(repositoryPath, signal) {
+  let root
+  try {
+    root = await realpath(repositoryPath)
+  } catch (error) {
+    signal?.throwIfAborted()
+    throw folderError(error)
+  }
+  const files = await readFolderTree(root, signal)
+  signal?.throwIfAborted()
+  if (!files.size) throw repositoryError('repository-no-evidence', '所选目录没有可供解读的源码或文档。')
+  return {
+    label: basename(root) || root, commit: null, paths: [...files.keys()].sort(), treeComplete: true,
+    read(path, readSignal = signal) {
+      return readFolderFile(selectedFile(files, path), readSignal)
+    },
+  }
+}
+
 function gitOptions(cwd, signal) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:GIT_|SSH_ASKPASS$)/i.test(key)))
   Object.assign(env, {
@@ -161,24 +260,6 @@ async function localRepositoryRoot(directory, signal) {
     if (!String(error.stderr ?? '').includes('must be run in a work tree')) throw error
     if ((await git(directory, ['rev-parse', '--is-bare-repository'], signal)).trim() !== 'true') throw error
     return (await git(directory, ['rev-parse', '--absolute-git-dir'], signal)).replace(/\r?\n$/, '')
-  }
-}
-
-async function missingBranchCommit(root, signal) {
-  let branch
-  try {
-    branch = (await git(root, ['symbolic-ref', '--quiet', 'HEAD'], signal)).trim()
-  } catch {
-    signal?.throwIfAborted()
-    return false
-  }
-  if (!branch.startsWith('refs/heads/')) return false
-  try {
-    await git(root, ['show-ref', '--verify', '--quiet', branch], signal)
-    return false
-  } catch (error) {
-    signal?.throwIfAborted()
-    return error.code === 1 && !String(error.stderr ?? '').trim()
   }
 }
 
@@ -237,10 +318,7 @@ async function readLocalTree(root, commit, signal) {
   }
 }
 
-async function openLocal(repositoryPath, signal, revision) {
-  if (typeof repositoryPath !== 'string' || !isAbsolute(repositoryPath) || repositoryPath.includes('\0')) {
-    throw repositoryError('invalid-local-path', '请选择本地 Git 工作区的绝对路径。')
-  }
+async function openLocalGit(repositoryPath, signal, revision) {
   let directory
   try {
     directory = await realpath(repositoryPath)
@@ -263,19 +341,12 @@ async function openLocal(repositoryPath, signal, revision) {
 
   let commit
   try {
-    commit = (await git(root, ['rev-parse', '--verify', `${revision ?? 'HEAD'}^{commit}`], signal)).trim()
-    if (!gitId.test(commit) || (revision && commit !== revision)) throw new Error('Unexpected Git commit')
+    commit = (await git(root, ['rev-parse', '--verify', `${revision}^{commit}`], signal)).trim()
+    if (commit !== revision) throw new Error('Unexpected Git commit')
   } catch (error) {
     signal?.throwIfAborted()
-    const environmentError = localGitEnvironmentError(error)
-    if (environmentError) throw environmentError
-    if (revision) {
-      throw repositoryError('local-git-commit-unavailable', '本地仓库缺少这份 Wiki 对应的 Git 提交。请确认该版本在本地可用，或从当前版本生成一份新 Wiki。')
-    }
-    if (await missingBranchCommit(root, signal)) {
-      throw repositoryError('local-git-unborn-head', '当前 Git 分支还没有提交，请先完成第一次提交，再生成 Wiki。')
-    }
-    throw repositoryError('local-git-invalid-head', 'Git 无法将当前 HEAD 解析为有效提交，请检查当前分支或提交对象。')
+    throw localGitEnvironmentError(error) ?? repositoryError('local-git-commit-unavailable',
+      '本地仓库缺少这份 Wiki 对应的 Git 提交。请确认该版本在本地可用，或从当前版本生成一份新 Wiki。')
   }
 
   let files
@@ -307,15 +378,22 @@ async function openLocal(repositoryPath, signal, revision) {
 
 export async function openRepository(input, signal, revision) {
   signal?.throwIfAborted()
-  if (revision !== undefined && (typeof revision !== 'string' || !gitId.test(revision))) {
+  const keys = input && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : []
+  const local = keys.length === 1 && keys[0] === 'repositoryPath'
+  if (revision !== undefined && !(revision === null && local) && (typeof revision !== 'string' || !gitId.test(revision))) {
     throw repositoryError('invalid-repository-commit', '目录缺少有效的仓库提交，请重新生成目录。')
   }
   const commit = revision?.toLowerCase()
-  const keys = input && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : []
   if (keys.length === 1 && keys[0] === 'repositoryUrl') {
     if (commit && !gitHubId.test(commit)) throw repositoryError('invalid-repository-commit', '目录缺少有效的 GitHub 提交。')
     return openGitHub(input.repositoryUrl, signal, commit)
   }
-  if (keys.length === 1 && keys[0] === 'repositoryPath') return openLocal(input.repositoryPath, signal, commit)
-  throw repositoryError('invalid-repository-source', '请提供一个 GitHub 地址或本地 Git 仓库路径。')
+  if (local) {
+    const { repositoryPath } = input
+    if (typeof repositoryPath !== 'string' || !isAbsolute(repositoryPath) || repositoryPath.includes('\0')) {
+      throw repositoryError('invalid-local-path', '请选择本地文件夹的绝对路径。')
+    }
+    return commit ? openLocalGit(repositoryPath, signal, commit) : openLocalFolder(repositoryPath, signal)
+  }
+  throw repositoryError('invalid-repository-source', '请提供一个 GitHub 地址或本地文件夹路径。')
 }

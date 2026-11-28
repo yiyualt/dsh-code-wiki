@@ -92,8 +92,10 @@ window.__ModuleLoader__.load({
 
     function validOutline(outline, source, legacy = false) {
       const { mainline, commit, chapters, overview } = outline ?? {}
+      const validCommit = commit === null ? source === 'local' && !legacy
+        : typeof commit === 'string' && commitId.test(commit) && (source !== 'github' || commit.length === 40)
       return (legacy ? typeof mainline === 'string' : hasText(mainline)) &&
-        typeof commit === 'string' && commitId.test(commit) && (source !== 'github' || commit.length === 40) &&
+        validCommit &&
         (overview === undefined || validContent(overview)) &&
         Array.isArray(chapters) && chapters.length > 0 && chapters.every(chapter =>
           hasText(chapter?.title) && validSources(chapter.sources, legacy) &&
@@ -415,7 +417,7 @@ window.__ModuleLoader__.load({
           const local = draft.source === 'local'
           const repository = local ? localRepository(draft.repositoryPath) : githubRepository(draft.repositoryUrl)
           if (!repository) {
-            update({ error: local ? '请选择本地仓库文件夹。' : '请输入公开 GitHub 仓库地址，例如 https://github.com/openai/codex。' })
+            update({ error: local ? '请选择本地文件夹。' : '请输入公开 GitHub 仓库地址，例如 https://github.com/openai/codex。' })
             return
           }
 
@@ -492,7 +494,7 @@ window.__ModuleLoader__.load({
       }, [listDirectory, request])
 
       return h(Modal, {
-        open: true, onClose, title: '选择仓库文件夹', closeLabel: '关闭',
+        open: true, onClose, title: '选择本地文件夹', closeLabel: '关闭',
         footer: h(Fragment, null,
           h(Button, { 'data-modal-autofocus': '', onClick: onClose }, '取消'),
           h(Button, { variant: 'primary', disabled: loading || !listing, onClick: () => onPick(listing.path) }, '选择此文件夹')),
@@ -541,7 +543,7 @@ window.__ModuleLoader__.load({
               }), h('span', null, label))
             }))),
         local ? h('div', { className: 'dsh-code-wiki-field' },
-          h('span', null, '本地 Git 仓库'),
+          h('span', null, '本地文件夹'),
           h('div', { className: 'dsh-code-wiki-folder-field' },
             h(Button, { type: 'button', variant: 'outline', disabled: busy, onClick: onChooseFolder },
               draft.repositoryPath ? '更换文件夹' : '选择文件夹'),
