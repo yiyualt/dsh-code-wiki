@@ -2,6 +2,7 @@
   "name": "dsh-code-wiki",
   "version": "1.0.0",
   "description": "A repository wiki panel for DeepSeek Harness.",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
